@@ -1,0 +1,152 @@
+"""
+Admin routes for managing users.
+"""
+
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, status
+
+from app.middleware.auth_middleware import get_admin_user
+from app.models.user_model import CurrentUser, UserResponse, UserUpdate
+from app.services.user_service import UserService
+
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/admin", tags=["admin"])
+
+user_service = UserService()
+
+
+@router.get("/users", status_code=200)
+async def get_users(
+    admin: CurrentUser = Depends(get_admin_user),
+) -> list[UserResponse]:
+    """
+    Get all non-admin users.
+
+    Args:
+        admin: Admin user
+
+    Returns:
+        List of non-admin users
+    """
+    try:
+        users = user_service.get_non_admin_users()
+
+        return [
+            UserResponse(
+                id=user.get("id"),
+                name=user.get("name", ""),
+                email=user.get("email", ""),
+                role=user.get("role", "user"),
+                created_at=user.get("created_at"),
+                updated_at=user.get("updated_at"),
+            )
+            for user in users
+        ]
+
+    except Exception as e:
+        logger.error(f"Error getting users: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error retrieving users",
+        )
+
+
+@router.get("/user/{user_id}", status_code=200)
+async def get_user(
+    user_id: str,
+    admin: CurrentUser = Depends(get_admin_user),
+) -> UserResponse:
+    """
+    Get specific user details.
+
+    Args:
+        user_id: User ID
+        admin: Admin user
+
+    Returns:
+        User details
+    """
+    try:
+        user_data = user_service.get_user(user_id)
+
+        if not user_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found",
+            )
+
+        return UserResponse(
+            id=user_id,
+            name=user_data.get("name", ""),
+            email=user_data.get("email", ""),
+            role=user_data.get("role", "user"),
+            created_at=user_data.get("created_at"),
+            updated_at=user_data.get("updated_at"),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting user: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error retrieving user",
+        )
+
+
+@router.patch("/user/{user_id}", status_code=200)
+async def update_user(
+    user_id: str,
+    data: UserUpdate,
+    admin: CurrentUser = Depends(get_admin_user),
+) -> UserResponse:
+    """
+    Update user profile.
+
+    Args:
+        user_id: User ID
+        data: Updated user data
+        admin: Admin user
+
+    Returns:
+        Updated user details
+    """
+    try:
+        user_data = user_service.get_user(user_id)
+
+        if not user_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found",
+            )
+
+        # Update only provided fields
+        update_data = {}
+        if data.name is not None:
+            update_data["name"] = data.name
+
+        if update_data:
+            user_service.update_user(user_id, update_data)
+
+        # Refresh user data
+        updated_user = user_service.get_user(user_id)
+
+        return UserResponse(
+            id=user_id,
+            name=updated_user.get("name", ""),
+            email=updated_user.get("email", ""),
+            role=updated_user.get("role", "user"),
+            created_at=updated_user.get("created_at"),
+            updated_at=updated_user.get("updated_at"),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating user: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error updating user",
+        )
