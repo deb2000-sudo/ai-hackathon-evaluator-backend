@@ -15,7 +15,7 @@ steps:
       - 'push'
       - 'asia-south1-docker.pkg.dev/$PROJECT_ID/ai-hackathon-evaluator-backend/ai-hackathon-evaluator-backend:$SHORT_SHA'
 
-  # Step 3: Ensure the submission-video bucket exists
+  # Step 3: Ensure submission-video bucket exists
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: bash
     args:
@@ -33,7 +33,7 @@ steps:
       - '--region=asia-south1'
       - '--allow-unauthenticated'
       - '--update-secrets=FIREBASE_PROJECT_ID=FIREBASE_PROJECT_ID:latest,FIREBASE_PRIVATE_KEY=FIREBASE_PRIVATE_KEY:latest,FIREBASE_CLIENT_EMAIL=FIREBASE_CLIENT_EMAIL:latest,FIREBASE_WEB_API_KEY=FIREBASE_WEB_API_KEY:latest,FIREBASE_DATABASE_URL=FIREBASE_DATABASE_URL:latest'
-      - '--set-env-vars=ENVIRONMENT=production,DEBUG=false,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=us-central1,EVALUATION_BUCKET_NAME=$PROJECT_ID-hackathon-evaluations,GEMINI_MODEL=gemini-2.5-flash'
+      - '--set-env-vars=ENVIRONMENT=production,DEBUG=false,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=us-central1,EVALUATION_BUCKET_NAME=$PROJECT_ID-hackathon-evaluations,GEMINI_MODEL=gemini-2.5-flash,COOKIE_SAMESITE=none'
       - '--memory=1Gi'
       - '--cpu=1'
       - '--timeout=3600'
