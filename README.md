@@ -30,13 +30,18 @@ Seeded users (created on startup, password `12345678`):
 | `student@nxtwave.co.in`            | student    | approved   | first/last name, NIAT ID, mobile        |
 
 ```bash
-# Log in -> returns an id_token
+# Log in -> sets an HttpOnly `access_token` cookie (not returned in the body)
 curl -X POST http://localhost:8000/auth/login \
   -H "Content-Type: application/json" \
+  -c cookies.txt \
   -d '{"email":"student@nxtwave.co.in","password":"12345678"}'
 ```
 
-Use the returned `id_token` as `Authorization: Bearer <id_token>` on every protected route.
+The session cookie is sent automatically on subsequent requests. From a browser/frontend, use `credentials: "include"` on `fetch` or axios `withCredentials: true`.
+
+Log out with `POST /auth/logout` (clears the cookie).
+
+For API clients and Swagger, the `Authorization: Bearer <token>` header is still supported as a fallback.
 
 ### Registration
 
@@ -79,7 +84,8 @@ Pending evaluators can log in and call `GET /auth/me`, but other app routes retu
 | ------ | --------------------------------- | ----- | ------------------------------------------------------- |
 | POST   | `/auth/register/student`          | —     | Student self-registration                               |
 | POST   | `/auth/register/evaluator`        | —     | Evaluator self-registration (pending approval)          |
-| POST   | `/auth/login`                     | —     | Log in, get an `id_token`                               |
+| POST   | `/auth/login`                     | —     | Log in; token stored in HttpOnly cookie                 |
+| POST   | `/auth/logout`                    | —     | Clear session cookie                                    |
 | GET    | `/auth/me`                        | user  | Current user profile (includes `approval_status`)       |
 | POST   | `/upload-video`                   | user  | Upload a submission video → creates an evaluation session |
 | POST   | `/analyze-video`                  | user  | Start AI evaluation for an uploaded session (background) |
@@ -92,18 +98,21 @@ Pending evaluators can log in and call `GET /auth/me`, but other app routes retu
 ### Typical flow
 
 ```bash
-TOKEN="<id_token>"
+# 1. Log in and persist the session cookie
+curl -X POST http://localhost:8000/auth/login \
+  -H "Content-Type: application/json" \
+  -c cookies.txt \
+  -d '{"email":"student@nxtwave.co.in","password":"12345678"}'
 
-# 1. Upload a submission video
+# 2. Upload a submission video (cookie sent via -b)
 curl -X POST http://localhost:8000/upload-video \
-  -H "Authorization: Bearer $TOKEN" \
+  -b cookies.txt \
   -F "video=@demo.mp4;type=video/mp4"
 # -> { "id": "<session_id>", "status": "uploaded", ... }
 
-# 2. Kick off analysis. Provide the problem + solution to have Gemini build a
-#    "Product & Feature Validation Checklist" and judge the video against it.
+# 3. Kick off analysis
 curl -X POST http://localhost:8000/analyze-video \
-  -H "Authorization: Bearer $TOKEN" \
+  -b cookies.txt \
   -H "Content-Type: application/json" \
   -d '{
         "session_id":"<session_id>",
@@ -112,9 +121,9 @@ curl -X POST http://localhost:8000/analyze-video \
       }'
 # -> { "status": "processing", ... }
 
-# 3. Poll for the result
+# 4. Poll for the result
 curl http://localhost:8000/evaluations/<session_id> \
-  -H "Authorization: Bearer $TOKEN"
+  -b cookies.txt
 # -> { "status": "completed",
 #      "result": { "overall_score": 82, "criteria": {...},
 #                  "checklist": "1. PROBLEM ESTABLISHMENT ...",

@@ -9,6 +9,7 @@ import json
 
 import requests
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import JSONResponse
 
 from app.middleware.auth_middleware import get_current_user
 from app.models.user_model import (
@@ -23,6 +24,7 @@ from app.models.user_model import (
 from app.services.firebase import FirebaseService
 from app.services.registration_service import RegistrationService
 from app.services.user_service import UserService
+from app.utils.auth_cookies import clear_auth_cookie, set_auth_cookie
 
 
 logger = logging.getLogger(__name__)
@@ -78,10 +80,13 @@ async def register_evaluator(request: EvaluatorRegisterRequest) -> RegisterRespo
         ) from e
 
 
-@router.post("/login", response_model=LoginResponse, status_code=200)
-async def login(request: LoginRequest) -> LoginResponse:
+@router.post("/login", status_code=200)
+async def login(request: LoginRequest) -> JSONResponse:
     """
-    Login with email and password using Firebase Authentication.
+    Login with email and password.
+
+    On success the Firebase ID token is stored in an HttpOnly cookie; it is
+    not returned in the response body.
     """
     try:
         project_id = os.getenv("FIREBASE_PROJECT_ID")
@@ -152,14 +157,17 @@ async def login(request: LoginRequest) -> LoginResponse:
 
         approval_status = RegistrationService.resolve_approval_status(user_data)
 
-        return LoginResponse(
-            id_token=id_token,
+        payload = LoginResponse(
             user_id=user.uid,
             email=user.email,
             name=user_data.get("name", ""),
             role=user_data.get("role", "student"),
             approval_status=approval_status,
-        )
+        ).model_dump()
+
+        response = JSONResponse(content=payload)
+        set_auth_cookie(response, id_token)
+        return response
 
     except HTTPException:
         raise
@@ -169,6 +177,14 @@ async def login(request: LoginRequest) -> LoginResponse:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
         )
+
+
+@router.post("/logout", status_code=200)
+async def logout() -> JSONResponse:
+    """Clear the HttpOnly session cookie."""
+    response = JSONResponse(content={"message": "Logged out successfully"})
+    clear_auth_cookie(response)
+    return response
 
 
 def _generate_id_token_via_rest_api(email: str, password: str, web_api_key: str) -> str:

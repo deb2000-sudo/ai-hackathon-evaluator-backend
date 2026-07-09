@@ -105,14 +105,14 @@ class LoginRequest(BaseModel):
 
 
 class LoginResponse(BaseModel):
-    """Schema for login response"""
+    """Schema for login response (token is stored in an HttpOnly cookie)."""
 
-    id_token: str
     user_id: str
     email: str
     name: str
     role: UserRole
     approval_status: Optional[ApprovalStatus] = None
+    message: str = "Login successful"
 
 
 class CurrentUser(BaseModel):
