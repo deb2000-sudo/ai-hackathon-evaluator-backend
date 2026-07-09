@@ -23,33 +23,76 @@ async def get_users(
 ) -> list[UserResponse]:
     """
     Get all non-admin users.
-
-    Args:
-        admin: Admin user
-
-    Returns:
-        List of non-admin users
     """
     try:
         users = user_service.get_non_admin_users()
-
-        return [
-            UserResponse(
-                id=user.get("id"),
-                name=user.get("name", ""),
-                email=user.get("email", ""),
-                role=user.get("role", "user"),
-                created_at=user.get("created_at"),
-                updated_at=user.get("updated_at"),
-            )
-            for user in users
-        ]
+        return [user_service.to_user_response(user["id"], user) for user in users]
 
     except Exception as e:
         logger.error(f"Error getting users: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error retrieving users",
+        )
+
+
+@router.get("/evaluators/pending", status_code=200)
+async def get_pending_evaluators(
+    admin: CurrentUser = Depends(get_admin_user),
+) -> list[UserResponse]:
+    """
+    List evaluator registrations awaiting admin approval.
+    """
+    try:
+        evaluators = user_service.get_evaluators(approval_status="pending")
+        return [user_service.to_user_response(user["id"], user) for user in evaluators]
+    except Exception as e:
+        logger.error("Error getting pending evaluators: %s", str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error retrieving pending evaluators",
+        )
+
+
+@router.get("/evaluators", status_code=200)
+async def get_evaluators(
+    admin: CurrentUser = Depends(get_admin_user),
+) -> list[UserResponse]:
+    """
+    List all evaluator accounts.
+    """
+    try:
+        evaluators = user_service.get_evaluators()
+        return [user_service.to_user_response(user["id"], user) for user in evaluators]
+    except Exception as e:
+        logger.error("Error getting evaluators: %s", str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error retrieving evaluators",
+        )
+
+
+@router.post("/evaluators/{user_id}/approve", response_model=UserResponse, status_code=200)
+async def approve_evaluator(
+    user_id: str,
+    admin: CurrentUser = Depends(get_admin_user),
+) -> UserResponse:
+    """
+    Approve a pending evaluator registration.
+    """
+    try:
+        updated_user = user_service.approve_evaluator(user_id)
+        return user_service.to_user_response(user_id, updated_user)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
+    except Exception as e:
+        logger.error("Error approving evaluator %s: %s", user_id, str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error approving evaluator",
         )
 
 
@@ -60,13 +103,6 @@ async def get_user(
 ) -> UserResponse:
     """
     Get specific user details.
-
-    Args:
-        user_id: User ID
-        admin: Admin user
-
-    Returns:
-        User details
     """
     try:
         user_data = user_service.get_user(user_id)
@@ -77,14 +113,7 @@ async def get_user(
                 detail="User not found",
             )
 
-        return UserResponse(
-            id=user_id,
-            name=user_data.get("name", ""),
-            email=user_data.get("email", ""),
-            role=user_data.get("role", "user"),
-            created_at=user_data.get("created_at"),
-            updated_at=user_data.get("updated_at"),
-        )
+        return user_service.to_user_response(user_id, user_data)
 
     except HTTPException:
         raise
@@ -104,14 +133,6 @@ async def update_user(
 ) -> UserResponse:
     """
     Update user profile.
-
-    Args:
-        user_id: User ID
-        data: Updated user data
-        admin: Admin user
-
-    Returns:
-        Updated user details
     """
     try:
         user_data = user_service.get_user(user_id)
@@ -122,7 +143,6 @@ async def update_user(
                 detail="User not found",
             )
 
-        # Update only provided fields
         update_data = {}
         if data.name is not None:
             update_data["name"] = data.name
@@ -130,17 +150,14 @@ async def update_user(
         if update_data:
             user_service.update_user(user_id, update_data)
 
-        # Refresh user data
         updated_user = user_service.get_user(user_id)
+        if not updated_user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found",
+            )
 
-        return UserResponse(
-            id=user_id,
-            name=updated_user.get("name", ""),
-            email=updated_user.get("email", ""),
-            role=updated_user.get("role", "user"),
-            created_at=updated_user.get("created_at"),
-            updated_at=updated_user.get("updated_at"),
-        )
+        return user_service.to_user_response(user_id, updated_user)
 
     except HTTPException:
         raise

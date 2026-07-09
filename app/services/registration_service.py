@@ -1,0 +1,165 @@
+"""
+Registration service for student and evaluator sign-up.
+"""
+
+import logging
+from datetime import datetime
+from typing import Any
+
+from app.models.user_model import (
+    ApprovalStatus,
+    EvaluatorRegisterRequest,
+    RegisterResponse,
+    StudentRegisterRequest,
+)
+from app.services.firebase import FirebaseService
+from app.services.user_service import UserService
+
+
+logger = logging.getLogger(__name__)
+
+
+class RegistrationService:
+    """Handles self-registration for students and evaluators."""
+
+    def __init__(self):
+        self.firebase = FirebaseService()
+        self.user_service = UserService()
+
+    def register_student(self, request: StudentRegisterRequest) -> RegisterResponse:
+        """Register a student account (immediately approved)."""
+        email = request.email.lower()
+
+        self._ensure_email_available(email)
+        self._ensure_unique_field("niat_id", request.niat_id, "NIAT ID")
+
+        full_name = self._full_name(request.first_name, request.last_name)
+        user_id = self._create_auth_user(email, request.password, full_name)
+
+        try:
+            self.firebase.set_document(
+                "users",
+                user_id,
+                self._student_firestore_data(request, email, full_name),
+            )
+        except Exception:
+            self._rollback_auth_user(user_id)
+            raise
+
+        return RegisterResponse(
+            user_id=user_id,
+            email=email,
+            first_name=request.first_name.strip(),
+            last_name=request.last_name.strip(),
+            role="student",
+            approval_status="approved",
+            message="Student registration successful. You can log in now.",
+        )
+
+    def register_evaluator(self, request: EvaluatorRegisterRequest) -> RegisterResponse:
+        """Register an evaluator account (pending admin approval)."""
+        email = request.email.lower()
+
+        self._ensure_email_available(email)
+        self._ensure_unique_field("employee_id", request.employee_id, "Employee ID")
+
+        full_name = self._full_name(request.first_name, request.last_name)
+        user_id = self._create_auth_user(email, request.password, full_name)
+
+        try:
+            self.firebase.set_document(
+                "users",
+                user_id,
+                self._evaluator_firestore_data(request, email, full_name),
+            )
+        except Exception:
+            self._rollback_auth_user(user_id)
+            raise
+
+        return RegisterResponse(
+            user_id=user_id,
+            email=email,
+            first_name=request.first_name.strip(),
+            last_name=request.last_name.strip(),
+            role="evaluator",
+            approval_status="pending",
+            message=(
+                "Evaluator registration submitted. Your account is pending admin approval."
+            ),
+        )
+
+    def _create_auth_user(self, email: str, password: str, display_name: str) -> str:
+        try:
+            result = self.firebase.create_user(
+                email=email,
+                password=password,
+                display_name=display_name,
+            )
+            return result["user_id"]
+        except ValueError as e:
+            raise ValueError(str(e)) from e
+
+    def _rollback_auth_user(self, user_id: str) -> None:
+        try:
+            self.firebase.delete_user(user_id)
+        except Exception as e:
+            logger.error("Failed to rollback Firebase Auth user %s: %s", user_id, str(e))
+
+    def _ensure_email_available(self, email: str) -> None:
+        if self.firebase.get_user_by_email(email) or self.user_service.user_exists(email):
+            raise ValueError("An account with this email already exists")
+
+    def _ensure_unique_field(self, field: str, value: str, label: str) -> None:
+        if self.user_service.find_by_field(field, value.strip()):
+            raise ValueError(f"{label} is already registered")
+
+    @staticmethod
+    def _full_name(first_name: str, last_name: str) -> str:
+        return f"{first_name.strip()} {last_name.strip()}"
+
+    @staticmethod
+    def _timestamp_fields() -> dict[str, str]:
+        now = datetime.utcnow().isoformat()
+        return {"created_at": now, "updated_at": now}
+
+    def _student_firestore_data(
+        self,
+        request: StudentRegisterRequest,
+        email: str,
+        full_name: str,
+    ) -> dict[str, Any]:
+        return {
+            "first_name": request.first_name.strip(),
+            "last_name": request.last_name.strip(),
+            "name": full_name,
+            "email": email,
+            "niat_id": request.niat_id.strip(),
+            "mobile_no": request.mobile_no.strip(),
+            "role": "student",
+            "approval_status": "approved",
+            **self._timestamp_fields(),
+        }
+
+    def _evaluator_firestore_data(
+        self,
+        request: EvaluatorRegisterRequest,
+        email: str,
+        full_name: str,
+    ) -> dict[str, Any]:
+        return {
+            "first_name": request.first_name.strip(),
+            "last_name": request.last_name.strip(),
+            "name": full_name,
+            "email": email,
+            "employee_id": request.employee_id.strip(),
+            "role": "evaluator",
+            "approval_status": "pending",
+            **self._timestamp_fields(),
+        }
+
+    @staticmethod
+    def resolve_approval_status(user_data: dict[str, Any]) -> ApprovalStatus | None:
+        """Return approval status for evaluators only."""
+        if user_data.get("role") == "evaluator":
+            return user_data.get("approval_status", "pending")
+        return None

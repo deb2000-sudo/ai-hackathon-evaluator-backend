@@ -3,7 +3,8 @@ Input validation utilities
 """
 
 import re
-from typing import Literal
+
+from app.models.user_model import USER_ROLES, UserRole
 
 
 def validate_email(email: str) -> bool:
@@ -51,5 +52,24 @@ def validate_name(name: str) -> tuple[bool, str]:
         return False, "Name must be less than 100 characters"
     return True, ""
 
+
+def validate_role(role: str) -> tuple[bool, str]:
+    """
+    Validate user role.
+
+    Args:
+        role: Role to validate
+
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    if role not in USER_ROLES:
+        return False, f"Role must be one of: {', '.join(USER_ROLES)}"
+    return True, ""
+
+
+def is_valid_role(role: str) -> role is UserRole:
+    """Return True if role is a supported UserRole."""
+    return role in USER_ROLES
 
 
