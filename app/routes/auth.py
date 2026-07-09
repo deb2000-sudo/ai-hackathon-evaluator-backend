@@ -11,8 +11,17 @@ import requests
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.middleware.auth_middleware import get_current_user
-from app.models.user_model import CurrentUser, LoginRequest, LoginResponse, UserResponse
+from app.models.user_model import (
+    CurrentUser,
+    EvaluatorRegisterRequest,
+    LoginRequest,
+    LoginResponse,
+    RegisterResponse,
+    StudentRegisterRequest,
+    UserResponse,
+)
 from app.services.firebase import FirebaseService
+from app.services.registration_service import RegistrationService
 from app.services.user_service import UserService
 
 
@@ -20,6 +29,53 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
 firebase = FirebaseService()
 user_service = UserService()
+registration_service = RegistrationService()
+
+
+@router.post("/register/student", response_model=RegisterResponse, status_code=201)
+async def register_student(request: StudentRegisterRequest) -> RegisterResponse:
+    """
+    Register a new student account.
+
+    Required fields: first name, last name, NIAT ID, email, mobile number,
+    password, and confirm password.
+    """
+    try:
+        return registration_service.register_student(request)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
+    except Exception as e:
+        logger.error("Student registration error: %s", str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Registration failed",
+        ) from e
+
+
+@router.post("/register/evaluator", response_model=RegisterResponse, status_code=201)
+async def register_evaluator(request: EvaluatorRegisterRequest) -> RegisterResponse:
+    """
+    Register a new evaluator account.
+
+    Required fields: first name, last name, employee ID, Nxtwave email,
+    password, and confirm password. Account remains pending until admin approval.
+    """
+    try:
+        return registration_service.register_evaluator(request)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
+    except Exception as e:
+        logger.error("Evaluator registration error: %s", str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Registration failed",
+        ) from e
 
 
 @router.post("/login", response_model=LoginResponse, status_code=200)
@@ -38,7 +94,8 @@ async def login(request: LoginRequest) -> LoginResponse:
                 detail="Firebase configuration error",
             )
 
-        user = firebase.get_user_by_email(request.email)
+        email = request.email.lower()
+        user = firebase.get_user_by_email(email)
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -53,7 +110,7 @@ async def login(request: LoginRequest) -> LoginResponse:
             )
 
         id_token = _generate_id_token_via_rest_api(
-            request.email,
+            email,
             request.password,
             web_api_key,
         )
@@ -93,12 +150,15 @@ async def login(request: LoginRequest) -> LoginResponse:
                 detail="Firebase configuration error: token user does not match Auth user",
             )
 
+        approval_status = RegistrationService.resolve_approval_status(user_data)
+
         return LoginResponse(
             id_token=id_token,
             user_id=user.uid,
             email=user.email,
             name=user_data.get("name", ""),
-            role=user_data.get("role", "user"),
+            role=user_data.get("role", "student"),
+            approval_status=approval_status,
         )
 
     except HTTPException:
@@ -167,14 +227,7 @@ async def get_current_user_profile(
                 detail="User not found",
             )
 
-        return UserResponse(
-            id=current_user.user_id,
-            name=user_data.get("name", ""),
-            email=user_data.get("email", ""),
-            role=user_data.get("role", "user"),
-            created_at=user_data.get("created_at"),
-            updated_at=user_data.get("updated_at"),
-        )
+        return user_service.to_user_response(current_user.user_id, user_data)
 
     except HTTPException:
         raise

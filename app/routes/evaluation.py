@@ -8,7 +8,7 @@ Authenticated hackathon video evaluation routes.
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile, status
 
-from app.middleware.auth_middleware import get_current_user
+from app.middleware.auth_middleware import get_active_user
 from app.models.evaluation_model import (
     AnalyzeVideoRequest,
     EvaluationSessionResponse,
@@ -24,7 +24,7 @@ router = APIRouter(tags=["evaluation"])
 @router.post("/upload-video", response_model=UploadVideoResponse, status_code=201)
 async def upload_video(
     video: UploadFile = File(...),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(get_active_user),
 ) -> UploadVideoResponse:
     """
     Upload a hackathon submission video. Stores it and creates an evaluation
@@ -61,7 +61,7 @@ async def upload_video(
 async def analyze_video(
     request: AnalyzeVideoRequest,
     background_tasks: BackgroundTasks,
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(get_active_user),
 ) -> EvaluationSessionResponse:
     """
     Kick off AI evaluation for an already-uploaded submission video.
@@ -102,11 +102,11 @@ async def analyze_video(
 @router.get("/evaluations/{session_id}", response_model=EvaluationSessionResponse)
 async def get_evaluation(
     session_id: str,
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(get_active_user),
 ) -> EvaluationSessionResponse:
     """
     Get evaluation status and, once complete, the AI evaluation result.
-    Only the owner (or an admin) may read a session.
+    Only the owner, an evaluator, or an admin may read a session.
     """
     service = EvaluationService()
     session = service.get_user_session(session_id, current_user)

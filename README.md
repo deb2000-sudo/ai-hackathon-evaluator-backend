@@ -22,30 +22,72 @@ uvicorn app.main:app --reload  # http://localhost:8000/docs
 
 Seeded users (created on startup, password `12345678`):
 
-| Email                   | Role  |
-| ----------------------- | ----- |
-| `admin@nxtwave.co.in`   | admin |
-| `test@nxtwave.co.in`    | user  |
+| Email                              | Role       | Approval   | Profile fields                          |
+| ---------------------------------- | ---------- | ---------- | --------------------------------------- |
+| `admin@nxtwave.co.in`              | admin      | —          | first/last name, employee ID, mobile    |
+| `evaluator@nxtwave.co.in`          | evaluator  | approved   | first/last name, employee ID            |
+| `evaluator.pending@nxtwave.co.in`   | evaluator  | pending    | first/last name, employee ID            |
+| `student@nxtwave.co.in`            | student    | approved   | first/last name, NIAT ID, mobile        |
 
 ```bash
 # Log in -> returns an id_token
 curl -X POST http://localhost:8000/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"test@nxtwave.co.in","password":"12345678"}'
+  -d '{"email":"student@nxtwave.co.in","password":"12345678"}'
 ```
 
 Use the returned `id_token` as `Authorization: Bearer <id_token>` on every protected route.
 
+### Registration
+
+**Student** (`POST /auth/register/student`):
+
+```bash
+curl -X POST http://localhost:8000/auth/register/student \
+  -H "Content-Type: application/json" \
+  -d '{
+        "first_name": "John",
+        "last_name": "Doe",
+        "niat_id": "NIAT12345",
+        "email": "john.doe@example.com",
+        "mobile_no": "9876543210",
+        "password": "12345678",
+        "confirm_password": "12345678"
+      }'
+```
+
+**Evaluator** (`POST /auth/register/evaluator`) — requires a `@nxtwave.co.in` email and starts with `approval_status: pending`:
+
+```bash
+curl -X POST http://localhost:8000/auth/register/evaluator \
+  -H "Content-Type: application/json" \
+  -d '{
+        "first_name": "Jane",
+        "last_name": "Smith",
+        "employee_id": "EMP12345",
+        "email": "jane.smith@nxtwave.co.in",
+        "password": "12345678",
+        "confirm_password": "12345678"
+      }'
+```
+
+Pending evaluators can log in and call `GET /auth/me`, but other app routes return `403` until an admin approves them.
+
 ## Core endpoints
 
-| Method | Path                       | Auth  | Description                                              |
-| ------ | -------------------------- | ----- | ------------------------------------------------------- |
-| POST   | `/auth/login`              | —     | Log in, get an `id_token`                               |
-| GET    | `/auth/me`                 | user  | Current user profile                                    |
-| POST   | `/upload-video`            | user  | Upload a submission video → creates an evaluation session |
-| POST   | `/analyze-video`           | user  | Start AI evaluation for an uploaded session (background) |
-| GET    | `/evaluations/{id}`        | user  | Poll status; returns the evaluation `result` when done  |
-| GET    | `/admin/users`             | admin | List non-admin users                                    |
+| Method | Path                              | Auth  | Description                                              |
+| ------ | --------------------------------- | ----- | ------------------------------------------------------- |
+| POST   | `/auth/register/student`          | —     | Student self-registration                               |
+| POST   | `/auth/register/evaluator`        | —     | Evaluator self-registration (pending approval)          |
+| POST   | `/auth/login`                     | —     | Log in, get an `id_token`                               |
+| GET    | `/auth/me`                        | user  | Current user profile (includes `approval_status`)       |
+| POST   | `/upload-video`                   | user  | Upload a submission video → creates an evaluation session |
+| POST   | `/analyze-video`                  | user  | Start AI evaluation for an uploaded session (background) |
+| GET    | `/evaluations/{id}`               | user  | Poll status; returns the evaluation `result` when done  |
+| GET    | `/admin/users`                    | admin | List non-admin users                                    |
+| GET    | `/admin/evaluators/pending`       | admin | List evaluators awaiting approval                       |
+| GET    | `/admin/evaluators`               | admin | List all evaluators                                     |
+| POST   | `/admin/evaluators/{id}/approve`  | admin | Approve a pending evaluator                             |
 
 ### Typical flow
 

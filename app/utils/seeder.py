@@ -3,7 +3,10 @@ Database seeder - Initialize default data
 """
 
 import logging
+from datetime import datetime
+from typing import Any, NotRequired, TypedDict
 
+from app.models.user_model import ApprovalStatus, UserRole
 from app.services.firebase import FirebaseService
 from app.services.user_service import UserService
 
@@ -11,10 +14,70 @@ from app.services.user_service import UserService
 logger = logging.getLogger(__name__)
 
 
+class SeedUser(TypedDict):
+    email: str
+    password: str
+    first_name: str
+    last_name: str
+    role: UserRole
+    niat_id: str | None
+    employee_id: str | None
+    mobile_no: str | None
+    approval_status: NotRequired[ApprovalStatus]
+
+
+# Sample users aligned with registration profile fields.
+DEFAULT_SEED_USERS: list[SeedUser] = [
+    {
+        "email": "admin@nxtwave.co.in",
+        "password": "12345678",
+        "first_name": "Debasis",
+        "last_name": "Mohanty",
+        "role": "admin",
+        "niat_id": None,
+        "employee_id": "NW-ADM-001",
+        "mobile_no": "9000000001",
+    },
+    {
+        "email": "evaluator@nxtwave.co.in",
+        "password": "12345678",
+        "first_name": "Priya",
+        "last_name": "Sharma",
+        "role": "evaluator",
+        "approval_status": "approved",
+        "niat_id": None,
+        "employee_id": "NW-EMP-1001",
+        "mobile_no": None,
+    },
+    {
+        "email": "evaluator.pending@nxtwave.co.in",
+        "password": "12345678",
+        "first_name": "Rahul",
+        "last_name": "Verma",
+        "role": "evaluator",
+        "approval_status": "pending",
+        "niat_id": None,
+        "employee_id": "NW-EMP-1002",
+        "mobile_no": None,
+    },
+    {
+        "email": "student@nxtwave.co.in",
+        "password": "12345678",
+        "first_name": "Aarav",
+        "last_name": "Patel",
+        "role": "student",
+        "approval_status": "approved",
+        "niat_id": "NIAT-2026-001",
+        "employee_id": None,
+        "mobile_no": "9876543210",
+    },
+]
+
+
 class DatabaseSeeder:
     """
-    Seeder for initializing database with default data
-    Creates the default admin user and test user.
+    Seeder for initializing database with default data.
+    Creates sample admin, evaluator, and student users.
     """
 
     def __init__(self):
@@ -22,219 +85,127 @@ class DatabaseSeeder:
         self.firebase = FirebaseService()
         self.user_service = UserService()
 
-    def seed_admin_user(
-        self,
-        email: str = "admin@nxtwave.co.in",
-        password: str = "12345678",
-        name: str = "Admin User",
-    ) -> bool:
+    def seed_user(self, seed: SeedUser) -> bool:
         """
-        Create admin user if it doesn't exist
-        Admin documents contain minimal fields: email, role, timestamps
-
-        Args:
-            email: Admin email
-            password: Admin password
-            name: Admin name
-
-        Returns:
-            True if successful or already exists
+        Create or sync a user with the given role profile.
         """
+        email = seed["email"].lower()
+        name = self._full_name(seed)
+        role = seed["role"]
+
         try:
-            logger.info(f"Checking if admin user exists: {email}")
-            
-            # Check if admin user already exists in Firebase Auth
+            logger.info("Checking if user exists: %s (role=%s)", email, role)
+
             existing_user = self.firebase.get_user_by_email(email)
 
             if existing_user:
-                logger.info(f"Found existing user in Firebase Auth: {email}")
                 user_id = existing_user.uid
-                logger.info(f"User ID: {user_id}")
-                
-                # Check if Firestore record exists
+                logger.info("Found existing user in Firebase Auth: %s", email)
+
                 firestore_user = self.user_service.get_user(user_id)
-                
                 if firestore_user:
-                    logger.info(f"Firestore record found for {email}")
-                    return True
-                else:
-                    logger.warning(f"Firestore record MISSING for {email}")
-                    logger.info(f"Creating Firestore record for existing admin user...")
-                    
-                    # Create minimal Firestore record for admin
-                    self._create_admin_firestore_record(user_id, email, name)
-                    logger.info(f"Admin Firestore record created for {email}")
+                    self._sync_firestore_record(user_id, seed, firestore_user)
+                    logger.info("Synced Firestore profile for %s", email)
                     return True
 
-            # User doesn't exist, create new admin
-            logger.info(f"Creating new admin user: {email}")
+                logger.warning("Firestore record missing for %s — creating it", email)
+                self._create_firestore_record(user_id, seed)
+                logger.info("Firestore record created for %s", email)
+                return True
+
+            logger.info("Creating new user: %s", email)
             user_data = self.firebase.create_user(
                 email=email,
-                password=password,
+                password=seed["password"],
                 display_name=name,
             )
             user_id = user_data["user_id"]
-            logger.info(f"Firebase Auth user created. ID: {user_id}")
+            logger.info("Firebase Auth user created. ID: %s", user_id)
 
-            # Create minimal Firestore record for admin
-            logger.info(f"Creating admin Firestore record...")
-            self._create_admin_firestore_record(user_id, email, name)
-            logger.info(f"Admin Firestore record created")
-
-            logger.info(f"Admin user fully created: {email}")
+            self._create_firestore_record(user_id, seed)
+            logger.info("User fully created: %s", email)
             return True
 
         except Exception as e:
-            logger.error(f"ERROR in seed_admin_user: {str(e)}")
-            logger.error(f"Exception type: {type(e).__name__}")
+            logger.error("ERROR seeding user %s: %s", email, str(e))
             import traceback
-            logger.error(f"Traceback:\n{traceback.format_exc()}")
+
+            logger.error("Traceback:\n%s", traceback.format_exc())
             raise
 
-    def _create_admin_firestore_record(self, user_id: str, email: str, name: str) -> None:
-        """
-        Create admin user record in Firestore with minimal fields
+    @staticmethod
+    def _full_name(seed: SeedUser) -> str:
+        return f"{seed['first_name'].strip()} {seed['last_name'].strip()}"
 
-        Args:
-            user_id: Firebase user ID
-            email: User email
-            name: User name
+    def _build_profile(self, seed: SeedUser, created_at: str | None = None) -> dict[str, Any]:
         """
-        from datetime import datetime
-        
-        admin_data = {
-            "email": email,
-            "name": name,
-            "role": "admin",
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat(),
+        Build a Firestore user document using the same fields as registration.
+        """
+        now = datetime.utcnow().isoformat()
+        profile: dict[str, Any] = {
+            "first_name": seed["first_name"].strip(),
+            "last_name": seed["last_name"].strip(),
+            "name": self._full_name(seed),
+            "email": seed["email"].lower(),
+            "role": seed["role"],
+            "created_at": created_at or now,
+            "updated_at": now,
         }
 
-        self.firebase.set_document("users", user_id, admin_data)
-        logger.info(f"📋 Admin fields: email, name, role, created_at, updated_at")
+        if seed["role"] == "evaluator":
+            profile["approval_status"] = seed.get("approval_status", "pending")
+        elif seed["role"] == "student":
+            profile["approval_status"] = seed.get("approval_status", "approved")
 
-    def seed_normal_user(
+        if seed["role"] == "student":
+            profile["niat_id"] = seed["niat_id"]
+            profile["mobile_no"] = seed["mobile_no"]
+        elif seed["role"] == "evaluator":
+            profile["employee_id"] = seed["employee_id"]
+        elif seed["role"] == "admin" and seed["employee_id"]:
+            profile["employee_id"] = seed["employee_id"]
+
+        if seed["mobile_no"] and seed["role"] != "student":
+            profile["mobile_no"] = seed["mobile_no"]
+
+        return profile
+
+    def _create_firestore_record(self, user_id: str, seed: SeedUser) -> None:
+        """Create a user record in Firestore."""
+        self.firebase.set_document("users", user_id, self._build_profile(seed))
+
+    def _sync_firestore_record(
         self,
-        email: str = "test@nxtwave.co.in",
-        password: str = "12345678",
-        name: str = "Test User",
-    ) -> bool:
-        """
-        Create normal user if it doesn't exist
-        Normal user documents contain: email, name, role, timestamps
-
-        Args:
-            email: User email
-            password: User password
-            name: User name
-
-        Returns:
-            True if successful or already exists
-        """
-        try:
-            logger.info(f"🔍 Checking if normal user exists: {email}")
-            
-            # Check if user already exists in Firebase Auth
-            existing_user = self.firebase.get_user_by_email(email)
-
-            if existing_user:
-                logger.info(f"✅ Found existing user in Firebase Auth: {email}")
-                user_id = existing_user.uid
-                logger.info(f"   User ID: {user_id}")
-                
-                # Check if Firestore record exists
-                firestore_user = self.user_service.get_user(user_id)
-                
-                if firestore_user:
-                    logger.info(f"✅ Firestore record found for {email}")
-                    return True
-                else:
-                    logger.warning(f"⚠️ Firestore record MISSING for {email}")
-                    logger.info(f"📝 Creating Firestore record for existing user...")
-                    
-                    # Create Firestore record for normal user
-                    self._create_normal_user_firestore_record(user_id, email, name)
-                    logger.info(f"✅ User Firestore record created for {email}")
-                    return True
-
-            # User doesn't exist, create new user
-            logger.info(f"📝 Creating new user: {email}")
-            user_data = self.firebase.create_user(
-                email=email,
-                password=password,
-                display_name=name,
-            )
-            user_id = user_data["user_id"]
-            logger.info(f"✅ Firebase Auth user created. ID: {user_id}")
-
-            # Create Firestore record for normal user
-            logger.info(f"📝 Creating user Firestore record...")
-            self._create_normal_user_firestore_record(user_id, email, name)
-            logger.info(f"✅ User Firestore record created")
-
-            logger.info(f"✅ User fully created: {email}")
-            return True
-
-        except Exception as e:
-            logger.error(f"❌ ERROR in seed_normal_user: {str(e)}")
-            logger.error(f"   Exception type: {type(e).__name__}")
-            import traceback
-            logger.error(f"   Traceback:\n{traceback.format_exc()}")
-            raise
-
-    def _create_normal_user_firestore_record(
-        self, user_id: str, email: str, name: str
+        user_id: str,
+        seed: SeedUser,
+        existing: dict[str, Any],
     ) -> None:
-        """
-        Create normal user record in Firestore with basic fields
-
-        Args:
-            user_id: Firebase user ID
-            email: User email
-            name: User name
-        """
-        from datetime import datetime
-        
-        user_data = {
-            "email": email,
-            "name": name,
-            "role": "user",
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat(),
-        }
-
-        self.firebase.set_document("users", user_id, user_data)
-        logger.info(f"📋 User fields: email, name, role, created_at, updated_at")
+        """Update an existing Firestore profile to match seed registration fields."""
+        profile = self._build_profile(seed, created_at=existing.get("created_at"))
+        self.firebase.set_document("users", user_id, profile)
 
     def seed_all(self) -> bool:
         """
-        Run all seeding operations
-        Creates admin user and a normal user
+        Run all seeding operations.
 
         Returns:
             True if all successful
         """
         try:
-            logger.info("🌱 Starting database seeding...")
-            
-            # Seed admin user
-            logger.info("\n" + "="*60)
-            logger.info("🔑 SEEDING ADMIN USER")
-            logger.info("="*60)
-            self.seed_admin_user()
-            
-            # Seed normal user
-            logger.info("\n" + "="*60)
-            logger.info("👤 SEEDING NORMAL USER")
-            logger.info("="*60)
-            self.seed_normal_user(
-                email="test@nxtwave.co.in",
-                password="12345678",
-                name="Test User"
-            )
-            
-            logger.info("\n✅ Database seeding completed successfully!")
+            logger.info("Starting database seeding...")
+
+            for seed_user in DEFAULT_SEED_USERS:
+                logger.info("\n%s", "=" * 60)
+                logger.info(
+                    "SEEDING %s USER: %s",
+                    seed_user["role"].upper(),
+                    seed_user["email"],
+                )
+                logger.info("%s", "=" * 60)
+                self.seed_user(seed_user)
+
+            logger.info("\nDatabase seeding completed successfully!")
             return True
         except Exception as e:
-            logger.error(f"❌ Error during seeding: {str(e)}")
+            logger.error("Error during seeding: %s", str(e))
             raise

@@ -12,6 +12,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.models.user_model import CurrentUser
 from app.services.firebase import FirebaseService
+from app.services.registration_service import RegistrationService
 from app.services.user_service import UserService
 
 
@@ -112,13 +113,21 @@ def get_current_user(
                 detail="User not found in database",
             )
 
-        logger.debug(f"✅ User found: {user_data.get('email')} (role: {user_data.get('role')})")
+        approval_status = RegistrationService.resolve_approval_status(user_data)
+
+        logger.debug(
+            "User found: %s (role: %s, approval: %s)",
+            user_data.get("email"),
+            user_data.get("role"),
+            approval_status,
+        )
 
         return CurrentUser(
             user_id=user_id,
             email=user_data.get("email", ""),
-            role=user_data.get("role", "user"),
+            role=user_data.get("role", "student"),
             name=user_data.get("name", ""),
+            approval_status=approval_status,
         )
 
     except HTTPException:
@@ -159,6 +168,48 @@ def get_admin_user(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",
+        )
+    return current_user
+
+
+def get_active_user(
+    current_user: CurrentUser = Depends(get_current_user),
+) -> CurrentUser:
+    """
+    Dependency for routes that require an approved account.
+
+    Pending evaluators may authenticate but cannot use application features
+    until an admin approves their profile.
+    """
+    if current_user.role == "evaluator" and current_user.approval_status != "approved":
+        logger.warning(
+            "Blocked pending evaluator access attempt: %s",
+            current_user.user_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Evaluator account pending admin approval",
+        )
+    return current_user
+
+
+def get_active_user(
+    current_user: CurrentUser = Depends(get_current_user),
+) -> CurrentUser:
+    """
+    Dependency for routes that require an approved account.
+
+    Pending evaluators may authenticate but cannot use application features
+    until an admin approves their profile.
+    """
+    if current_user.role == "evaluator" and current_user.approval_status != "approved":
+        logger.warning(
+            "Blocked pending evaluator access attempt: %s",
+            current_user.user_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Evaluator account pending admin approval",
         )
     return current_user
 

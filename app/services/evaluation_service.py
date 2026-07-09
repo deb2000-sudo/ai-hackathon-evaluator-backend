@@ -358,13 +358,17 @@ class EvaluationService:
 
     def get_user_session(self, session_id: str, current_user: CurrentUser) -> dict[str, Any] | None:
         """
-        Fetch a session if it belongs to the current user or the user is an admin.
+        Fetch a session if it belongs to the current user, or the user is an
+        admin/evaluator.
         """
         session = self.firebase.get_document(self.collection, session_id)
         if not session:
             return None
 
-        if session.get("user_id") != current_user.user_id and current_user.role != "admin":
+        if session.get("user_id") != current_user.user_id and current_user.role not in (
+            "admin",
+            "evaluator",
+        ):
             return None
 
         return {"id": session_id, **session}
