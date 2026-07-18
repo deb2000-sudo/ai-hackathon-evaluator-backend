@@ -12,12 +12,15 @@ AUTH_COOKIE_NAME = "access_token"
 AUTH_COOKIE_MAX_AGE = 3600
 
 
-def _cookie_secure() -> bool:
-    return os.getenv("ENVIRONMENT", "development").lower() == "production"
-
-
 def _cookie_samesite() -> str:
-    return os.getenv("COOKIE_SAMESITE", "lax")
+    return os.getenv("COOKIE_SAMESITE", "lax").lower()
+
+
+def _cookie_secure() -> bool:
+    # Browsers require Secure when SameSite=None (cross-origin production).
+    if _cookie_samesite() == "none":
+        return True
+    return os.getenv("ENVIRONMENT", "development").lower() == "production"
 
 
 def set_auth_cookie(response: Response, id_token: str) -> None:

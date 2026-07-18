@@ -186,3 +186,15 @@ def get_active_user(
             detail="Evaluator account pending admin approval",
         )
     return current_user
+
+
+def get_student_user(
+    current_user: CurrentUser = Depends(get_active_user),
+) -> CurrentUser:
+    """Dependency for student-only routes (creating submissions)."""
+    if current_user.role != "student":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only students can create submissions",
+        )
+    return current_user

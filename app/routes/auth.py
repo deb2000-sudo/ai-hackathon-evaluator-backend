@@ -37,10 +37,11 @@ registration_service = RegistrationService()
 @router.post("/register/student", response_model=RegisterResponse, status_code=201)
 async def register_student(request: StudentRegisterRequest) -> RegisterResponse:
     """
-    Register a new student account.
+    Register a new student team account.
 
-    Required fields: first name, last name, NIAT ID, email, mobile number,
-    password, and confirm password.
+    Required: team name, university, theme (Theme 1–Theme 8), team leader name
+    and email, NIAT ID, mobile number, password, and at least two additional
+    team members (team size 3–5). Team members 3 and 4 are optional.
     """
     try:
         return registration_service.register_student(request)

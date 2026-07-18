@@ -27,33 +27,38 @@ class RegistrationService:
         self.user_service = UserService()
 
     def register_student(self, request: StudentRegisterRequest) -> RegisterResponse:
-        """Register a student account (immediately approved)."""
+        """Register a student team account (immediately approved)."""
         email = request.email.lower()
 
         self._ensure_email_available(email)
         self._ensure_unique_field("niat_id", request.niat_id, "NIAT ID")
+        self._ensure_team_emails_available(request)
 
-        full_name = self._full_name(request.first_name, request.last_name)
-        user_id = self._create_auth_user(email, request.password, full_name)
+        team_leader_name = request.team_leader_name.strip()
+        user_id = self._create_auth_user(email, request.password, team_leader_name)
 
         try:
             self.firebase.set_document(
                 "users",
                 user_id,
-                self._student_firestore_data(request, email, full_name),
+                self._student_firestore_data(request, email, team_leader_name),
             )
         except Exception:
             self._rollback_auth_user(user_id)
             raise
 
+        first_name, last_name = self._split_name(team_leader_name)
         return RegisterResponse(
             user_id=user_id,
             email=email,
-            first_name=request.first_name.strip(),
-            last_name=request.last_name.strip(),
+            first_name=first_name,
+            last_name=last_name,
             role="student",
             approval_status="approved",
-            message="Student registration successful. You can log in now.",
+            team_name=request.team_name.strip(),
+            university=request.university.strip(),
+            theme_chosen=request.theme_chosen,
+            message="Student team registration successful. You can log in now.",
         )
 
     def register_evaluator(self, request: EvaluatorRegisterRequest) -> RegisterResponse:
@@ -113,6 +118,24 @@ class RegistrationService:
         if self.user_service.find_by_field(field, value.strip()):
             raise ValueError(f"{label} is already registered")
 
+    def _ensure_team_emails_available(self, request: StudentRegisterRequest) -> None:
+        """Ensure member emails are not already used by another account."""
+        for member in request.team_members():
+            member_email = member.email.lower()
+            if self.firebase.get_user_by_email(member_email) or self.user_service.user_exists(
+                member_email
+            ):
+                raise ValueError(
+                    f"An account already exists for team member email: {member_email}"
+                )
+
+    @staticmethod
+    def _split_name(full_name: str) -> tuple[str, str]:
+        parts = full_name.strip().split(None, 1)
+        first_name = parts[0]
+        last_name = parts[1] if len(parts) > 1 else ""
+        return first_name, last_name
+
     @staticmethod
     def _full_name(first_name: str, last_name: str) -> str:
         return f"{first_name.strip()} {last_name.strip()}"
@@ -126,12 +149,22 @@ class RegistrationService:
         self,
         request: StudentRegisterRequest,
         email: str,
-        full_name: str,
+        team_leader_name: str,
     ) -> dict[str, Any]:
+        first_name, last_name = self._split_name(team_leader_name)
+        team_members = [
+            {"name": member.name, "email": member.email.lower()}
+            for member in request.team_members()
+        ]
         return {
-            "first_name": request.first_name.strip(),
-            "last_name": request.last_name.strip(),
-            "name": full_name,
+            "first_name": first_name,
+            "last_name": last_name,
+            "name": team_leader_name,
+            "team_leader_name": team_leader_name,
+            "team_name": request.team_name.strip(),
+            "university": request.university.strip(),
+            "theme_chosen": request.theme_chosen,
+            "team_members": team_members,
             "email": email,
             "niat_id": request.niat_id.strip(),
             "mobile_no": request.mobile_no.strip(),

@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 from typing import Any, Optional
 
-from app.models.user_model import ApprovalStatus, UserResponse, UserRole
+from app.models.user_model import ApprovalStatus, TeamMember, UserResponse, UserRole
 from app.services.firebase import FirebaseService
 
 
@@ -208,6 +208,15 @@ class UserService:
             niat_id=user_data.get("niat_id"),
             employee_id=user_data.get("employee_id"),
             mobile_no=user_data.get("mobile_no"),
+            team_name=user_data.get("team_name"),
+            university=user_data.get("university"),
+            theme_chosen=user_data.get("theme_chosen"),
+            team_leader_name=user_data.get("team_leader_name"),
+            team_members=[
+                TeamMember(name=member["name"], email=member["email"])
+                for member in user_data.get("team_members", [])
+            ]
+            or None,
             approval_status=approval_status,
             created_at=user_data.get("created_at"),
             updated_at=user_data.get("updated_at"),

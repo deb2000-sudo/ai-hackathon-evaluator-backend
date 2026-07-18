@@ -87,42 +87,40 @@ Pending evaluators can log in and call `GET /auth/me`, but other app routes retu
 | POST   | `/auth/login`                     | —     | Log in; token stored in HttpOnly cookie                 |
 | POST   | `/auth/logout`                    | —     | Clear session cookie                                    |
 | GET    | `/auth/me`                        | user  | Current user profile (includes `approval_status`)       |
-| POST   | `/upload-video`                   | user  | Upload a submission video → creates an evaluation session |
-| POST   | `/analyze-video`                  | user  | Start AI evaluation for an uploaded session (background) |
-| GET    | `/evaluations/{id}`               | user  | Poll status; returns the evaluation `result` when done  |
+| POST   | `/submissions`                    | student | Upload video + project details (creates submission)     |
+| GET    | `/submissions`                    | student | List the student's submissions                          |
+| GET    | `/submissions/{id}`               | user    | Get submission status / evaluation result               |
+| POST   | `/submissions/{id}/evaluate`      | student | Start AI evaluation (`evaluation_criteria` optional)    |
 | GET    | `/admin/users`                    | admin | List non-admin users                                    |
 | GET    | `/admin/evaluators/pending`       | admin | List evaluators awaiting approval                       |
 | GET    | `/admin/evaluators`               | admin | List all evaluators                                     |
 | POST   | `/admin/evaluators/{id}/approve`  | admin | Approve a pending evaluator                             |
 
-### Typical flow
+### Student submission flow
 
 ```bash
-# 1. Log in and persist the session cookie
+# 1. Log in (sets HttpOnly cookie)
 curl -X POST http://localhost:8000/auth/login \
   -H "Content-Type: application/json" \
   -c cookies.txt \
   -d '{"email":"student@nxtwave.co.in","password":"12345678"}'
 
-# 2. Upload a submission video (cookie sent via -b)
-curl -X POST http://localhost:8000/upload-video \
+# 2. Create a submission (video + required project fields)
+curl -X POST http://localhost:8000/submissions \
   -b cookies.txt \
-  -F "video=@demo.mp4;type=video/mp4"
-# -> { "id": "<session_id>", "status": "uploaded", ... }
+  -F "video=@demo.webm;type=video/webm" \
+  -F "title=Neura CDN" \
+  -F "problem_statement=Building UI by hand is slow and inconsistent." \
+  -F "solution_description=Auto-generates reusable HTML/CSS components via CDN."
 
-# 3. Kick off analysis
-curl -X POST http://localhost:8000/analyze-video \
+# 3. Start AI evaluation (evaluation_criteria is optional)
+curl -X POST http://localhost:8000/submissions/<submission_id>/evaluate \
   -b cookies.txt \
   -H "Content-Type: application/json" \
-  -d '{
-        "session_id":"<session_id>",
-        "problem_statement":"Building UI components by hand is slow and inconsistent.",
-        "solution_description":"Neura CDN auto-generates reusable HTML/CSS components and serves them via CDN."
-      }'
-# -> { "status": "processing", ... }
+  -d '{}'
 
 # 4. Poll for the result
-curl http://localhost:8000/evaluations/<session_id> \
+curl http://localhost:8000/submissions/<submission_id> \
   -b cookies.txt
 # -> { "status": "completed",
 #      "result": { "overall_score": 82, "criteria": {...},
@@ -133,6 +131,20 @@ curl http://localhost:8000/evaluations/<session_id> \
 `problem_statement` / `solution_description` are optional — omit them to judge the
 video against a generic hackathon rubric. You can also pass a freeform
 `"criteria"` string to focus the evaluation.
+
+## Production (cross-origin frontend)
+
+When the Vercel frontend calls the Cloud Run API, HttpOnly cookie auth requires:
+
+| Setting | Cloud Run value |
+|---|---|
+| `ENVIRONMENT` | `production` (sets `Secure` on cookies) |
+| `COOKIE_SAMESITE` | `none` |
+| `ALLOWED_ORIGINS` | Your frontend URL, e.g. `https://ai-hackathon-evaluator.vercel.app` |
+
+These are set in `cloudbuild.yaml` for deploy. CORS uses `allow_credentials=True` with an explicit origin (never `*`).
+
+The frontend must send requests with `credentials: "include"`.
 
 ## Configuration
 
@@ -151,11 +163,11 @@ app/
 ├── routes/
 │   ├── auth.py             # /auth
 │   ├── admin.py            # /admin
-│   └── evaluation.py       # /upload-video, /analyze-video, /evaluations/{id}
+│   └── submissions.py      # /submissions (student upload & evaluate)
 ├── services/
 │   ├── firebase.py         # Firebase Admin singleton (Auth + Firestore)
 │   ├── user_service.py     # user Firestore operations
-│   └── evaluation_service.py # GCS upload + Gemini evaluation
+│   └── submission_service.py # GCS upload + Gemini evaluation
 └── utils/
     ├── seeder.py           # default admin + test user
     └── validators.py

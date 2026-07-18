@@ -9,7 +9,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.routes import admin, auth, evaluation
+from app.routes import admin, auth, submissions
+from app.utils.cors_config import get_allowed_origins
 from app.utils.seeder import DatabaseSeeder
 
 
@@ -52,16 +53,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS middleware
+# CORS: credentials + explicit origins required for cross-origin HttpOnly cookies.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:8000",
-        "http://localhost:8080",
-        "http://localhost:5173",
-        "https://ai-hackathon-evaluator.vercel.app",
-    ],
+    allow_origins=get_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -81,7 +76,7 @@ async def health_check():
 # Include routers
 app.include_router(auth.router)
 app.include_router(admin.router)
-app.include_router(evaluation.router)
+app.include_router(submissions.router)
 
 
 # ==================== Error Handlers ====================

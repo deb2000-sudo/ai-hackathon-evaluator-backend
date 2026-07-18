@@ -1,5 +1,12 @@
 steps:
-  # Step 1: Build Docker image
+  # Step 1: Ensure Artifact Registry repository exists (required before first push)
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: bash
+    args:
+      - '-c'
+      - 'gcloud artifacts repositories describe ai-hackathon-evaluator-backend --location=asia-south1 || gcloud artifacts repositories create ai-hackathon-evaluator-backend --repository-format=docker --location=asia-south1 --description="Docker repository for AI Hackathon Evaluator Backend"'
+
+  # Step 2: Build Docker image
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'build'
@@ -9,20 +16,20 @@ steps:
       - 'asia-south1-docker.pkg.dev/$PROJECT_ID/ai-hackathon-evaluator-backend/ai-hackathon-evaluator-backend:latest'
       - '.'
 
-  # Step 2: Push image to Artifact Registry
+  # Step 3: Push image to Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'push'
       - 'asia-south1-docker.pkg.dev/$PROJECT_ID/ai-hackathon-evaluator-backend/ai-hackathon-evaluator-backend:$SHORT_SHA'
 
-  # Step 3: Ensure submission-video bucket exists
+  # Step 4: Ensure submission-video bucket exists
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: bash
     args:
       - '-c'
       - 'gcloud storage buckets describe gs://$PROJECT_ID-hackathon-evaluations || gcloud storage buckets create gs://$PROJECT_ID-hackathon-evaluations --location=us-central1 --uniform-bucket-level-access'
 
-  # Step 4: Deploy to Cloud Run
+  # Step 5: Deploy to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args:
@@ -33,7 +40,7 @@ steps:
       - '--region=asia-south1'
       - '--allow-unauthenticated'
       - '--update-secrets=FIREBASE_PROJECT_ID=FIREBASE_PROJECT_ID:latest,FIREBASE_PRIVATE_KEY=FIREBASE_PRIVATE_KEY:latest,FIREBASE_CLIENT_EMAIL=FIREBASE_CLIENT_EMAIL:latest,FIREBASE_WEB_API_KEY=FIREBASE_WEB_API_KEY:latest,FIREBASE_DATABASE_URL=FIREBASE_DATABASE_URL:latest'
-      - '--set-env-vars=ENVIRONMENT=production,DEBUG=false,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=us-central1,EVALUATION_BUCKET_NAME=$PROJECT_ID-hackathon-evaluations,GEMINI_MODEL=gemini-2.5-flash,COOKIE_SAMESITE=none'
+      - '--set-env-vars=ENVIRONMENT=production,DEBUG=false,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=global,EVALUATION_BUCKET_NAME=$PROJECT_ID-hackathon-evaluations,GEMINI_MODEL=gemini-3.5-flash,GEMINI_ENTERPRISE=true,COOKIE_SAMESITE=none,ALLOWED_ORIGINS=https://ai-hackathon-evaluator.vercel.app'
       - '--memory=1Gi'
       - '--cpu=1'
       - '--timeout=3600'

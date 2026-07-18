@@ -6,12 +6,17 @@ import logging
 from datetime import datetime
 from typing import Any, NotRequired, TypedDict
 
-from app.models.user_model import ApprovalStatus, UserRole
+from app.models.user_model import ApprovalStatus, ThemeChosen, UserRole
 from app.services.firebase import FirebaseService
 from app.services.user_service import UserService
 
 
 logger = logging.getLogger(__name__)
+
+
+class TeamMemberSeed(TypedDict):
+    name: str
+    email: str
 
 
 class SeedUser(TypedDict):
@@ -24,6 +29,11 @@ class SeedUser(TypedDict):
     employee_id: str | None
     mobile_no: str | None
     approval_status: NotRequired[ApprovalStatus]
+    team_name: NotRequired[str]
+    university: NotRequired[str]
+    theme_chosen: NotRequired[ThemeChosen]
+    team_leader_name: NotRequired[str]
+    team_members: NotRequired[list[TeamMemberSeed]]
 
 
 # Sample users aligned with registration profile fields.
@@ -70,6 +80,14 @@ DEFAULT_SEED_USERS: list[SeedUser] = [
         "niat_id": "NIAT-2026-001",
         "employee_id": None,
         "mobile_no": "9876543210",
+        "team_name": "Code Catalysts",
+        "university": "NIAT University",
+        "theme_chosen": "Theme 3",
+        "team_leader_name": "Aarav Patel",
+        "team_members": [
+            {"name": "Isha Gupta", "email": "isha.gupta@example.com"},
+            {"name": "Rohan Mehta", "email": "rohan.mehta@example.com"},
+        ],
     },
 ]
 
@@ -90,7 +108,7 @@ class DatabaseSeeder:
         Create or sync a user with the given role profile.
         """
         email = seed["email"].lower()
-        name = self._full_name(seed)
+        name = self._display_name(seed)
         role = seed["role"]
 
         try:
@@ -137,15 +155,29 @@ class DatabaseSeeder:
     def _full_name(seed: SeedUser) -> str:
         return f"{seed['first_name'].strip()} {seed['last_name'].strip()}"
 
+    @classmethod
+    def _display_name(cls, seed: SeedUser) -> str:
+        if seed["role"] == "student" and seed.get("team_leader_name"):
+            return seed["team_leader_name"].strip()
+        return cls._full_name(seed)
+
+    @classmethod
+    def _leader_name_parts(cls, seed: SeedUser) -> tuple[str, str]:
+        if seed["role"] == "student" and seed.get("team_leader_name"):
+            parts = seed["team_leader_name"].strip().split(None, 1)
+            return parts[0], parts[1] if len(parts) > 1 else ""
+        return seed["first_name"].strip(), seed["last_name"].strip()
+
     def _build_profile(self, seed: SeedUser, created_at: str | None = None) -> dict[str, Any]:
         """
         Build a Firestore user document using the same fields as registration.
         """
         now = datetime.utcnow().isoformat()
+        first_name, last_name = self._leader_name_parts(seed)
         profile: dict[str, Any] = {
-            "first_name": seed["first_name"].strip(),
-            "last_name": seed["last_name"].strip(),
-            "name": self._full_name(seed),
+            "first_name": first_name,
+            "last_name": last_name,
+            "name": self._display_name(seed),
             "email": seed["email"].lower(),
             "role": seed["role"],
             "created_at": created_at or now,
@@ -160,6 +192,19 @@ class DatabaseSeeder:
         if seed["role"] == "student":
             profile["niat_id"] = seed["niat_id"]
             profile["mobile_no"] = seed["mobile_no"]
+            if seed.get("team_name"):
+                profile["team_name"] = seed["team_name"].strip()
+            if seed.get("university"):
+                profile["university"] = seed["university"].strip()
+            if seed.get("theme_chosen"):
+                profile["theme_chosen"] = seed["theme_chosen"]
+            if seed.get("team_leader_name"):
+                profile["team_leader_name"] = seed["team_leader_name"].strip()
+            if seed.get("team_members"):
+                profile["team_members"] = [
+                    {"name": member["name"].strip(), "email": member["email"].lower()}
+                    for member in seed["team_members"]
+                ]
         elif seed["role"] == "evaluator":
             profile["employee_id"] = seed["employee_id"]
         elif seed["role"] == "admin" and seed["employee_id"]:
