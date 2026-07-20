@@ -40,7 +40,7 @@ steps:
       - '--region=asia-south1'
       - '--allow-unauthenticated'
       - '--update-secrets=FIREBASE_PROJECT_ID=FIREBASE_PROJECT_ID:latest,FIREBASE_PRIVATE_KEY=FIREBASE_PRIVATE_KEY:latest,FIREBASE_CLIENT_EMAIL=FIREBASE_CLIENT_EMAIL:latest,FIREBASE_WEB_API_KEY=FIREBASE_WEB_API_KEY:latest,FIREBASE_DATABASE_URL=FIREBASE_DATABASE_URL:latest'
-      - '--set-env-vars=ENVIRONMENT=production,DEBUG=false,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=global,EVALUATION_BUCKET_NAME=$PROJECT_ID-hackathon-evaluations,GEMINI_MODEL=gemini-3.5-flash,GEMINI_ENTERPRISE=true,COOKIE_SAMESITE=none,ALLOWED_ORIGINS=https://ai-hackathon-evaluator.vercel.app'
+      - '--set-env-vars=ENVIRONMENT=production,DEBUG=false,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=global,EVALUATION_BUCKET_NAME=$PROJECT_ID-hackathon-evaluations,GEMINI_MODEL=gemini-3.5-flash,GEMINI_ENTERPRISE=true,COOKIE_SAMESITE=none,ALLOWED_ORIGINS=https://hackniat.vercel.app'
       - '--memory=1Gi'
       - '--cpu=1'
       - '--timeout=3600'
