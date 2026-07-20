@@ -14,7 +14,7 @@ DEFAULT_DEV_ORIGINS = [
 
 # Fallback when ALLOWED_ORIGINS is not set in production.
 DEFAULT_PROD_ORIGINS = [
-    "https://ai-hackathon-evaluator.vercel.app",
+    "https://hackniat.vercel.app",
 ]
 
 
