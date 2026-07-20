@@ -135,6 +135,29 @@ class FirebaseService:
             logger.error(f"Error deleting user {user_id}: {str(e)}")
             raise Exception(f"Error deleting user: {str(e)}")
 
+    def update_user_password(self, user_id: str, new_password: str) -> bool:
+        """
+        Update a Firebase user's password.
+
+        Args:
+            user_id: User ID whose password should be changed
+            new_password: The new plaintext password
+
+        Returns:
+            True if successful
+        """
+        try:
+            self._auth.update_user(user_id, password=new_password)
+            logger.info(f"Password updated for user: {user_id}")
+            return True
+        except auth.UserNotFoundError:
+            raise ValueError("User not found")
+        except ValueError as e:
+            raise ValueError(str(e))
+        except Exception as e:
+            logger.error(f"Error updating password for user {user_id}: {str(e)}")
+            raise Exception(f"Error updating password: {str(e)}")
+
     def verify_id_token(self, token: str) -> dict[str, Any]:
         """
         Verify Firebase ID token

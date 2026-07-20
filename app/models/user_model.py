@@ -210,6 +210,19 @@ class LoginRequest(BaseModel):
     password: str = Field(..., min_length=6)
 
 
+class ChangePasswordRequest(BaseModel):
+    """Schema for changing the authenticated user's password."""
+
+    new_password: str = Field(..., min_length=6, max_length=128)
+    confirm_new_password: str = Field(..., min_length=6, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_passwords_match(self) -> "ChangePasswordRequest":
+        if self.new_password != self.confirm_new_password:
+            raise ValueError("New password and confirm new password do not match")
+        return self
+
+
 class LoginResponse(BaseModel):
     """Schema for login response (token is stored in an HttpOnly cookie)."""
 

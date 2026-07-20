@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 
 from app.middleware.auth_middleware import get_current_user
 from app.models.user_model import (
+    ChangePasswordRequest,
     CurrentUser,
     EvaluatorRegisterRequest,
     LoginRequest,
@@ -184,6 +185,40 @@ async def login(request: LoginRequest) -> JSONResponse:
 async def logout() -> JSONResponse:
     """Clear the HttpOnly session cookie."""
     response = JSONResponse(content={"message": "Logged out successfully"})
+    clear_auth_cookie(response)
+    return response
+
+
+@router.post("/change-password", status_code=200)
+async def change_password(
+    request: ChangePasswordRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> JSONResponse:
+    """
+    Change the authenticated user's password.
+
+    Works for every role (admin, evaluator, student). Requires a valid session
+    (HttpOnly cookie or Bearer token). The two password fields must match; this
+    is validated by the request schema. On success the session cookie is
+    cleared so the user must sign in again with the new password.
+    """
+    try:
+        firebase.update_user_password(current_user.user_id, request.new_password)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
+    except Exception as e:
+        logger.error("Change password error: %s", str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to change password",
+        ) from e
+
+    response = JSONResponse(
+        content={"message": "Password changed successfully. Please log in again."}
+    )
     clear_auth_cookie(response)
     return response
 
