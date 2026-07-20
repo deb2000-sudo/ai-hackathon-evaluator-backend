@@ -10,6 +10,7 @@ DEFAULT_DEV_ORIGINS = [
     "http://localhost:8000",
     "http://localhost:8080",
     "http://localhost:5173",
+    "https://hackniat.vercel.app",
 ]
 
 # Fallback when ALLOWED_ORIGINS is not set in production.
