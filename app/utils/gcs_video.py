@@ -10,6 +10,7 @@ from typing import Iterator
 
 from google.cloud import storage
 from google.cloud.storage.blob import Blob
+from google.oauth2 import service_account
 from starlette.responses import StreamingResponse
 
 
@@ -25,6 +26,52 @@ def parse_gs_uri(gs_uri: str) -> tuple[str, str]:
     if not match:
         raise ValueError(f"Invalid GCS URI: {gs_uri}")
     return match.group(1), match.group(2)
+
+
+def build_storage_client(project: str | None) -> storage.Client:
+    """
+    Build a GCS client, reusing the Firebase service-account env vars when
+    available (same pattern used across services).
+    """
+    firebase_private_key = os.getenv("FIREBASE_PRIVATE_KEY")
+    firebase_client_email = os.getenv("FIREBASE_CLIENT_EMAIL")
+
+    if firebase_private_key and firebase_client_email:
+        credentials = service_account.Credentials.from_service_account_info(
+            {
+                "type": "service_account",
+                "project_id": project,
+                "private_key": firebase_private_key.replace("\\n", "\n"),
+                "client_email": firebase_client_email,
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        )
+        return storage.Client(project=project, credentials=credentials)
+
+    return storage.Client(project=project)
+
+
+def generate_signed_url(
+    client: storage.Client,
+    gs_uri: str,
+    expiry_seconds: int | None = None,
+) -> str | None:
+    """Return a time-limited HTTPS URL for any GCS object (generic)."""
+    try:
+        bucket_name, object_name = parse_gs_uri(gs_uri)
+        blob = client.bucket(bucket_name).blob(object_name)
+        if not blob.exists():
+            logger.warning("GCS object not found: %s", gs_uri)
+            return None
+
+        return blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(seconds=expiry_seconds or signed_url_expiry_seconds()),
+            method="GET",
+        )
+    except Exception as e:
+        logger.error("Failed to generate signed URL for %s: %s", gs_uri, str(e))
+        return None
 
 
 def signed_url_expiry_seconds() -> int:

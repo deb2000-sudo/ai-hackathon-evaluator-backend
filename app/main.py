@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.routes import admin, auth, submissions
+from app.routes import admin, auth, hackathon, submissions
 from app.utils.cors_config import get_allowed_origins
 from app.utils.seeder import DatabaseSeeder
 
@@ -77,6 +77,7 @@ async def health_check():
 app.include_router(auth.router)
 app.include_router(admin.router)
 app.include_router(submissions.router)
+app.include_router(hackathon.router)
 
 
 # ==================== Error Handlers ====================
