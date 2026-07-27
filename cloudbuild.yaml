@@ -22,12 +22,25 @@ steps:
       - 'push'
       - 'asia-south1-docker.pkg.dev/$PROJECT_ID/ai-hackathon-evaluator-backend/ai-hackathon-evaluator-backend:$SHORT_SHA'
 
-  # Step 4: Ensure submission-video bucket exists
+  # Step 4: Ensure submission-video bucket exists (+ CORS for browser PUT uploads)
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: bash
     args:
       - '-c'
-      - 'gcloud storage buckets describe gs://$PROJECT_ID-hackathon-evaluations || gcloud storage buckets create gs://$PROJECT_ID-hackathon-evaluations --location=us-central1 --uniform-bucket-level-access'
+      - |
+        BUCKET=gs://$PROJECT_ID-hackathon-evaluations
+        gcloud storage buckets describe "$BUCKET" || gcloud storage buckets create "$BUCKET" --location=us-central1 --uniform-bucket-level-access
+        cat > /tmp/cors.json <<'EOF'
+        [
+          {
+            "origin": ["https://hackniat.vercel.app", "http://localhost:3000", "http://localhost:5173"],
+            "method": ["GET", "PUT", "HEAD", "OPTIONS"],
+            "responseHeader": ["Content-Type", "Content-Length", "x-goog-resumable"],
+            "maxAgeSeconds": 3600
+          }
+        ]
+        EOF
+        gcloud storage buckets update "$BUCKET" --cors-file=/tmp/cors.json
 
   # Step 5: Deploy to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'

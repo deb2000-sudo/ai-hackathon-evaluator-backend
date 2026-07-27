@@ -20,10 +20,14 @@ from app.services.theme_service import ThemeService
 from app.services.user_service import UserService
 from app.utils.gcs_video import (
     build_video_streaming_response,
+    generate_signed_upload_url,
     generate_signed_video_url,
     parse_gs_uri,
 )
-from app.utils.video_upload import resolve_video_content_type
+from app.utils.video_upload import (
+    resolve_video_content_type,
+    resolve_video_content_type_from_metadata,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -134,6 +138,7 @@ class SubmissionService:
         solution_description: str,
         hackathon_id: str,
         theme_id: str,
+        video_source: str | None = None,
     ) -> dict[str, Any]:
         """Upload a student video and create a submission document."""
         self._validate_configuration()
@@ -172,6 +177,8 @@ class SubmissionService:
 
         self._upload_bytes(object_name, video_bytes, resolved_type)
 
+        source = video_source if video_source in ("recorded", "uploaded") else None
+
         submission = {
             "student_id": student.user_id,
             "hackathon_id": hackathon_id.strip(),
@@ -186,6 +193,173 @@ class SubmissionService:
             "video_path": video_path,
             "content_type": resolved_type,
             "source_filename": filename,
+            "video_source": source,
+            "analysis_id": None,
+            "report_published": False,
+            "published_at": None,
+            "published_by": None,
+            "assigned_evaluator_id": None,
+            "assigned_evaluator_name": None,
+            "assigned_at": None,
+            "assigned_by": None,
+            "analyzed_by": None,
+            "review_status": "none",
+            "final_score": None,
+            "evaluator_notes": None,
+            "submitted_for_review_at": None,
+            "submitted_for_review_by": None,
+            "reviewed_at": None,
+            "reviewed_by": None,
+            "review_notes": None,
+            "error": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+        self.firebase.set_document(self.collection, submission_id, submission)
+        return {
+            "id": submission_id,
+            **submission,
+            "message": (
+                "Your submission has been recorded successfully. "
+                "You will receive the evaluation result once an evaluator finishes "
+                "review and the admin approves the final score."
+            ),
+        }
+
+    def prepare_direct_upload(
+        self,
+        student: CurrentUser,
+        filename: str,
+        content_type: str | None = None,
+        video_source: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Mint a signed PUT URL so the browser uploads the video straight to GCS.
+
+        Works for both in-browser recordings and local file picks. Avoids Cloud
+        Run's HTTP/1 32 MiB request-body limit (413 Content Too Large).
+        """
+        from app.utils.video_upload import MAX_VIDEO_UPLOAD_BYTES
+
+        self._validate_configuration()
+
+        resolved_type, extension = resolve_video_content_type_from_metadata(
+            content_type,
+            filename,
+        )
+        submission_id = uuid.uuid4().hex
+        object_name = (
+            f"submissions/{student.user_id}/{submission_id}/video{extension}"
+        )
+        video_path = f"gs://{self.bucket_name}/{object_name}"
+        expires_in = int(os.getenv("VIDEO_UPLOAD_URL_EXPIRY_SECONDS", "1800"))
+        source = video_source if video_source in ("recorded", "uploaded") else None
+
+        upload_url = generate_signed_upload_url(
+            self._storage_client(),
+            self.bucket_name,
+            object_name,
+            resolved_type,
+            expiry_seconds=expires_in,
+        )
+
+        return {
+            "upload_url": upload_url,
+            "video_path": video_path,
+            "object_name": object_name,
+            "content_type": resolved_type,
+            "source_filename": filename,
+            "video_source": source,
+            "expires_in_seconds": expires_in,
+            "max_upload_bytes": MAX_VIDEO_UPLOAD_BYTES,
+        }
+
+    def create_submission_from_upload(
+        self,
+        student: CurrentUser,
+        video_path: str,
+        content_type: str,
+        source_filename: str,
+        problem_statement: str,
+        solution_description: str,
+        hackathon_id: str,
+        theme_id: str,
+        video_source: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a submission after the video was uploaded via signed URL."""
+        self._validate_configuration()
+
+        hackathon = self.hackathon_service.get_hackathon(hackathon_id.strip())
+        if not hackathon:
+            raise ValueError("Hackathon not found")
+
+        theme_id = theme_id.strip()
+        released_theme_ids = hackathon.get("theme_ids") or []
+        if theme_id not in released_theme_ids:
+            raise ValueError(
+                "Selected theme is not released for this hackathon. "
+                "Choose a theme from the hackathon's theme list."
+            )
+
+        theme = self.theme_service.get_theme(theme_id)
+        if not theme:
+            raise ValueError("Theme not found")
+
+        resolved_type, extension = resolve_video_content_type_from_metadata(
+            content_type,
+            source_filename,
+        )
+
+        video_path = video_path.strip()
+        try:
+            bucket_name, object_name = parse_gs_uri(video_path)
+        except ValueError as e:
+            raise ValueError("Invalid video_path") from e
+
+        expected_prefix = f"submissions/{student.user_id}/"
+        if bucket_name != self.bucket_name:
+            raise ValueError("video_path does not belong to the evaluation bucket")
+        if not object_name.startswith(expected_prefix):
+            raise ValueError("video_path is not owned by the current student")
+        if not object_name.endswith(f"/video{extension}"):
+            raise ValueError("video_path does not match the expected upload object")
+
+        blob = self._storage_client().bucket(bucket_name).blob(object_name)
+        if not blob.exists():
+            raise ValueError(
+                "Video has not been uploaded yet. "
+                "PUT the file to the signed upload_url first."
+            )
+
+        # Prefer the path segment as the stable submission id.
+        parts = object_name.split("/")
+        # submissions/{student_id}/{submission_id}/video.ext
+        submission_id = parts[2] if len(parts) >= 4 else uuid.uuid4().hex
+
+        existing = self.firebase.get_document(self.collection, submission_id)
+        if existing:
+            raise ValueError("A submission already exists for this uploaded video")
+
+        team_name = self._resolve_student_team_name(student.user_id)
+        now = datetime.utcnow().isoformat()
+        source = video_source if video_source in ("recorded", "uploaded") else None
+
+        submission = {
+            "student_id": student.user_id,
+            "hackathon_id": hackathon_id.strip(),
+            "hackathon_name": hackathon["name"],
+            "team_name": team_name,
+            "theme_id": theme_id,
+            "theme_name": theme["name"],
+            "problem_statement": problem_statement.strip(),
+            "solution_description": solution_description.strip(),
+            "evaluation_criteria": None,
+            "status": "uploaded",
+            "video_path": video_path,
+            "content_type": resolved_type,
+            "source_filename": source_filename,
+            "video_source": source,
             "analysis_id": None,
             "report_published": False,
             "published_at": None,
@@ -885,6 +1059,7 @@ class SubmissionService:
         enriched.setdefault("reviewed_at", None)
         enriched.setdefault("reviewed_by", None)
         enriched.setdefault("review_notes", None)
+        enriched.setdefault("video_source", None)
 
         # Backfill hackathon fields for older submissions that predate the link.
         if not enriched.get("hackathon_id"):

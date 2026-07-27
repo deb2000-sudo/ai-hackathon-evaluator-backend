@@ -1,7 +1,10 @@
 """
 Student submission routes.
 
-    POST   /submissions                 -> student uploads (no analysis triggered)
+    POST   /submissions                 -> student multipart upload (≤ ~32 MiB on Cloud Run)
+    POST   /submissions/upload-url      -> student: signed PUT URL (record OR local file)
+    POST   /submissions/from-upload     -> student: finalize after direct GCS upload
+    GET    /submissions/accepted-video-types -> allowed MIME/ext for Record + Upload UI
     GET    /submissions                 -> student lists their own submissions
     GET    /submissions/admin/hackathons              -> admin: hackathons + submission counts
     GET    /submissions/admin/hackathons/{hackathon_id} -> admin: submissions for one hackathon
@@ -45,12 +48,16 @@ from app.middleware.auth_middleware import (
 )
 from app.models.analysis_model import AnalysisReportResponse, AnalysisResponse
 from app.models.submission_model import (
+    AcceptedVideoTypesResponse,
     ApproveEvaluationRequest,
     AssignEvaluatorRequest,
+    CreateSubmissionFromUploadRequest,
     DivideEquallyRequest,
     DivideEquallyResponse,
     EvaluateSubmissionRequest,
     HackathonSubmissionSummary,
+    PrepareUploadRequest,
+    PrepareUploadResponse,
     PublishReportRequest,
     RequestChangesRequest,
     SubmissionResponse,
@@ -58,7 +65,10 @@ from app.models.submission_model import (
 )
 from app.models.user_model import CurrentUser
 from app.services.submission_service import SubmissionService
-from app.utils.video_upload import resolve_video_content_type
+from app.utils.video_upload import (
+    accepted_video_types_payload,
+    resolve_video_content_type,
+)
 
 
 router = APIRouter(prefix="/submissions", tags=["submissions"])
@@ -106,7 +116,7 @@ def _http_from_value_error(e: ValueError) -> HTTPException:
 
 @router.post("", response_model=SubmissionResponse, status_code=201)
 async def create_submission(
-    video: UploadFile = File(..., description="Hackathon demo / screen recording"),
+    video: UploadFile = File(..., description="Recorded demo or local video file"),
     hackathon_id: str = Form(..., min_length=1, description="Hackathon this submission belongs to"),
     theme_id: str = Form(
         ...,
@@ -115,14 +125,21 @@ async def create_submission(
     ),
     problem_statement: str = Form(..., min_length=1, max_length=5000),
     solution_description: str = Form(..., min_length=1, max_length=5000),
+    video_source: str | None = Form(
+        None,
+        description="'recorded' (MediaRecorder) or 'uploaded' (local file).",
+    ),
     student: CurrentUser = Depends(get_student_user),
 ) -> SubmissionResponse:
     """
-    Create a student submission: upload the video and store project details.
+    Create a student submission via multipart upload through Cloud Run.
 
-    Does **not** start AI analysis. Students are told the submission is recorded
-    and results will appear after the hackathon ends / admin publishes the report.
-    Requires ``hackathon_id`` and a ``theme_id`` from that hackathon's themes.
+    Accepts either an in-browser recording or a local file — both become a GCS
+    object under ``submissions/{student_id}/{id}/video.*``.
+
+    **Cloud Run limit:** HTTP/1 request bodies are capped at ~32 MiB. Larger
+    demos will get ``413 Content Too Large``. Prefer
+    ``POST /submissions/upload-url`` + ``POST /submissions/from-upload``.
     """
     video_bytes = await video.read()
 
@@ -153,6 +170,7 @@ async def create_submission(
             solution_description=solution_description,
             hackathon_id=hackathon_id,
             theme_id=theme_id,
+            video_source=video_source,
         )
     except ValueError as e:
         raise HTTPException(
@@ -163,6 +181,90 @@ async def create_submission(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Submission upload failed",
+        ) from e
+
+    return _to_submission_response(service, submission, current_user=student)
+
+
+@router.get("/accepted-video-types", response_model=AcceptedVideoTypesResponse)
+async def get_accepted_video_types(
+    _student: CurrentUser = Depends(get_student_user),
+) -> AcceptedVideoTypesResponse:
+    """
+    Constraints for the student Submit wizard (Record demo vs Upload video).
+
+    Use ``file_input_accept`` on ``<input type="file">`` and
+    ``max_upload_bytes`` for client-side size checks.
+    """
+    return AcceptedVideoTypesResponse(**accepted_video_types_payload())
+
+
+@router.post("/upload-url", response_model=PrepareUploadResponse)
+async def prepare_submission_upload(
+    request: PrepareUploadRequest,
+    student: CurrentUser = Depends(get_student_user),
+) -> PrepareUploadResponse:
+    """
+    Get a signed GCS PUT URL for a recorded blob or a local video file.
+
+    Same storage path either way. Use this instead of multipart when the video
+    may exceed Cloud Run's ~32 MiB limit.
+    """
+    try:
+        service = SubmissionService()
+        payload = service.prepare_direct_upload(
+            student=student,
+            filename=request.filename,
+            content_type=request.content_type,
+            video_source=request.video_source,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to prepare upload URL",
+        ) from e
+
+    return PrepareUploadResponse(**payload)
+
+
+@router.post("/from-upload", response_model=SubmissionResponse, status_code=201)
+async def create_submission_from_upload(
+    request: CreateSubmissionFromUploadRequest,
+    student: CurrentUser = Depends(get_student_user),
+) -> SubmissionResponse:
+    """
+    Finalize a submission after the video was PUT to the signed upload URL.
+
+    Verifies the GCS object exists under the student's prefix, then writes the
+    Firestore submission document. Works for both recorded and local uploads.
+    """
+    try:
+        service = SubmissionService()
+        submission = service.create_submission_from_upload(
+            student=student,
+            video_path=request.video_path,
+            content_type=request.content_type,
+            source_filename=request.source_filename,
+            problem_statement=request.problem_statement,
+            solution_description=request.solution_description,
+            hackathon_id=request.hackathon_id,
+            theme_id=request.theme_id,
+            video_source=request.video_source,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Submission finalize failed",
         ) from e
 
     return _to_submission_response(service, submission, current_user=student)

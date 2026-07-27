@@ -74,6 +74,27 @@ def generate_signed_url(
         return None
 
 
+def generate_signed_upload_url(
+    client: storage.Client,
+    bucket_name: str,
+    object_name: str,
+    content_type: str,
+    expiry_seconds: int = 1800,
+) -> str:
+    """
+    Return a v4 signed URL for a browser PUT directly to GCS.
+
+    The client must send the same ``Content-Type`` header when uploading.
+    """
+    blob = client.bucket(bucket_name).blob(object_name)
+    return blob.generate_signed_url(
+        version="v4",
+        expiration=timedelta(seconds=max(60, expiry_seconds)),
+        method="PUT",
+        content_type=content_type,
+    )
+
+
 def signed_url_expiry_seconds() -> int:
     raw = os.getenv("VIDEO_SIGNED_URL_EXPIRY_SECONDS", "3600")
     try:

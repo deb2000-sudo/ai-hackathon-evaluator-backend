@@ -12,6 +12,7 @@ from app.models.analysis_model import AnalysisSummary
 
 SubmissionStatus = Literal["uploaded", "processing", "completed", "failed"]
 ReviewStatus = Literal["none", "pending_review", "approved", "changes_requested"]
+VideoSource = Literal["recorded", "uploaded"]
 
 
 class HackathonSubmissionSummary(BaseModel):
@@ -23,6 +24,17 @@ class HackathonSubmissionSummary(BaseModel):
     end_date: str
     submission_count: int
     banner_url: Optional[str] = None
+
+
+class AcceptedVideoTypesResponse(BaseModel):
+    """Constraints for Record demo vs Upload from disk pickers."""
+
+    allowed_mime_types: list[str]
+    allowed_extensions: list[str]
+    file_input_accept: str
+    max_upload_bytes: int
+    sources: list[VideoSource]
+    note: str
 
 
 class SubmissionResponse(BaseModel):
@@ -96,6 +108,13 @@ class SubmissionResponse(BaseModel):
     )
     content_type: str
     source_filename: str
+    video_source: Optional[VideoSource] = Field(
+        None,
+        description=(
+            "How the demo was provided: 'recorded' (in-browser) or "
+            "'uploaded' (local file). Same GCS storage either way."
+        ),
+    )
     analysis: Optional[AnalysisSummary] = Field(
         None,
         description=(
@@ -205,4 +224,57 @@ class DivideEquallyResponse(BaseModel):
     assigned_count: int
     evaluator_count: int
     submissions: list[SubmissionResponse]
+
+
+class PrepareUploadRequest(BaseModel):
+    """Request a direct-to-GCS signed upload URL for a submission video."""
+
+    filename: str = Field(..., min_length=1, max_length=500)
+    content_type: Optional[str] = Field(
+        None,
+        max_length=200,
+        description=(
+            "Video MIME type (e.g. video/webm, video/mp4). "
+            "Optional for local file picks that omit type — resolved from filename."
+        ),
+    )
+    video_source: Optional[VideoSource] = Field(
+        None,
+        description="'recorded' for MediaRecorder blob, 'uploaded' for local file.",
+    )
+
+
+class PrepareUploadResponse(BaseModel):
+    """Signed PUT URL so the browser can upload video directly to GCS."""
+
+    upload_url: str = Field(
+        ...,
+        description="PUT the video bytes here. Must send the same Content-Type.",
+    )
+    video_path: str = Field(..., description="gs:// URI to pass when finalizing.")
+    object_name: str
+    content_type: str
+    source_filename: str
+    video_source: Optional[VideoSource] = None
+    expires_in_seconds: int
+    max_upload_bytes: int = Field(
+        ...,
+        description="Suggested client-side max size before rejecting the file.",
+    )
+
+
+class CreateSubmissionFromUploadRequest(BaseModel):
+    """Finalize a submission after the video was uploaded via signed URL."""
+
+    video_path: str = Field(..., min_length=1, description="gs:// URI from prepare-upload.")
+    content_type: str = Field(..., min_length=1)
+    source_filename: str = Field(..., min_length=1, max_length=500)
+    hackathon_id: str = Field(..., min_length=1)
+    theme_id: str = Field(..., min_length=1)
+    problem_statement: str = Field(..., min_length=1, max_length=5000)
+    solution_description: str = Field(..., min_length=1, max_length=5000)
+    video_source: Optional[VideoSource] = Field(
+        None,
+        description="'recorded' or 'uploaded' — same GCS path either way.",
+    )
 
