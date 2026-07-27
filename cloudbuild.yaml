@@ -23,13 +23,14 @@ steps:
       - 'asia-south1-docker.pkg.dev/$PROJECT_ID/ai-hackathon-evaluator-backend/ai-hackathon-evaluator-backend:$SHORT_SHA'
 
   # Step 4: Ensure submission-video bucket exists (+ CORS for browser PUT uploads)
+  # Note: bash vars must use $$ so Cloud Build does not treat them as substitutions.
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: bash
     args:
       - '-c'
       - |
         BUCKET=gs://$PROJECT_ID-hackathon-evaluations
-        gcloud storage buckets describe "$BUCKET" || gcloud storage buckets create "$BUCKET" --location=us-central1 --uniform-bucket-level-access
+        gcloud storage buckets describe "$$BUCKET" || gcloud storage buckets create "$$BUCKET" --location=us-central1 --uniform-bucket-level-access
         cat > /tmp/cors.json <<'EOF'
         [
           {
@@ -40,7 +41,7 @@ steps:
           }
         ]
         EOF
-        gcloud storage buckets update "$BUCKET" --cors-file=/tmp/cors.json
+        gcloud storage buckets update "$$BUCKET" --cors-file=/tmp/cors.json
 
   # Step 5: Deploy to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
