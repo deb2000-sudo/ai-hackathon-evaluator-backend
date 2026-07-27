@@ -9,7 +9,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.routes import admin, auth, hackathon, submissions
+from app.routes import (
+    admin,
+    auth,
+    evaluation_requirement,
+    hackathon,
+    metric_scoring,
+    submissions,
+    theme,
+)
 from app.utils.cors_config import get_allowed_origins
 from app.utils.seeder import DatabaseSeeder
 
@@ -78,6 +86,9 @@ app.include_router(auth.router)
 app.include_router(admin.router)
 app.include_router(submissions.router)
 app.include_router(hackathon.router)
+app.include_router(theme.router)
+app.include_router(evaluation_requirement.router)
+app.include_router(metric_scoring.router)
 
 
 # ==================== Error Handlers ====================

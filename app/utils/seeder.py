@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 from typing import Any, NotRequired, TypedDict
 
-from app.models.user_model import ApprovalStatus, ThemeChosen, UserRole
+from app.models.user_model import ApprovalStatus, UserRole
 from app.services.firebase import FirebaseService
 from app.services.user_service import UserService
 
@@ -31,7 +31,6 @@ class SeedUser(TypedDict):
     approval_status: NotRequired[ApprovalStatus]
     team_name: NotRequired[str]
     university: NotRequired[str]
-    theme_chosen: NotRequired[ThemeChosen]
     team_leader_name: NotRequired[str]
     team_members: NotRequired[list[TeamMemberSeed]]
 
@@ -82,7 +81,6 @@ DEFAULT_SEED_USERS: list[SeedUser] = [
         "mobile_no": "9876543210",
         "team_name": "Code Catalysts",
         "university": "NIAT University",
-        "theme_chosen": "Theme 3",
         "team_leader_name": "Aarav Patel",
         "team_members": [
             {"name": "Isha Gupta", "email": "isha.gupta@example.com"},
@@ -196,8 +194,6 @@ class DatabaseSeeder:
                 profile["team_name"] = seed["team_name"].strip()
             if seed.get("university"):
                 profile["university"] = seed["university"].strip()
-            if seed.get("theme_chosen"):
-                profile["theme_chosen"] = seed["theme_chosen"]
             if seed.get("team_leader_name"):
                 profile["team_leader_name"] = seed["team_leader_name"].strip()
             if seed.get("team_members"):

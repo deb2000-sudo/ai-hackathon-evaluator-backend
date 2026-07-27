@@ -13,8 +13,10 @@ from google.cloud import storage
 from google.genai import types
 from google.oauth2 import service_account
 
-from app.models.user_model import CurrentUser, ThemeChosen
+from app.models.user_model import CurrentUser
 from app.services.firebase import FirebaseService
+from app.services.hackathon_service import HackathonService
+from app.services.theme_service import ThemeService
 from app.services.user_service import UserService
 from app.utils.gcs_video import (
     build_video_streaming_response,
@@ -121,6 +123,8 @@ class SubmissionService:
         self.storage_client: storage.Client | None = None
         self.firebase = FirebaseService()
         self.user_service = UserService()
+        self.hackathon_service = HackathonService()
+        self.theme_service = ThemeService()
 
     def create_submission(
         self,
@@ -128,11 +132,29 @@ class SubmissionService:
         video: tuple[str, bytes, str],
         problem_statement: str,
         solution_description: str,
+        hackathon_id: str,
+        theme_id: str,
     ) -> dict[str, Any]:
         """Upload a student video and create a submission document."""
         self._validate_configuration()
 
-        team_name, theme_chosen = self._resolve_student_team_profile(student.user_id)
+        hackathon = self.hackathon_service.get_hackathon(hackathon_id.strip())
+        if not hackathon:
+            raise ValueError("Hackathon not found")
+
+        theme_id = theme_id.strip()
+        released_theme_ids = hackathon.get("theme_ids") or []
+        if theme_id not in released_theme_ids:
+            raise ValueError(
+                "Selected theme is not released for this hackathon. "
+                "Choose a theme from the hackathon's theme list."
+            )
+
+        theme = self.theme_service.get_theme(theme_id)
+        if not theme:
+            raise ValueError("Theme not found")
+
+        team_name = self._resolve_student_team_name(student.user_id)
 
         filename, video_bytes, content_type = video
         resolved_type, extension = resolve_video_content_type(
@@ -152,8 +174,11 @@ class SubmissionService:
 
         submission = {
             "student_id": student.user_id,
+            "hackathon_id": hackathon_id.strip(),
+            "hackathon_name": hackathon["name"],
             "team_name": team_name,
-            "theme_chosen": theme_chosen,
+            "theme_id": theme_id,
+            "theme_name": theme["name"],
             "problem_statement": problem_statement.strip(),
             "solution_description": solution_description.strip(),
             "evaluation_criteria": None,
@@ -162,13 +187,24 @@ class SubmissionService:
             "content_type": resolved_type,
             "source_filename": filename,
             "analysis_id": None,
+            "report_published": False,
+            "published_at": None,
+            "published_by": None,
             "error": None,
             "created_at": now,
             "updated_at": now,
         }
 
         self.firebase.set_document(self.collection, submission_id, submission)
-        return {"id": submission_id, **submission}
+        return {
+            "id": submission_id,
+            **submission,
+            "message": (
+                "Your submission has been recorded successfully. "
+                "You will receive the evaluation result once the hackathon ends "
+                "and the report is published by the admin."
+            ),
+        }
 
     def mark_queued_for_evaluation(
         self,
@@ -202,6 +238,10 @@ class SubmissionService:
             "analysis_id": analysis_id,
             "status": "processing",
             "error": None,
+            # Re-analysis invalidates any previously published report.
+            "report_published": False,
+            "published_at": None,
+            "published_by": None,
         }
         if evaluation_criteria is not None:
             submission_update["evaluation_criteria"] = criteria
@@ -362,19 +402,136 @@ class SubmissionService:
         )
         return submissions
 
-    def enrich_submission_for_response(self, submission: dict[str, Any]) -> dict[str, Any]:
+    def list_all_submissions(self) -> list[dict[str, Any]]:
+        """List every submission (admin review queue). Newest first."""
+        submissions = self.firebase.get_collection(self.collection)
+        submissions.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+        return submissions
+
+    def list_submissions_for_hackathon(self, hackathon_id: str) -> list[dict[str, Any]]:
+        """List all submissions for a specific hackathon. Newest first."""
+        submissions = self.firebase.query_collection(
+            self.collection,
+            "hackathon_id",
+            "==",
+            hackathon_id.strip(),
+        )
+        submissions.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+        return submissions
+
+    def list_hackathons_with_submission_counts(self) -> list[dict[str, Any]]:
+        """
+        Admin Submissions tab: every hackathon plus how many submissions it has.
+        """
+        hackathons = self.hackathon_service.list_hackathons()
+        submissions = self.firebase.get_collection(self.collection)
+
+        counts: dict[str, int] = {}
+        for submission in submissions:
+            hid = submission.get("hackathon_id")
+            if hid:
+                counts[hid] = counts.get(hid, 0) + 1
+
+        summaries: list[dict[str, Any]] = []
+        for hackathon in hackathons:
+            enriched = self.hackathon_service.enrich_hackathon_for_response(hackathon)
+            summaries.append(
+                {
+                    "hackathon_id": enriched["id"],
+                    "name": enriched["name"],
+                    "start_date": enriched["start_date"],
+                    "end_date": enriched["end_date"],
+                    "submission_count": counts.get(enriched["id"], 0),
+                    "banner_url": enriched.get("banner_url"),
+                }
+            )
+        return summaries
+
+    def publish_report(
+        self,
+        submission_id: str,
+        publish: bool,
+        admin_user_id: str,
+    ) -> dict[str, Any]:
+        """Publish or unpublish the analysis report for student viewing."""
+        submission = self.firebase.get_document(self.collection, submission_id)
+        if not submission:
+            raise ValueError("Submission not found")
+
+        if publish:
+            if submission.get("status") != "completed":
+                raise ValueError(
+                    "Report can only be published after analysis has completed"
+                )
+            analysis_id = submission.get("analysis_id")
+            if not analysis_id:
+                raise ValueError("No analysis linked to this submission")
+            analysis = self.firebase.get_document(self.analysis_collection, analysis_id)
+            if not analysis or analysis.get("status") != "completed":
+                raise ValueError("Analysis report is not ready to publish")
+
+            self._update_submission(
+                submission_id,
+                {
+                    "report_published": True,
+                    "published_at": datetime.utcnow().isoformat(),
+                    "published_by": admin_user_id,
+                },
+            )
+        else:
+            self._update_submission(
+                submission_id,
+                {
+                    "report_published": False,
+                    "published_at": None,
+                    "published_by": None,
+                },
+            )
+
+        updated = self.firebase.get_document(self.collection, submission_id)
+        if not updated:
+            raise ValueError("Submission not found")
+        return {"id": submission_id, **updated}
+
+    def student_can_view_report(self, submission: dict[str, Any]) -> bool:
+        """Students may only see the report after an admin publishes it."""
+        return bool(submission.get("report_published"))
+
+    def enrich_submission_for_response(
+        self,
+        submission: dict[str, Any],
+        current_user: CurrentUser | None = None,
+    ) -> dict[str, Any]:
         """Attach a browser-playable HTTPS URL alongside the internal gs:// path."""
         enriched = dict(submission)
+        enriched.setdefault("report_published", False)
+
+        # Backfill hackathon fields for older submissions that predate the link.
+        if not enriched.get("hackathon_id"):
+            enriched["hackathon_id"] = ""
+        if not enriched.get("hackathon_name"):
+            enriched["hackathon_name"] = "Unknown hackathon"
+            if enriched["hackathon_id"]:
+                hackathon = self.hackathon_service.get_hackathon(enriched["hackathon_id"])
+                if hackathon:
+                    enriched["hackathon_name"] = hackathon.get("name", "Unknown hackathon")
+
+        # Migrate legacy theme_chosen → theme_name for older submissions.
+        if not enriched.get("theme_id"):
+            enriched["theme_id"] = ""
+        if not enriched.get("theme_name"):
+            enriched["theme_name"] = enriched.get("theme_chosen") or "Unknown theme"
+            if enriched["theme_id"]:
+                theme = self.theme_service.get_theme(enriched["theme_id"])
+                if theme:
+                    enriched["theme_name"] = theme.get("name", "Unknown theme")
 
         if not enriched.get("team_name"):
             enriched["team_name"] = enriched.get("title")
-        if not enriched.get("team_name") or not enriched.get("theme_chosen"):
+        if not enriched.get("team_name"):
             profile = self.user_service.get_user(enriched.get("student_id", ""))
             if profile:
-                if not enriched.get("team_name"):
-                    enriched["team_name"] = profile.get("team_name")
-                if not enriched.get("theme_chosen"):
-                    enriched["theme_chosen"] = profile.get("theme_chosen")
+                enriched["team_name"] = profile.get("team_name")
 
         video_path = enriched.get("video_path")
         if video_path:
@@ -385,8 +542,13 @@ class SubmissionService:
         else:
             enriched["video_url"] = None
 
+        is_staff = bool(
+            current_user and current_user.role in ("admin", "evaluator")
+        )
+        can_see_analysis = is_staff or self.student_can_view_report(enriched)
+
         analysis_id = enriched.get("analysis_id")
-        if analysis_id:
+        if can_see_analysis and analysis_id:
             analysis_doc = self.firebase.get_document(self.analysis_collection, analysis_id)
             if analysis_doc and analysis_doc.get("status") == "completed":
                 enriched["analysis"] = {
@@ -395,10 +557,18 @@ class SubmissionService:
                     "report": analysis_doc["report"],
                     "analyzed_at": analysis_doc["analyzed_at"],
                 }
-        elif enriched.get("analysis") and isinstance(enriched["analysis"], dict):
+        elif can_see_analysis and enriched.get("analysis") and isinstance(
+            enriched["analysis"], dict
+        ):
             legacy = enriched["analysis"]
             if "id" not in legacy:
-                enriched["analysis"] = {**legacy, "id": enriched.get("analysis_id") or enriched["id"]}
+                enriched["analysis"] = {
+                    **legacy,
+                    "id": enriched.get("analysis_id") or enriched["id"],
+                }
+        else:
+            # Hide analysis content from students until the admin publishes.
+            enriched["analysis"] = None
 
         return enriched
 
@@ -483,8 +653,8 @@ class SubmissionService:
         data["updated_at"] = datetime.utcnow().isoformat()
         self.firebase.update_document(self.analysis_collection, analysis_id, data)
 
-    def _resolve_student_team_profile(self, student_id: str) -> tuple[str, ThemeChosen]:
-        """Load team_name and theme_chosen from the student's Firestore profile."""
+    def _resolve_student_team_name(self, student_id: str) -> str:
+        """Load team_name from the student's Firestore profile."""
         profile = self.user_service.get_user(student_id)
         if not profile:
             raise ValueError("Student profile not found")
@@ -492,18 +662,11 @@ class SubmissionService:
             raise ValueError("Only students can create submissions")
 
         team_name = (profile.get("team_name") or "").strip()
-        theme_chosen = profile.get("theme_chosen")
-
         if not team_name:
             raise ValueError(
                 "Team name is missing on your profile. Complete team registration first."
             )
-        if not theme_chosen:
-            raise ValueError(
-                "Theme is missing on your profile. Complete team registration first."
-            )
-
-        return team_name, theme_chosen
+        return team_name
 
     def _validate_configuration(self) -> None:
         missing = []

@@ -7,6 +7,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.models.theme_model import ThemeSummary
+
 
 class TimelineRound(BaseModel):
     """A single stage in the hackathon timeline (e.g. Round 1, Round 2)."""
@@ -15,6 +17,10 @@ class TimelineRound(BaseModel):
     description: Optional[str] = Field(None, max_length=2000)
     start_date: Optional[str] = None
     end_date: Optional[str] = None
+    evaluation_requirement_id: Optional[str] = Field(
+        None,
+        description="Id of a reusable evaluation requirement linked to this round.",
+    )
 
     @field_validator("start_date", "end_date")
     @classmethod
@@ -44,6 +50,11 @@ class HackathonCreateRequest(BaseModel):
     start_date: str
     end_date: str
     guidelines: str = Field(..., min_length=1, max_length=10000)
+    theme_ids: list[str] = Field(
+        ...,
+        min_length=1,
+        description="Ids of themes released for this hackathon (multi-select).",
+    )
     timeline: list[TimelineRound] = Field(default_factory=list)
     prizes: HackathonPrizes
 
@@ -71,6 +82,7 @@ class HackathonUpdateRequest(BaseModel):
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     guidelines: Optional[str] = Field(None, min_length=1, max_length=10000)
+    theme_ids: Optional[list[str]] = Field(None, min_length=1)
     timeline: Optional[list[TimelineRound]] = None
     prizes: Optional[HackathonPrizes] = None
 
@@ -95,6 +107,11 @@ class HackathonResponse(BaseModel):
     start_date: str
     end_date: str
     guidelines: str
+    theme_ids: list[str] = Field(default_factory=list)
+    themes: list[ThemeSummary] = Field(
+        default_factory=list,
+        description="Resolved theme objects released for this hackathon.",
+    )
     timeline: list[TimelineRound]
     prizes: HackathonPrizes
     banner_path: Optional[str] = Field(

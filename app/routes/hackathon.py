@@ -30,6 +30,7 @@ from app.models.hackathon_model import (
     HackathonUpdateRequest,
     TimelineRound,
 )
+from app.models.theme_model import ThemeResponse
 from app.models.user_model import CurrentUser
 from app.services.hackathon_service import HackathonService
 
@@ -74,6 +75,10 @@ async def create_hackathon(
         ...,
         description='JSON: {"winner": "...", "first_runner_up": "...", "second_runner_up": "..."}',
     ),
+    theme_ids: str = Form(
+        ...,
+        description='JSON array of theme ids, e.g. ["id1","id2"]',
+    ),
     timeline: str | None = Form(
         None,
         description='JSON array: [{"title": "Round 1", "description": "...", '
@@ -87,10 +92,11 @@ async def create_hackathon(
     """
     Create a hackathon. Admin only.
 
-    ``prizes`` and ``timeline`` are sent as JSON strings within the multipart
-    form; the banner image is an optional file part.
+    ``prizes``, ``theme_ids``, and ``timeline`` are sent as JSON strings within
+    the multipart form; the banner image is an optional file part.
     """
     prizes_data = _parse_json_field(prizes, "prizes", {})
+    theme_ids_data = _parse_json_field(theme_ids, "theme_ids", [])
     timeline_data = _parse_json_field(timeline, "timeline", [])
 
     try:
@@ -100,6 +106,7 @@ async def create_hackathon(
             start_date=start_date,
             end_date=end_date,
             guidelines=guidelines,
+            theme_ids=theme_ids_data,
             prizes=HackathonPrizes(**prizes_data),
             timeline=[TimelineRound(**item) for item in timeline_data],
         )
@@ -143,12 +150,32 @@ async def list_hackathons(
     return [_to_response(service, item) for item in hackathons]
 
 
+@router.get("/{hackathon_id}/themes", response_model=list[ThemeResponse])
+async def list_hackathon_themes(
+    hackathon_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> list[ThemeResponse]:
+    """
+    Themes released for this hackathon.
+
+    Students use this list on the submission form to pick a theme.
+    """
+    service = HackathonService()
+    themes = service.get_hackathon_themes(hackathon_id)
+    if themes is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Hackathon not found",
+        )
+    return [ThemeResponse(**item) for item in themes]
+
+
 @router.get("/{hackathon_id}", response_model=HackathonResponse)
 async def get_hackathon(
     hackathon_id: str,
     current_user: CurrentUser = Depends(get_current_user),
 ) -> HackathonResponse:
-    """Get a single hackathon by id."""
+    """Get a single hackathon by id (includes resolved ``themes``)."""
     service = HackathonService()
     hackathon = service.get_hackathon(hackathon_id)
     if not hackathon:
@@ -168,12 +195,14 @@ async def update_hackathon(
     end_date: str | None = Form(None),
     guidelines: str | None = Form(None, max_length=10000),
     prizes: str | None = Form(None),
+    theme_ids: str | None = Form(None, description='JSON array of theme ids'),
     timeline: str | None = Form(None),
     banner: UploadFile | None = File(None),
     admin: CurrentUser = Depends(get_admin_user),
 ) -> HackathonResponse:
     """Update a hackathon (partial). Admin only."""
     prizes_data = _parse_json_field(prizes, "prizes", None)
+    theme_ids_data = _parse_json_field(theme_ids, "theme_ids", None)
     timeline_data = _parse_json_field(timeline, "timeline", None)
 
     try:
@@ -183,6 +212,7 @@ async def update_hackathon(
             start_date=start_date,
             end_date=end_date,
             guidelines=guidelines,
+            theme_ids=theme_ids_data,
             prizes=HackathonPrizes(**prizes_data) if prizes_data is not None else None,
             timeline=(
                 [TimelineRound(**item) for item in timeline_data]

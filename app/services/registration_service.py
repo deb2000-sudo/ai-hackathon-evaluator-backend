@@ -57,7 +57,6 @@ class RegistrationService:
             approval_status="approved",
             team_name=request.team_name.strip(),
             university=request.university.strip(),
-            theme_chosen=request.theme_chosen,
             message="Student team registration successful. You can log in now.",
         )
 
@@ -163,7 +162,6 @@ class RegistrationService:
             "team_leader_name": team_leader_name,
             "team_name": request.team_name.strip(),
             "university": request.university.strip(),
-            "theme_chosen": request.theme_chosen,
             "team_members": team_members,
             "email": email,
             "niat_id": request.niat_id.strip(),

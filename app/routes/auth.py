@@ -40,9 +40,10 @@ async def register_student(request: StudentRegisterRequest) -> RegisterResponse:
     """
     Register a new student team account.
 
-    Required: team name, university, theme (Theme 1–Theme 8), team leader name
-    and email, NIAT ID, mobile number, password, and at least two additional
-    team members (team size 3–5). Team members 3 and 4 are optional.
+    Required: team name, university, team leader name and email, NIAT ID,
+    mobile number, password, and at least two additional team members
+    (team size 3–5). Team members 3 and 4 are optional. Theme is chosen later
+    when submitting to a hackathon.
     """
     try:
         return registration_service.register_student(request)

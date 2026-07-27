@@ -10,26 +10,6 @@ from pydantic import BaseModel, EmailStr, Field, field_validator, model_validato
 
 UserRole = Literal["admin", "evaluator", "student"]
 ApprovalStatus = Literal["pending", "approved"]
-ThemeChosen = Literal[
-    "Theme 1",
-    "Theme 2",
-    "Theme 3",
-    "Theme 4",
-    "Theme 5",
-    "Theme 6",
-    "Theme 7",
-    "Theme 8",
-]
-THEME_OPTIONS: tuple[ThemeChosen, ...] = (
-    "Theme 1",
-    "Theme 2",
-    "Theme 3",
-    "Theme 4",
-    "Theme 5",
-    "Theme 6",
-    "Theme 7",
-    "Theme 8",
-)
 
 USER_ROLES: tuple[UserRole, ...] = ("admin", "evaluator", "student")
 NXTWAVE_EMAIL_DOMAIN = "@nxtwave.co.in"
@@ -47,7 +27,6 @@ class StudentRegisterRequest(BaseModel):
 
     team_name: str = Field(..., min_length=1, max_length=100)
     university: str = Field(..., min_length=1, max_length=200)
-    theme_chosen: ThemeChosen
     team_leader_name: str = Field(..., min_length=1, max_length=100)
     email: EmailStr = Field(..., description="Team leader email (used for login)")
     niat_id: str = Field(..., min_length=1, max_length=50)
@@ -177,7 +156,6 @@ class UserResponse(BaseModel):
     mobile_no: Optional[str] = None
     team_name: Optional[str] = None
     university: Optional[str] = None
-    theme_chosen: Optional[ThemeChosen] = None
     team_leader_name: Optional[str] = None
     team_members: Optional[list[TeamMember]] = None
     approval_status: Optional[ApprovalStatus] = None
@@ -199,7 +177,6 @@ class RegisterResponse(BaseModel):
     approval_status: ApprovalStatus
     team_name: Optional[str] = None
     university: Optional[str] = None
-    theme_chosen: Optional[ThemeChosen] = None
     message: str
 
 

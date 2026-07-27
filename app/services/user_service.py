@@ -210,7 +210,6 @@ class UserService:
             mobile_no=user_data.get("mobile_no"),
             team_name=user_data.get("team_name"),
             university=user_data.get("university"),
-            theme_chosen=user_data.get("theme_chosen"),
             team_leader_name=user_data.get("team_leader_name"),
             team_members=[
                 TeamMember(name=member["name"], email=member["email"])
