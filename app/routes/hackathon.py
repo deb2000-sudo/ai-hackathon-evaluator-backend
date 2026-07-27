@@ -87,13 +87,18 @@ async def create_hackathon(
     banner: UploadFile | None = File(
         None, description="Optional hackathon banner image (jpeg/png/webp/gif)"
     ),
+    hackathon_url: str | None = Form(
+        None,
+        max_length=2000,
+        description="Official hackathon website URL (shown on student dashboard)",
+    ),
     admin: CurrentUser = Depends(get_admin_user),
 ) -> HackathonResponse:
     """
     Create a hackathon. Admin only.
 
     ``prizes``, ``theme_ids``, and ``timeline`` are sent as JSON strings within
-    the multipart form; the banner image is an optional file part.
+    the multipart form; ``banner`` and ``hackathon_url`` are optional.
     """
     prizes_data = _parse_json_field(prizes, "prizes", {})
     theme_ids_data = _parse_json_field(theme_ids, "theme_ids", [])
@@ -107,6 +112,7 @@ async def create_hackathon(
             end_date=end_date,
             guidelines=guidelines,
             theme_ids=theme_ids_data,
+            hackathon_url=hackathon_url,
             prizes=HackathonPrizes(**prizes_data),
             timeline=[TimelineRound(**item) for item in timeline_data],
         )
@@ -198,6 +204,11 @@ async def update_hackathon(
     theme_ids: str | None = Form(None, description='JSON array of theme ids'),
     timeline: str | None = Form(None),
     banner: UploadFile | None = File(None),
+    hackathon_url: str | None = Form(
+        None,
+        max_length=2000,
+        description="Official hackathon website URL (omit to leave unchanged)",
+    ),
     admin: CurrentUser = Depends(get_admin_user),
 ) -> HackathonResponse:
     """Update a hackathon (partial). Admin only."""
@@ -205,21 +216,26 @@ async def update_hackathon(
     theme_ids_data = _parse_json_field(theme_ids, "theme_ids", None)
     timeline_data = _parse_json_field(timeline, "timeline", None)
 
+    update_kwargs: dict = {
+        "name": name,
+        "description": description,
+        "start_date": start_date,
+        "end_date": end_date,
+        "guidelines": guidelines,
+        "theme_ids": theme_ids_data,
+        "prizes": HackathonPrizes(**prizes_data) if prizes_data is not None else None,
+        "timeline": (
+            [TimelineRound(**item) for item in timeline_data]
+            if timeline_data is not None
+            else None
+        ),
+    }
+    # Only touch hackathon_url when the form field is present (allows clearing).
+    if hackathon_url is not None:
+        update_kwargs["hackathon_url"] = hackathon_url
+
     try:
-        payload = HackathonUpdateRequest(
-            name=name,
-            description=description,
-            start_date=start_date,
-            end_date=end_date,
-            guidelines=guidelines,
-            theme_ids=theme_ids_data,
-            prizes=HackathonPrizes(**prizes_data) if prizes_data is not None else None,
-            timeline=(
-                [TimelineRound(**item) for item in timeline_data]
-                if timeline_data is not None
-                else None
-            ),
-        )
+        payload = HackathonUpdateRequest(**update_kwargs)
     except (ValidationError, ValueError, TypeError) as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

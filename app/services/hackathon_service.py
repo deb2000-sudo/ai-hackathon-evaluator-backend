@@ -61,6 +61,7 @@ class HackathonService:
             "end_date": request.end_date,
             "guidelines": request.guidelines.strip(),
             "theme_ids": theme_ids,
+            "hackathon_url": request.hackathon_url,
             "timeline": [round_.model_dump() for round_ in request.timeline],
             "prizes": request.prizes.model_dump(),
             "banner_path": banner_path,
@@ -109,6 +110,9 @@ class HackathonService:
             update["guidelines"] = request.guidelines.strip()
         if request.theme_ids is not None:
             update["theme_ids"] = self.theme_service.validate_theme_ids(request.theme_ids)
+        if "hackathon_url" in request.model_fields_set:
+            # Explicitly sent (including cleared/empty → None) updates the URL.
+            update["hackathon_url"] = request.hackathon_url
         if request.timeline is not None:
             self._validate_round_requirement_links(request.timeline)
             update["timeline"] = [round_.model_dump() for round_ in request.timeline]
@@ -141,6 +145,7 @@ class HackathonService:
         """Attach signed banner URL and resolved theme objects."""
         enriched = dict(hackathon)
         enriched.setdefault("theme_ids", [])
+        enriched.setdefault("hackathon_url", None)
 
         banner_path = enriched.get("banner_path")
         if banner_path:

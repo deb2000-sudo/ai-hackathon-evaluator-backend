@@ -4,10 +4,24 @@ Hackathon schemas (stored in the ``hackathons`` Firestore collection).
 
 from datetime import date, datetime
 from typing import Optional
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models.theme_model import ThemeSummary
+
+
+def _normalize_optional_url(value: Optional[str]) -> Optional[str]:
+    """Accept empty as None; require http(s) absolute URLs otherwise."""
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    parsed = urlparse(stripped)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError("hackathon_url must be a valid http(s) URL")
+    return stripped
 
 
 class TimelineRound(BaseModel):
@@ -55,8 +69,18 @@ class HackathonCreateRequest(BaseModel):
         min_length=1,
         description="Ids of themes released for this hackathon (multi-select).",
     )
+    hackathon_url: Optional[str] = Field(
+        None,
+        max_length=2000,
+        description="Official hackathon website URL shown on the student dashboard.",
+    )
     timeline: list[TimelineRound] = Field(default_factory=list)
     prizes: HackathonPrizes
+
+    @field_validator("hackathon_url")
+    @classmethod
+    def validate_hackathon_url(cls, value: Optional[str]) -> Optional[str]:
+        return _normalize_optional_url(value)
 
     @field_validator("start_date", "end_date")
     @classmethod
@@ -83,8 +107,14 @@ class HackathonUpdateRequest(BaseModel):
     end_date: Optional[str] = None
     guidelines: Optional[str] = Field(None, min_length=1, max_length=10000)
     theme_ids: Optional[list[str]] = Field(None, min_length=1)
+    hackathon_url: Optional[str] = Field(None, max_length=2000)
     timeline: Optional[list[TimelineRound]] = None
     prizes: Optional[HackathonPrizes] = None
+
+    @field_validator("hackathon_url")
+    @classmethod
+    def validate_hackathon_url(cls, value: Optional[str]) -> Optional[str]:
+        return _normalize_optional_url(value)
 
     @field_validator("start_date", "end_date")
     @classmethod
@@ -111,6 +141,10 @@ class HackathonResponse(BaseModel):
     themes: list[ThemeSummary] = Field(
         default_factory=list,
         description="Resolved theme objects released for this hackathon.",
+    )
+    hackathon_url: Optional[str] = Field(
+        None,
+        description="Official hackathon website URL for students.",
     )
     timeline: list[TimelineRound]
     prizes: HackathonPrizes
