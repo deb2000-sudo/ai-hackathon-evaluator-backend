@@ -51,6 +51,13 @@ class SubmissionResponse(BaseModel):
     )
     published_at: Optional[datetime] = None
     published_by: Optional[str] = None
+    assigned_evaluator_id: Optional[str] = Field(
+        None,
+        description="Approved evaluator assigned to review this submission.",
+    )
+    assigned_evaluator_name: Optional[str] = None
+    assigned_at: Optional[datetime] = None
+    assigned_by: Optional[str] = None
     video_path: str
     video_url: Optional[str] = Field(
         None,
@@ -91,3 +98,38 @@ class PublishReportRequest(BaseModel):
         True,
         description="True to publish the report to the student; false to unpublish.",
     )
+
+
+class AssignEvaluatorRequest(BaseModel):
+    """Assign (or clear) a single submission's evaluator."""
+
+    evaluator_id: Optional[str] = Field(
+        None,
+        description="Approved evaluator user id. Null to unassign.",
+    )
+
+
+class DivideEquallyRequest(BaseModel):
+    """Divide selected submissions equally among approved evaluators (random)."""
+
+    submission_ids: list[str] = Field(
+        ...,
+        min_length=1,
+        description="Submission ids to assign (usually the selected table rows).",
+    )
+    evaluator_ids: Optional[list[str]] = Field(
+        None,
+        description=(
+            "Optional subset of approved evaluator ids. "
+            "If omitted, all approved (active) evaluators are used."
+        ),
+    )
+
+
+class DivideEquallyResponse(BaseModel):
+    """Result of a bulk equal-division assignment."""
+
+    assigned_count: int
+    evaluator_count: int
+    submissions: list[SubmissionResponse]
+

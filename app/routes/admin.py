@@ -3,8 +3,9 @@ Admin routes for managing users.
 """
 
 import logging
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.middleware.auth_middleware import get_admin_user
 from app.models.user_model import CurrentUser, UserResponse, UserUpdate
@@ -56,14 +57,29 @@ async def get_pending_evaluators(
 
 @router.get("/evaluators", status_code=200)
 async def get_evaluators(
+    approval_status: Optional[str] = Query(
+        None,
+        description="Filter by approval_status: pending | approved | rejected",
+    ),
     admin: CurrentUser = Depends(get_admin_user),
 ) -> list[UserResponse]:
     """
-    List all evaluator accounts.
+    List evaluator accounts.
+
+    Use ``?approval_status=approved`` for the Submissions "Assign evaluator" dropdown
+    (active evaluators only).
     """
     try:
-        evaluators = user_service.get_evaluators()
+        status_filter = approval_status.strip().lower() if approval_status else None
+        if status_filter and status_filter not in ("pending", "approved", "rejected"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="approval_status must be pending, approved, or rejected",
+            )
+        evaluators = user_service.get_evaluators(approval_status=status_filter)
         return [user_service.to_user_response(user["id"], user) for user in evaluators]
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Error getting evaluators: %s", str(e))
         raise HTTPException(

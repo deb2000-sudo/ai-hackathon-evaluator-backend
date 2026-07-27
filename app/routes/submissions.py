@@ -5,13 +5,17 @@ Student submission routes.
     GET    /submissions                 -> student lists their own submissions
     GET    /submissions/admin/hackathons              -> admin: hackathons + submission counts
     GET    /submissions/admin/hackathons/{hackathon_id} -> admin: submissions for one hackathon
+    POST   /submissions/admin/hackathons/{hackathon_id}/assign-equally
+           -> admin: randomly divide selected submissions among active evaluators
     GET    /submissions/admin/all       -> admin lists all submissions
+    GET    /submissions/assigned-to-me  -> evaluator: submissions assigned to them
     GET    /submissions/{id}            -> get submission (report hidden until published)
     GET    /submissions/{id}/video      -> stream/download the submission video
     GET    /submissions/{id}/analysis   -> analysis (students only if published)
     GET    /submissions/{id}/report     -> report (students only if published)
     POST   /submissions/{id}/evaluate   -> admin starts AI analysis
     POST   /submissions/{id}/publish    -> admin publishes / unpublishes the report
+    POST   /submissions/{id}/assign     -> admin assigns one evaluator (dropdown)
 """
 
 from fastapi import (
@@ -26,9 +30,16 @@ from fastapi import (
     status,
 )
 
-from app.middleware.auth_middleware import get_active_user, get_admin_user, get_student_user
+from app.middleware.auth_middleware import (
+    get_active_user,
+    get_admin_user,
+    get_student_user,
+)
 from app.models.analysis_model import AnalysisReportResponse, AnalysisResponse
 from app.models.submission_model import (
+    AssignEvaluatorRequest,
+    DivideEquallyRequest,
+    DivideEquallyResponse,
     EvaluateSubmissionRequest,
     HackathonSubmissionSummary,
     PublishReportRequest,
@@ -186,6 +197,54 @@ async def list_submissions_for_hackathon_admin(
     ]
 
 
+@router.post(
+    "/admin/hackathons/{hackathon_id}/assign-equally",
+    response_model=DivideEquallyResponse,
+)
+async def divide_submissions_equally(
+    hackathon_id: str,
+    request: DivideEquallyRequest,
+    admin: CurrentUser = Depends(get_admin_user),
+) -> DivideEquallyResponse:
+    """
+    Randomly divide selected submissions among active (approved) evaluators.
+
+    Used by the bulk action on the admin Submissions table after multi-select.
+    """
+    service = SubmissionService()
+    try:
+        assigned = service.divide_equally_among_evaluators(
+            hackathon_id=hackathon_id,
+            submission_ids=request.submission_ids,
+            assigned_by=admin.user_id,
+            evaluator_ids=request.evaluator_ids,
+        )
+    except ValueError as e:
+        detail = str(e)
+        code = (
+            status.HTTP_404_NOT_FOUND
+            if "not found" in detail.lower()
+            else status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(status_code=code, detail=detail) from e
+
+    evaluator_count = len(
+        {
+            item.get("assigned_evaluator_id")
+            for item in assigned
+            if item.get("assigned_evaluator_id")
+        }
+    )
+    return DivideEquallyResponse(
+        assigned_count=len(assigned),
+        evaluator_count=evaluator_count,
+        submissions=[
+            _to_submission_response(service, item, current_user=admin)
+            for item in assigned
+        ],
+    )
+
+
 @router.get("/admin/all", response_model=list[SubmissionResponse])
 async def list_all_submissions_for_admin(
     admin: CurrentUser = Depends(get_admin_user),
@@ -195,6 +254,29 @@ async def list_all_submissions_for_admin(
     submissions = service.list_all_submissions()
     return [
         _to_submission_response(service, item, current_user=admin)
+        for item in submissions
+    ]
+
+
+@router.get("/assigned-to-me", response_model=list[SubmissionResponse])
+async def list_my_assigned_submissions(
+    current_user: CurrentUser = Depends(get_active_user),
+) -> list[SubmissionResponse]:
+    """
+    List submissions assigned to the current user.
+
+    Intended for approved evaluators (admins get an empty list unless also assigned).
+    """
+    if current_user.role not in ("evaluator", "admin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only evaluators can list assigned submissions",
+        )
+
+    service = SubmissionService()
+    submissions = service.list_submissions_for_evaluator(current_user.user_id)
+    return [
+        _to_submission_response(service, item, current_user=current_user)
         for item in submissions
     ]
 
@@ -387,6 +469,37 @@ async def publish_submission_report(
             submission_id=submission_id,
             publish=request.publish,
             admin_user_id=admin.user_id,
+        )
+    except ValueError as e:
+        detail = str(e)
+        code = (
+            status.HTTP_404_NOT_FOUND
+            if "not found" in detail.lower()
+            else status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(status_code=code, detail=detail) from e
+
+    return _to_submission_response(service, submission, current_user=admin)
+
+
+@router.post("/{submission_id}/assign", response_model=SubmissionResponse)
+async def assign_submission_evaluator(
+    submission_id: str,
+    request: AssignEvaluatorRequest,
+    admin: CurrentUser = Depends(get_admin_user),
+) -> SubmissionResponse:
+    """
+    Assign one approved (active) evaluator to a submission, or clear assignment.
+
+    Used by the per-row Evaluator dropdown on the admin Submissions table.
+    Pass ``evaluator_id: null`` to unassign.
+    """
+    service = SubmissionService()
+    try:
+        submission = service.assign_evaluator(
+            submission_id=submission_id,
+            evaluator_id=request.evaluator_id,
+            assigned_by=admin.user_id,
         )
     except ValueError as e:
         detail = str(e)
