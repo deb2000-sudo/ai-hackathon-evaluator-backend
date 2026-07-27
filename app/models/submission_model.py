@@ -11,10 +11,11 @@ from app.models.analysis_model import AnalysisSummary
 
 
 SubmissionStatus = Literal["uploaded", "processing", "completed", "failed"]
+ReviewStatus = Literal["none", "pending_review", "approved", "changes_requested"]
 
 
 class HackathonSubmissionSummary(BaseModel):
-    """One hackathon row for the admin Submissions tab."""
+    """One hackathon row for the admin/evaluator Submissions tab."""
 
     hackathon_id: str
     name: str
@@ -47,7 +48,10 @@ class SubmissionResponse(BaseModel):
     )
     report_published: bool = Field(
         False,
-        description="When true, students may view the AI analysis report.",
+        description=(
+            "When true, students may view the evaluation report and final score. "
+            "Set automatically when an admin approves the evaluation."
+        ),
     )
     published_at: Optional[datetime] = None
     published_by: Optional[str] = None
@@ -58,6 +62,33 @@ class SubmissionResponse(BaseModel):
     assigned_evaluator_name: Optional[str] = None
     assigned_at: Optional[datetime] = None
     assigned_by: Optional[str] = None
+    analyzed_by: Optional[str] = Field(
+        None,
+        description="User id of the admin/evaluator who started AI analysis.",
+    )
+    review_status: ReviewStatus = Field(
+        "none",
+        description=(
+            "Evaluation review workflow: none → pending_review (evaluator submitted) "
+            "→ approved (admin) or changes_requested."
+        ),
+    )
+    final_score: Optional[float] = Field(
+        None,
+        description="Final score shown to students after admin approval (0-100).",
+    )
+    evaluator_notes: Optional[str] = Field(
+        None,
+        description="Optional notes from the evaluator when submitting for review.",
+    )
+    submitted_for_review_at: Optional[datetime] = None
+    submitted_for_review_by: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
+    reviewed_by: Optional[str] = None
+    review_notes: Optional[str] = Field(
+        None,
+        description="Optional admin notes when approving or requesting changes.",
+    )
     video_path: str
     video_url: Optional[str] = Field(
         None,
@@ -69,7 +100,7 @@ class SubmissionResponse(BaseModel):
         None,
         description=(
             "Joined analysis summary when completed. For students, only present "
-            "after an admin publishes the report."
+            "after an admin approves/publishes the report."
         ),
     )
     error: Optional[str] = None
@@ -82,12 +113,54 @@ class SubmissionResponse(BaseModel):
 
 
 class EvaluateSubmissionRequest(BaseModel):
-    """Optional body when an admin starts AI analysis on a submission."""
+    """Optional body when starting AI analysis on a submission."""
 
     evaluation_criteria: Optional[str] = Field(
         None,
         max_length=2000,
         description="Optional extra focus areas appended to the analysis context (not required).",
+    )
+
+
+class SubmitForReviewRequest(BaseModel):
+    """Evaluator submits a completed evaluation to admin for approval."""
+
+    final_score: float = Field(
+        ...,
+        ge=0,
+        le=100,
+        description="Proposed final score (0-100) for admin approval.",
+    )
+    evaluator_notes: Optional[str] = Field(
+        None,
+        max_length=5000,
+        description="Optional notes for the admin reviewing this evaluation.",
+    )
+
+
+class ApproveEvaluationRequest(BaseModel):
+    """Admin approves an evaluator's submitted evaluation (publishes to student)."""
+
+    final_score: Optional[float] = Field(
+        None,
+        ge=0,
+        le=100,
+        description="Optional override of the evaluator's proposed score. Defaults to theirs.",
+    )
+    review_notes: Optional[str] = Field(
+        None,
+        max_length=5000,
+        description="Optional admin notes.",
+    )
+
+
+class RequestChangesRequest(BaseModel):
+    """Admin sends the evaluation back to the assigned evaluator."""
+
+    review_notes: Optional[str] = Field(
+        None,
+        max_length=5000,
+        description="What the evaluator should change before resubmitting.",
     )
 
 

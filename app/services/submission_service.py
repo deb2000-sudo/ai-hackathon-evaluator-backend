@@ -194,6 +194,15 @@ class SubmissionService:
             "assigned_evaluator_name": None,
             "assigned_at": None,
             "assigned_by": None,
+            "analyzed_by": None,
+            "review_status": "none",
+            "final_score": None,
+            "evaluator_notes": None,
+            "submitted_for_review_at": None,
+            "submitted_for_review_by": None,
+            "reviewed_at": None,
+            "reviewed_by": None,
+            "review_notes": None,
             "error": None,
             "created_at": now,
             "updated_at": now,
@@ -205,8 +214,8 @@ class SubmissionService:
             **submission,
             "message": (
                 "Your submission has been recorded successfully. "
-                "You will receive the evaluation result once the hackathon ends "
-                "and the report is published by the admin."
+                "You will receive the evaluation result once an evaluator finishes "
+                "review and the admin approves the final score."
             ),
         }
 
@@ -214,6 +223,7 @@ class SubmissionService:
         self,
         submission_id: str,
         evaluation_criteria: str | None = None,
+        analyzed_by: str | None = None,
     ) -> str:
         """Create an analysis document and link it to the submission."""
         submission = self.firebase.get_document(self.collection, submission_id)
@@ -242,10 +252,19 @@ class SubmissionService:
             "analysis_id": analysis_id,
             "status": "processing",
             "error": None,
-            # Re-analysis invalidates any previously published report.
+            "analyzed_by": analyzed_by,
+            # Re-analysis invalidates any previously published / reviewed result.
             "report_published": False,
             "published_at": None,
             "published_by": None,
+            "review_status": "none",
+            "final_score": None,
+            "evaluator_notes": None,
+            "submitted_for_review_at": None,
+            "submitted_for_review_by": None,
+            "reviewed_at": None,
+            "reviewed_by": None,
+            "review_notes": None,
         }
         if evaluation_criteria is not None:
             submission_update["evaluation_criteria"] = criteria
@@ -338,18 +357,242 @@ class SubmissionService:
         submission_id: str,
         current_user: CurrentUser,
     ) -> dict[str, Any] | None:
-        """Fetch a submission for the owner, an evaluator, or an admin."""
+        """
+        Fetch a submission for the owner, assigned evaluator, or an admin.
+
+        Evaluators may only access submissions assigned to them.
+        """
         submission = self.firebase.get_document(self.collection, submission_id)
         if not submission:
             return None
 
-        if submission.get("student_id") != current_user.user_id and current_user.role not in (
-            "admin",
-            "evaluator",
-        ):
+        if current_user.role == "admin":
+            return {"id": submission_id, **submission}
+
+        if submission.get("student_id") == current_user.user_id:
+            return {"id": submission_id, **submission}
+
+        if current_user.role == "evaluator":
+            if submission.get("assigned_evaluator_id") == current_user.user_id:
+                return {"id": submission_id, **submission}
             return None
 
-        return {"id": submission_id, **submission}
+        return None
+
+    def assert_can_evaluate(
+        self,
+        submission: dict[str, Any],
+        current_user: CurrentUser,
+    ) -> None:
+        """Admin, or the assigned evaluator, may start AI analysis."""
+        if current_user.role == "admin":
+            return
+        if (
+            current_user.role == "evaluator"
+            and submission.get("assigned_evaluator_id") == current_user.user_id
+        ):
+            return
+        raise ValueError("Only the assigned evaluator or an admin can evaluate this submission")
+
+    def list_submissions_for_hackathon(
+        self,
+        hackathon_id: str,
+        evaluator_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List submissions for a hackathon. Newest first. Optionally filter by assignee."""
+        submissions = self.firebase.query_collection(
+            self.collection,
+            "hackathon_id",
+            "==",
+            hackathon_id.strip(),
+        )
+        if evaluator_id:
+            submissions = [
+                item
+                for item in submissions
+                if item.get("assigned_evaluator_id") == evaluator_id
+            ]
+        submissions.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+        return submissions
+
+    def list_hackathons_with_submission_counts(
+        self,
+        evaluator_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Submissions tab: hackathons plus submission counts.
+
+        When ``evaluator_id`` is set, only include hackathons that have at least
+        one submission assigned to that evaluator, and count only those.
+        """
+        hackathons = self.hackathon_service.list_hackathons()
+        submissions = self.firebase.get_collection(self.collection)
+
+        counts: dict[str, int] = {}
+        for submission in submissions:
+            hid = submission.get("hackathon_id")
+            if not hid:
+                continue
+            if evaluator_id and submission.get("assigned_evaluator_id") != evaluator_id:
+                continue
+            counts[hid] = counts.get(hid, 0) + 1
+
+        summaries: list[dict[str, Any]] = []
+        for hackathon in hackathons:
+            enriched = self.hackathon_service.enrich_hackathon_for_response(hackathon)
+            count = counts.get(enriched["id"], 0)
+            if evaluator_id and count == 0:
+                continue
+            summaries.append(
+                {
+                    "hackathon_id": enriched["id"],
+                    "name": enriched["name"],
+                    "start_date": enriched["start_date"],
+                    "end_date": enriched["end_date"],
+                    "submission_count": count,
+                    "banner_url": enriched.get("banner_url"),
+                }
+            )
+        return summaries
+
+    def submit_for_review(
+        self,
+        submission_id: str,
+        evaluator_user_id: str,
+        final_score: float,
+        evaluator_notes: str | None = None,
+    ) -> dict[str, Any]:
+        """Assigned evaluator submits completed evaluation to admin."""
+        submission = self.firebase.get_document(self.collection, submission_id)
+        if not submission:
+            raise ValueError("Submission not found")
+        if submission.get("assigned_evaluator_id") != evaluator_user_id:
+            raise ValueError("Only the assigned evaluator can submit this evaluation")
+        if submission.get("status") != "completed":
+            raise ValueError("AI analysis must be completed before submitting for review")
+
+        analysis_id = submission.get("analysis_id")
+        if not analysis_id:
+            raise ValueError("No analysis linked to this submission")
+        analysis = self.firebase.get_document(self.analysis_collection, analysis_id)
+        if not analysis or analysis.get("status") != "completed":
+            raise ValueError("Analysis report is not ready to submit")
+
+        review_status = submission.get("review_status") or "none"
+        if review_status == "pending_review":
+            raise ValueError("Evaluation is already pending admin review")
+        if review_status == "approved":
+            raise ValueError("Evaluation is already approved; unpublish/request changes first")
+
+        notes = evaluator_notes.strip() if evaluator_notes else None
+        self._update_submission(
+            submission_id,
+            {
+                "review_status": "pending_review",
+                "final_score": float(final_score),
+                "evaluator_notes": notes,
+                "submitted_for_review_at": datetime.utcnow().isoformat(),
+                "submitted_for_review_by": evaluator_user_id,
+                # Keep unpublished until admin approves.
+                "report_published": False,
+                "published_at": None,
+                "published_by": None,
+                "reviewed_at": None,
+                "reviewed_by": None,
+                "review_notes": None,
+            },
+        )
+
+        updated = self.firebase.get_document(self.collection, submission_id)
+        if not updated:
+            raise ValueError("Submission not found")
+        return {"id": submission_id, **updated}
+
+    def approve_evaluation(
+        self,
+        submission_id: str,
+        admin_user_id: str,
+        final_score: float | None = None,
+        review_notes: str | None = None,
+    ) -> dict[str, Any]:
+        """Admin approves evaluation → final score + report become visible to student."""
+        submission = self.firebase.get_document(self.collection, submission_id)
+        if not submission:
+            raise ValueError("Submission not found")
+        if submission.get("status") != "completed":
+            raise ValueError("Can only approve a completed evaluation")
+
+        review_status = submission.get("review_status") or "none"
+        if review_status not in ("pending_review", "approved"):
+            raise ValueError(
+                "Evaluation must be submitted for review before admin approval"
+            )
+
+        analysis_id = submission.get("analysis_id")
+        if not analysis_id:
+            raise ValueError("No analysis linked to this submission")
+        analysis = self.firebase.get_document(self.analysis_collection, analysis_id)
+        if not analysis or analysis.get("status") != "completed":
+            raise ValueError("Analysis report is not ready to approve")
+
+        score = final_score if final_score is not None else submission.get("final_score")
+        if score is None:
+            raise ValueError("final_score is required to approve (evaluator did not propose one)")
+
+        notes = review_notes.strip() if review_notes else None
+        now = datetime.utcnow().isoformat()
+        self._update_submission(
+            submission_id,
+            {
+                "review_status": "approved",
+                "final_score": float(score),
+                "review_notes": notes,
+                "reviewed_at": now,
+                "reviewed_by": admin_user_id,
+                "report_published": True,
+                "published_at": now,
+                "published_by": admin_user_id,
+            },
+        )
+
+        updated = self.firebase.get_document(self.collection, submission_id)
+        if not updated:
+            raise ValueError("Submission not found")
+        return {"id": submission_id, **updated}
+
+    def request_evaluation_changes(
+        self,
+        submission_id: str,
+        admin_user_id: str,
+        review_notes: str | None = None,
+    ) -> dict[str, Any]:
+        """Admin sends evaluation back to the assigned evaluator."""
+        submission = self.firebase.get_document(self.collection, submission_id)
+        if not submission:
+            raise ValueError("Submission not found")
+
+        review_status = submission.get("review_status") or "none"
+        if review_status not in ("pending_review", "approved"):
+            raise ValueError("Only pending or approved evaluations can be sent back")
+
+        notes = review_notes.strip() if review_notes else None
+        self._update_submission(
+            submission_id,
+            {
+                "review_status": "changes_requested",
+                "review_notes": notes,
+                "reviewed_at": datetime.utcnow().isoformat(),
+                "reviewed_by": admin_user_id,
+                "report_published": False,
+                "published_at": None,
+                "published_by": None,
+            },
+        )
+
+        updated = self.firebase.get_document(self.collection, submission_id)
+        if not updated:
+            raise ValueError("Submission not found")
+        return {"id": submission_id, **updated}
 
     def get_analysis(
         self,
@@ -412,17 +655,6 @@ class SubmissionService:
         submissions.sort(key=lambda item: item.get("created_at", ""), reverse=True)
         return submissions
 
-    def list_submissions_for_hackathon(self, hackathon_id: str) -> list[dict[str, Any]]:
-        """List all submissions for a specific hackathon. Newest first."""
-        submissions = self.firebase.query_collection(
-            self.collection,
-            "hackathon_id",
-            "==",
-            hackathon_id.strip(),
-        )
-        submissions.sort(key=lambda item: item.get("created_at", ""), reverse=True)
-        return submissions
-
     def list_submissions_for_evaluator(self, evaluator_id: str) -> list[dict[str, Any]]:
         """List submissions assigned to a given evaluator. Newest first."""
         submissions = self.firebase.query_collection(
@@ -453,6 +685,9 @@ class SubmissionService:
                     "assigned_evaluator_name": None,
                     "assigned_at": None,
                     "assigned_by": None,
+                    "review_status": "none",
+                    "submitted_for_review_at": None,
+                    "submitted_for_review_by": None,
                 },
             )
         else:
@@ -464,6 +699,10 @@ class SubmissionService:
                     "assigned_evaluator_name": evaluator["name"],
                     "assigned_at": datetime.utcnow().isoformat(),
                     "assigned_by": assigned_by,
+                    # Reassignment clears in-flight review submission.
+                    "review_status": "none",
+                    "submitted_for_review_at": None,
+                    "submitted_for_review_by": None,
                 },
             )
 
@@ -575,34 +814,6 @@ class SubmissionService:
             seen.add(eid)
         return resolved
 
-    def list_hackathons_with_submission_counts(self) -> list[dict[str, Any]]:
-        """
-        Admin Submissions tab: every hackathon plus how many submissions it has.
-        """
-        hackathons = self.hackathon_service.list_hackathons()
-        submissions = self.firebase.get_collection(self.collection)
-
-        counts: dict[str, int] = {}
-        for submission in submissions:
-            hid = submission.get("hackathon_id")
-            if hid:
-                counts[hid] = counts.get(hid, 0) + 1
-
-        summaries: list[dict[str, Any]] = []
-        for hackathon in hackathons:
-            enriched = self.hackathon_service.enrich_hackathon_for_response(hackathon)
-            summaries.append(
-                {
-                    "hackathon_id": enriched["id"],
-                    "name": enriched["name"],
-                    "start_date": enriched["start_date"],
-                    "end_date": enriched["end_date"],
-                    "submission_count": counts.get(enriched["id"], 0),
-                    "banner_url": enriched.get("banner_url"),
-                }
-            )
-        return summaries
-
     def publish_report(
         self,
         submission_id: str,
@@ -665,6 +876,15 @@ class SubmissionService:
         enriched.setdefault("assigned_evaluator_name", None)
         enriched.setdefault("assigned_at", None)
         enriched.setdefault("assigned_by", None)
+        enriched.setdefault("analyzed_by", None)
+        enriched.setdefault("review_status", "none")
+        enriched.setdefault("final_score", None)
+        enriched.setdefault("evaluator_notes", None)
+        enriched.setdefault("submitted_for_review_at", None)
+        enriched.setdefault("submitted_for_review_by", None)
+        enriched.setdefault("reviewed_at", None)
+        enriched.setdefault("reviewed_by", None)
+        enriched.setdefault("review_notes", None)
 
         # Backfill hackathon fields for older submissions that predate the link.
         if not enriched.get("hackathon_id"):
@@ -729,6 +949,11 @@ class SubmissionService:
         else:
             # Hide analysis content from students until the admin publishes.
             enriched["analysis"] = None
+
+        if not can_see_analysis:
+            enriched["final_score"] = None
+            enriched["evaluator_notes"] = None
+            enriched["review_notes"] = None
 
         return enriched
 

@@ -198,3 +198,15 @@ def get_student_user(
             detail="Only students can create submissions",
         )
     return current_user
+
+
+def get_evaluator_user(
+    current_user: CurrentUser = Depends(get_active_user),
+) -> CurrentUser:
+    """Dependency for approved-evaluator-only routes."""
+    if current_user.role != "evaluator":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Evaluator access required",
+        )
+    return current_user
