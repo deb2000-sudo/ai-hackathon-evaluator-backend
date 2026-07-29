@@ -26,7 +26,12 @@ from app.services.firebase import FirebaseService
 from app.services.registration_service import RegistrationService
 from app.services.user_service import UserService
 from app.utils.async_io import run_sync
-from app.utils.auth_cookies import clear_auth_cookie, set_auth_cookie
+from app.utils.auth_cookies import (
+    clear_session_cookies,
+    require_current_password_on_change,
+    set_auth_cookie,
+    set_csrf_cookie,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -172,6 +177,8 @@ async def login(request: LoginRequest) -> JSONResponse:
 
         response = JSONResponse(content=payload)
         set_auth_cookie(response, id_token)
+        # Phase 5b: issue CSRF cookie for double-submit (enforcement is env-gated).
+        set_csrf_cookie(response)
         return response
 
     except HTTPException:
@@ -186,9 +193,9 @@ async def login(request: LoginRequest) -> JSONResponse:
 
 @router.post("/logout", status_code=200)
 async def logout() -> JSONResponse:
-    """Clear the HttpOnly session cookie."""
+    """Clear the HttpOnly session cookie and CSRF cookie."""
     response = JSONResponse(content={"message": "Logged out successfully"})
-    clear_auth_cookie(response)
+    clear_session_cookies(response)
     return response
 
 
@@ -202,9 +209,43 @@ async def change_password(
 
     Works for every role (admin, evaluator, student). Requires a valid session
     (HttpOnly cookie or Bearer token). The two password fields must match; this
-    is validated by the request schema. On success the session cookie is
-    cleared so the user must sign in again with the new password.
+    is validated by the request schema.
+
+    ``current_password`` is required when ``REQUIRE_CURRENT_PASSWORD_ON_CHANGE``
+    is enabled (default true). It is verified before the password is updated.
+    On success session cookies are cleared so the user must sign in again.
     """
+    must_verify = require_current_password_on_change() or bool(request.current_password)
+    if require_current_password_on_change() and not request.current_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="current_password is required",
+        )
+
+    if must_verify and request.current_password:
+        try:
+            ok = await run_sync(
+                firebase.verify_password,
+                current_user.email,
+                request.current_password,
+            )
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e),
+            ) from e
+        except Exception as e:
+            logger.error("Current password verification error: %s", str(e))
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to verify current password",
+            ) from e
+        if not ok:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Current password is incorrect",
+            )
+
     try:
         await run_sync(
             firebase.update_user_password,
@@ -226,9 +267,8 @@ async def change_password(
     response = JSONResponse(
         content={"message": "Password changed successfully. Please log in again."}
     )
-    clear_auth_cookie(response)
+    clear_session_cookies(response)
     return response
-
 
 def _generate_id_token_via_rest_api(email: str, password: str, web_api_key: str) -> str:
     """

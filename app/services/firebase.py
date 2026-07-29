@@ -158,18 +158,19 @@ class FirebaseService:
             logger.error(f"Error updating password for user {user_id}: {str(e)}")
             raise Exception(f"Error updating password: {str(e)}")
 
-    def verify_id_token(self, token: str) -> dict[str, Any]:
+    def verify_id_token(
+        self, token: str, check_revoked: bool = True
+    ) -> dict[str, Any]:
         """
-        Verify Firebase ID token
+        Verify Firebase ID token.
 
-        Args:
-            token: ID token to verify
-
-        Returns:
-            Decoded token containing user_id and claims
+        ``check_revoked=True`` (default, Phase 5a) rejects tokens after password
+        change / admin revoke so stolen cookies stop working sooner.
         """
         try:
-            decoded_token = self._auth.verify_id_token(token)
+            decoded_token = self._auth.verify_id_token(
+                token, check_revoked=check_revoked
+            )
             return decoded_token
         except auth.InvalidIdTokenError:
             raise ValueError("Invalid ID token")
@@ -182,6 +183,35 @@ class FirebaseService:
         except Exception as e:
             logger.error(f"Error verifying token: {str(e)}")
             raise Exception(f"Error verifying token: {str(e)}")
+
+    def verify_password(self, email: str, password: str) -> bool:
+        """
+        Verify email/password via Identity Toolkit (same path as login).
+
+        Used by change-password when ``current_password`` is supplied or required.
+        """
+        web_api_key = os.getenv("FIREBASE_WEB_API_KEY")
+        if not web_api_key:
+            raise ValueError("Firebase configuration error")
+
+        import requests
+
+        try:
+            response = requests.post(
+                "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword",
+                json={
+                    "email": email.lower().strip(),
+                    "password": password,
+                    "returnSecureToken": True,
+                },
+                params={"key": web_api_key},
+                timeout=10,
+            )
+        except requests.exceptions.RequestException as e:
+            logger.error("Network error verifying password: %s", str(e))
+            raise Exception("Error verifying password") from e
+
+        return response.status_code == 200
 
     def get_user(self, user_id: str) -> Any:
         """

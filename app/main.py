@@ -20,7 +20,7 @@ from app.routes import (
     theme,
 )
 from app.utils.async_io import run_sync
-from app.utils.cors_config import get_allowed_origins
+from app.utils.cors_config import get_allowed_origins, get_cors_allow_headers
 from app.utils.seeder import DatabaseSeeder
 
 
@@ -69,7 +69,7 @@ app.add_middleware(
     allow_origins=get_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=get_cors_allow_headers(),
 )
 
 
