@@ -1,15 +1,18 @@
 # AI Hackathon Evaluator Backend
 
-A FastAPI backend that lets participants upload their hackathon submission video and get an **AI evaluation** of it (per-criterion scores, strengths, improvements, and an overall verdict) powered by Vertex AI **Gemini**. Auth is handled by Firebase (same login system as the NxtCreate backend).
+FastAPI backend for **HackNIAT** — students submit hackathon demo videos (record in-browser or upload from disk), admins assign **approved evaluators**, evaluators run **Gemini** AI analysis and submit scores for admin approval, and students see the final report/score only after approval.
+
+Stack: **Firebase Auth + Firestore**, **Google Cloud Storage** (videos), **Vertex AI / Gemini** (multimodal video analysis), deployable to **Cloud Run**.
 
 ## Quick start
 
 ```bash
 # 1. Create/activate a virtual environment (Python 3.11+)
-python -m venv .venv && source .venv/Scripts/activate   # Windows Git Bash
+python -m venv .venv && source .venv/bin/activate   # macOS/Linux
+# Windows Git Bash: source .venv/Scripts/activate
 
 # 2. Install dependencies
-pip install -e ".[dev]"        # or: pip install -r requirements.txt
+pip install -e ".[dev]"
 
 # 3. Configure environment
 cp .env.example .env           # then fill in the values
@@ -18,157 +21,349 @@ cp .env.example .env           # then fill in the values
 uvicorn app.main:app --reload  # http://localhost:8000/docs
 ```
 
-## Authentication
+## Roles
+
+| Role | Access |
+|------|--------|
+| **student** | Register team, submit video + requirement answers, view own submissions; see report/`final_score` only after admin approval |
+| **evaluator** | Must be `@nxtwave.co.in` and **approved** by admin; works only on **assigned** submissions; can run AI analysis and submit for review |
+| **admin** | Manage hackathons/themes/requirements/scoring, assign evaluators, approve evaluations, publish results |
 
 Seeded users (created on startup, password `12345678`):
 
-| Email                              | Role       | Approval   | Profile fields                          |
-| ---------------------------------- | ---------- | ---------- | --------------------------------------- |
-| `admin@nxtwave.co.in`              | admin      | —          | first/last name, employee ID, mobile    |
-| `evaluator@nxtwave.co.in`          | evaluator  | approved   | first/last name, employee ID            |
-| `evaluator.pending@nxtwave.co.in`   | evaluator  | pending    | first/last name, employee ID            |
-| `student@nxtwave.co.in`            | student    | approved   | first/last name, NIAT ID, mobile        |
+| Email | Role | Approval |
+|-------|------|----------|
+| `admin@nxtwave.co.in` | admin | — |
+| `evaluator@nxtwave.co.in` | evaluator | approved |
+| `evaluator.pending@nxtwave.co.in` | evaluator | pending |
+| `student@nxtwave.co.in` | student | approved |
+
+## Authentication
+
+Login sets an HttpOnly `access_token` cookie (not returned in the JSON body). Use `credentials: "include"` (fetch) or `withCredentials: true` (axios).
 
 ```bash
-# Log in -> sets an HttpOnly `access_token` cookie (not returned in the body)
 curl -X POST http://localhost:8000/auth/login \
   -H "Content-Type: application/json" \
   -c cookies.txt \
   -d '{"email":"student@nxtwave.co.in","password":"12345678"}'
 ```
 
-The session cookie is sent automatically on subsequent requests. From a browser/frontend, use `credentials: "include"` on `fetch` or axios `withCredentials: true`.
+- `POST /auth/logout` — clear cookie  
+- `GET /auth/me` — current profile (`role`, `approval_status`, …)  
+- `POST /auth/change-password` — change password  
+- Bearer `Authorization` header still works for Swagger / API clients  
 
-Log out with `POST /auth/logout` (clears the cookie).
-
-For API clients and Swagger, the `Authorization: Bearer <token>` header is still supported as a fallback.
+Pending evaluators can call `/auth/me` but other app routes return `403` until approved.
 
 ### Registration
 
-**Student** (`POST /auth/register/student`):
+**Student** — `POST /auth/register/student`  
+**Evaluator** — `POST /auth/register/evaluator` (`@nxtwave.co.in`, starts as `pending`)
+
+## End-to-end flows
+
+### 1. Student submission (record **or** local upload → GCS)
+
+Prefer the **signed-URL** path. Cloud Run rejects multipart bodies over ~**32 MiB** with `413 Content Too Large`.
+
+```text
+GET  /submissions/accepted-video-types   → MIME/ext/max size for UI
+POST /submissions/upload-url             → signed GCS PUT URL
+Browser PUT  → storage.googleapis.com    → video lands in GCS
+POST /submissions/from-upload            → create Firestore submission
+```
+
+Both **in-browser recording** and **local file upload** use the same APIs. Optional `video_source`: `"recorded"` | `"uploaded"`.
+
+GCS object layout: `submissions/{student_id}/{submission_id}/video.{ext}`
+
+**GCS bucket CORS** must allow the frontend origin (required for browser PUT). Deploy via Cloud Build applies CORS; for local `http://localhost:5173` you may need to set it once on the bucket (see [GCS CORS](#gcs-cors-for-direct-uploads)).
+
+Legacy multipart (small files only): `POST /submissions` with form fields + `video` file.
+
+Students **do not** start AI analysis. After submit they wait until an evaluator finishes and an admin approves.
+
+### 2. Admin: assign evaluators
+
+```text
+GET  /admin/evaluators?approval_status=approved
+POST /submissions/{id}/assign                         { "evaluator_id": "..." }
+POST /submissions/admin/hackathons/{id}/assign-equally
+     { "submission_ids": ["..."], "evaluator_ids": ["..."]? }   # random equal split
+```
+
+### 3. Evaluator: analyze → submit for review
+
+```text
+GET  /submissions/evaluator/hackathons
+GET  /submissions/evaluator/hackathons/{hackathon_id}   # assigned only
+POST /submissions/{id}/evaluate                         # AI analysis (202)
+POST /submissions/{id}/submit-for-review
+     { "final_score": 0-100, "evaluator_notes": "..."? }
+```
+
+`review_status`: `none` → `pending_review` → `approved` | `changes_requested`
+
+### 4. Admin: approve → student sees results
+
+```text
+POST /submissions/{id}/approve-evaluation
+     { "final_score": ...?, "review_notes": ...? }   # publishes report + score
+POST /submissions/{id}/request-changes               # send back to evaluator
+```
+
+After approval: `report_published=true`, student can read analysis/report/`final_score`.
+
+---
+
+## API overview
+
+Interactive docs: `http://localhost:8000/docs`
+
+### Auth — `/auth`
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/auth/register/student` | — | Student registration |
+| POST | `/auth/register/evaluator` | — | Evaluator registration (pending) |
+| POST | `/auth/login` | — | HttpOnly cookie session |
+| POST | `/auth/logout` | — | Clear cookie |
+| POST | `/auth/change-password` | user | Change password |
+| GET | `/auth/me` | user | Current profile |
+
+### Admin users — `/admin`
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/admin/users` | Non-admin users |
+| GET | `/admin/evaluators/pending` | Pending evaluators |
+| GET | `/admin/evaluators` | All evaluators (`?approval_status=approved`) |
+| POST | `/admin/evaluators/{id}/approve` | Approve evaluator |
+| GET/PATCH | `/admin/user/{id}` | Get / update user |
+
+### Hackathons — `/hackathons`
+
+CRUD for hackathons (banner, themes, timeline, `hackathon_url`, linked evaluation requirements). Public list/detail for authenticated users; create/update/delete are admin.
+
+### Themes — `/themes`
+
+CRUD for reusable themes (admin write; list/read for app).
+
+### Evaluation requirements — `/evaluation-requirements`
+
+Reusable requirement field definitions used by hackathons / student forms.
+
+### AI metric scoring — `/ai-evaluation-metric-scoring`
+
+Per-field scoring prompts (`max_score`, natural-language scoring instructions) for Gemini.
+
+### Submissions — `/submissions`
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/accepted-video-types` | student | Allowed MIME/ext + max size |
+| POST | `/upload-url` | student | Signed PUT URL (record or file) |
+| POST | `/from-upload` | student | Finalize after GCS PUT |
+| POST | `/` | student | Multipart create (≤ ~32 MiB on Cloud Run) |
+| GET | `/` | student | Own submissions |
+| GET | `/admin/hackathons` | admin | Hackathons + submission counts |
+| GET | `/admin/hackathons/{id}` | admin | Submissions for a hackathon |
+| POST | `/admin/hackathons/{id}/assign-equally` | admin | Divide selected among evaluators |
+| GET | `/admin/all` | admin | All submissions |
+| GET | `/evaluator/hackathons` | evaluator | Hackathons with assigned work |
+| GET | `/evaluator/hackathons/{id}` | evaluator | Assigned submissions |
+| GET | `/assigned-to-me` | evaluator | Flat assigned list |
+| GET | `/{id}` | owner / assignee / admin | Submission detail |
+| GET | `/{id}/video` | same | Stream video (Range supported) |
+| GET | `/{id}/analysis` | same* | Analysis doc (*students after publish) |
+| GET | `/{id}/report` | same* | Markdown report |
+| POST | `/{id}/evaluate` | admin or assignee | Start Gemini analysis |
+| POST | `/{id}/submit-for-review` | assignee | Send score to admin |
+| POST | `/{id}/approve-evaluation` | admin | Approve → publish to student |
+| POST | `/{id}/request-changes` | admin | Send back to evaluator |
+| POST | `/{id}/publish` | admin | Manual publish toggle |
+| POST | `/{id}/assign` | admin | Assign / unassign evaluator |
+
+### Example: signed upload (recommended)
 
 ```bash
-curl -X POST http://localhost:8000/auth/register/student \
-  -H "Content-Type: application/json" \
+# Login as student first (-c / -b cookies.txt)
+
+# 1) Prepare upload
+curl -X POST http://localhost:8000/submissions/upload-url \
+  -b cookies.txt -H "Content-Type: application/json" \
+  -d '{"filename":"demo.webm","content_type":"video/webm","video_source":"uploaded"}'
+# -> { "upload_url", "video_path", "content_type", ... }
+
+# 2) PUT file directly to GCS (same Content-Type)
+curl -X PUT "<upload_url>" \
+  -H "Content-Type: video/webm" \
+  --data-binary @demo.webm
+
+# 3) Finalize
+curl -X POST http://localhost:8000/submissions/from-upload \
+  -b cookies.txt -H "Content-Type: application/json" \
   -d '{
-        "first_name": "John",
-        "last_name": "Doe",
-        "niat_id": "NIAT12345",
-        "email": "john.doe@example.com",
-        "mobile_no": "9876543210",
-        "password": "12345678",
-        "confirm_password": "12345678"
+        "video_path": "gs://…/video.webm",
+        "content_type": "video/webm",
+        "source_filename": "demo.webm",
+        "video_source": "uploaded",
+        "hackathon_id": "<id>",
+        "theme_id": "<id>",
+        "problem_statement": "…",
+        "solution_description": "…"
       }'
 ```
 
-**Evaluator** (`POST /auth/register/evaluator`) — requires a `@nxtwave.co.in` email and starts with `approval_status: pending`:
-
-```bash
-curl -X POST http://localhost:8000/auth/register/evaluator \
-  -H "Content-Type: application/json" \
-  -d '{
-        "first_name": "Jane",
-        "last_name": "Smith",
-        "employee_id": "EMP12345",
-        "email": "jane.smith@nxtwave.co.in",
-        "password": "12345678",
-        "confirm_password": "12345678"
-      }'
-```
-
-Pending evaluators can log in and call `GET /auth/me`, but other app routes return `403` until an admin approves them.
-
-## Core endpoints
-
-| Method | Path                              | Auth  | Description                                              |
-| ------ | --------------------------------- | ----- | ------------------------------------------------------- |
-| POST   | `/auth/register/student`          | —     | Student self-registration                               |
-| POST   | `/auth/register/evaluator`        | —     | Evaluator self-registration (pending approval)          |
-| POST   | `/auth/login`                     | —     | Log in; token stored in HttpOnly cookie                 |
-| POST   | `/auth/logout`                    | —     | Clear session cookie                                    |
-| GET    | `/auth/me`                        | user  | Current user profile (includes `approval_status`)       |
-| POST   | `/submissions`                    | student | Upload video + project details (creates submission)     |
-| GET    | `/submissions`                    | student | List the student's submissions                          |
-| GET    | `/submissions/{id}`               | user    | Get submission status / evaluation result               |
-| POST   | `/submissions/{id}/evaluate`      | student | Start AI evaluation (`evaluation_criteria` optional)    |
-| GET    | `/admin/users`                    | admin | List non-admin users                                    |
-| GET    | `/admin/evaluators/pending`       | admin | List evaluators awaiting approval                       |
-| GET    | `/admin/evaluators`               | admin | List all evaluators                                     |
-| POST   | `/admin/evaluators/{id}/approve`  | admin | Approve a pending evaluator                             |
-
-### Student submission flow
-
-```bash
-# 1. Log in (sets HttpOnly cookie)
-curl -X POST http://localhost:8000/auth/login \
-  -H "Content-Type: application/json" \
-  -c cookies.txt \
-  -d '{"email":"student@nxtwave.co.in","password":"12345678"}'
-
-# 2. Create a submission (video + required project fields)
-curl -X POST http://localhost:8000/submissions \
-  -b cookies.txt \
-  -F "video=@demo.webm;type=video/webm" \
-  -F "title=Neura CDN" \
-  -F "problem_statement=Building UI by hand is slow and inconsistent." \
-  -F "solution_description=Auto-generates reusable HTML/CSS components via CDN."
-
-# 3. Start AI evaluation (evaluation_criteria is optional)
-curl -X POST http://localhost:8000/submissions/<submission_id>/evaluate \
-  -b cookies.txt \
-  -H "Content-Type: application/json" \
-  -d '{}'
-
-# 4. Poll for the result
-curl http://localhost:8000/submissions/<submission_id> \
-  -b cookies.txt
-# -> { "status": "completed",
-#      "result": { "overall_score": 82, "criteria": {...},
-#                  "checklist": "1. PROBLEM ESTABLISHMENT ...",
-#                  "report": "## Analysis ...", ... } }
-```
-
-`problem_statement` / `solution_description` are optional — omit them to judge the
-video against a generic hackathon rubric. You can also pass a freeform
-`"criteria"` string to focus the evaluation.
+---
 
 ## Production (cross-origin frontend)
 
-When the Vercel frontend calls the Cloud Run API, HttpOnly cookie auth requires:
+As wired in `app/main.py` + `cloudbuild.yaml`: CORS with `allow_credentials=True` and explicit origins from `get_allowed_origins()` / `ALLOWED_ORIGINS`. Production deploy sets:
 
-| Setting | Cloud Run value |
-|---|---|
-| `ENVIRONMENT` | `production` (sets `Secure` on cookies) |
+| Setting | Cloud Run value (`cloudbuild.yaml`) |
+|---------|-------------------------------------|
+| `ENVIRONMENT` | `production` |
 | `COOKIE_SAMESITE` | `none` |
-| `ALLOWED_ORIGINS` | Your frontend URL, e.g. `https://ai-hackathon-evaluator.vercel.app` |
+| `ALLOWED_ORIGINS` | `https://hackniat.vercel.app` |
 
-These are set in `cloudbuild.yaml` for deploy. CORS uses `allow_credentials=True` with an explicit origin (never `*`).
+Frontend must send `credentials: "include"`.
 
-The frontend must send requests with `credentials: "include"`.
+### GCS CORS for direct uploads
+
+Applied in `cloudbuild.yaml` step 4 on `gs://$PROJECT_ID-hackathon-evaluations`:
+
+```json
+[
+  {
+    "origin": [
+      "https://hackniat.vercel.app",
+      "http://localhost:3000",
+      "http://localhost:5173"
+    ],
+    "method": ["GET", "PUT", "HEAD", "OPTIONS"],
+    "responseHeader": ["Content-Type", "Content-Length", "x-goog-resumable"],
+    "maxAgeSeconds": 3600
+  }
+]
+```
+
+Manual apply (same bucket naming as Cloud Build):
+
+```bash
+gcloud storage buckets update gs://$PROJECT_ID-hackathon-evaluations --cors-file=cors.json
+```
+
+---
+
+## Architecture & deployment (source of truth)
+
+These files define production architecture and deploy. Do not assume a different stack or pipeline.
+
+| File | Role |
+|------|------|
+| [`app/main.py`](app/main.py) | FastAPI app: CORS (`allow_credentials=True` + `get_allowed_origins()`), lifespan `DatabaseSeeder`, routers, `/health`, `/`, `ValueError`→400 / `Exception`→500 |
+| [`pyproject.toml`](pyproject.toml) | Package `ai-hackathon-evaluator-backend` 1.0.0, Python ≥3.11, runtime + optional `dev` deps, Black/mypy |
+| [`requirements.txt`](requirements.txt) | Same runtime deps (FastAPI, uvicorn, pydantic, firebase-admin, google-cloud-storage, google-genai, dotenv, multipart, email-validator, requests) |
+| [`Dockerfile`](Dockerfile) | `python:3.11-slim` → `pip install -e .` from `pyproject.toml` → copy `app/` → **uvicorn on `0.0.0.0:8080`** (no `.env` in image) |
+| [`cloudbuild.yaml`](cloudbuild.yaml) | Artifact Registry → Docker build/push → GCS bucket + CORS → Cloud Run deploy |
+
+### App surface (`app/main.py`)
+
+Routers mounted:
+
+- `auth`, `admin`, `submissions`, `hackathon`, `theme`, `evaluation_requirement`, `metric_scoring`
+
+Startup: `DatabaseSeeder.seed_all()` (failures logged; startup continues).
+
+Local entry (`python -m` / `__main__`): uvicorn `app.main:app` on **8000** with reload.  
+Container/Cloud Run: uvicorn on **8080** per Dockerfile.
+
+### Dependencies (`pyproject.toml` / `requirements.txt`)
+
+Runtime: FastAPI, uvicorn[standard], pydantic v2, firebase-admin, google-cloud-storage, google-genai, python-dotenv, python-multipart, email-validator, requests.
+
+Dev (optional `[dev]`): pytest, pytest-asyncio, black (line-length 100), flake8, mypy.
+
+### Production deploy (`cloudbuild.yaml` + `Dockerfile`)
+
+1. Ensure Artifact Registry repo `ai-hackathon-evaluator-backend` in **asia-south1**  
+2. Build image → `asia-south1-docker.pkg.dev/$PROJECT_ID/ai-hackathon-evaluator-backend/ai-hackathon-evaluator-backend:$SHORT_SHA` (+ `:latest`)  
+3. Push `$SHORT_SHA` tag  
+4. Ensure bucket `gs://$PROJECT_ID-hackathon-evaluations` (create in **us-central1** if missing) and apply CORS for `https://hackniat.vercel.app`, `http://localhost:3000`, `http://localhost:5173`  
+5. Deploy Cloud Run service **`ai-hackathon-evaluator-backend`**:
+   - region: **asia-south1**
+   - `--allow-unauthenticated`
+   - secrets: `FIREBASE_PROJECT_ID`, `FIREBASE_PRIVATE_KEY`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_WEB_API_KEY`, `FIREBASE_DATABASE_URL`
+   - env: `ENVIRONMENT=production`, `DEBUG=false`, `GOOGLE_CLOUD_PROJECT=$PROJECT_ID`, `GOOGLE_CLOUD_LOCATION=global`, `EVALUATION_BUCKET_NAME=$PROJECT_ID-hackathon-evaluations`, `GEMINI_MODEL=gemini-3.5-flash`, `GEMINI_ENTERPRISE=true`, `COOKIE_SAMESITE=none`, `ALLOWED_ORIGINS=https://hackniat.vercel.app`
+   - **1Gi** memory, **1** CPU, **3600s** timeout
+
+Build options: `E2_HIGHCPU_8`, `CLOUD_LOGGING_ONLY`, build timeout `1800s`.
+
+Shell vars in step 4 must use `$$BUCKET` so Cloud Build does not treat them as substitutions.
+
+```bash
+gcloud builds submit --config=cloudbuild.yaml
+```
 
 ## Configuration
 
-See [.env.example](.env.example). Login needs the `FIREBASE_*` vars; video analysis additionally needs `GOOGLE_CLOUD_PROJECT`, `EVALUATION_BUCKET_NAME` (an existing GCS bucket), and `GEMINI_MODEL`.
+See [.env.example](.env.example) for local development. Production secrets/env come from Cloud Run as set in `cloudbuild.yaml` (Secret Manager + `--set-env-vars`).
+
+| Area | Variables |
+|------|-----------|
+| Auth / Firestore (secrets in prod) | `FIREBASE_PROJECT_ID`, `FIREBASE_PRIVATE_KEY`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_WEB_API_KEY`, `FIREBASE_DATABASE_URL` |
+| Gemini + GCS (set on Cloud Run) | `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, `EVALUATION_BUCKET_NAME`, `GEMINI_MODEL`, `GEMINI_ENTERPRISE` |
+| App / cookies | `ENVIRONMENT`, `DEBUG`, `ALLOWED_ORIGINS`, `COOKIE_SAMESITE` |
+| Optional local | `VIDEO_SIGNED_URL_EXPIRY_SECONDS`, `VIDEO_UPLOAD_URL_EXPIRY_SECONDS` |
 
 ## Project layout
 
 ```
 app/
-├── main.py                 # app factory, CORS, error handlers, lifespan seeding
+├── main.py                      # app factory, CORS, handlers, lifespan seeder
 ├── middleware/
-│   └── auth_middleware.py  # get_current_user / get_admin_user dependencies
-├── models/
-│   ├── user_model.py       # auth schemas
-│   └── evaluation_model.py # upload / analyze / result schemas
+│   └── auth_middleware.py       # current / active / admin / student / evaluator deps
+├── models/                      # Pydantic schemas (users, submissions, hackathons, …)
 ├── routes/
-│   ├── auth.py             # /auth
-│   ├── admin.py            # /admin
-│   └── submissions.py      # /submissions (student upload & evaluate)
+│   ├── auth.py                  # /auth
+│   ├── admin.py                 # /admin
+│   ├── submissions.py           # /submissions
+│   ├── hackathon.py             # /hackathons
+│   ├── theme.py                 # /themes
+│   ├── evaluation_requirement.py
+│   └── metric_scoring.py        # /ai-evaluation-metric-scoring
 ├── services/
-│   ├── firebase.py         # Firebase Admin singleton (Auth + Firestore)
-│   ├── user_service.py     # user Firestore operations
-│   └── submission_service.py # GCS upload + Gemini evaluation
+│   ├── firebase.py              # Firebase Admin singleton
+│   ├── user_service.py
+│   ├── registration_service.py
+│   ├── submission_service.py    # GCS + Gemini + review workflow
+│   ├── hackathon_service.py
+│   ├── theme_service.py
+│   ├── evaluation_requirement_service.py
+│   └── metric_scoring_service.py
 └── utils/
-    ├── seeder.py           # default admin + test user
-    └── validators.py
+    ├── seeder.py
+    ├── auth_cookies.py
+    ├── cors_config.py
+    ├── gcs_video.py             # signed GET/PUT + streaming
+    ├── video_upload.py          # MIME allow-list (record + upload)
+    └── image_upload.py          # hackathon banners
+```
+
+## Commands
+
+```bash
+# Local (matches app/main.py __main__ / typical dev)
+uvicorn app.main:app --reload          # :8000
+
+# Install (matches Dockerfile / pyproject)
+pip install -e ".[dev]"
+
+# Quality (pyproject optional-deps + tool config)
+pytest
+black .          # line-length 100
+flake8 app
+mypy app
 ```
