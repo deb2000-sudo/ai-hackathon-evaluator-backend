@@ -20,7 +20,13 @@ from app.routes import (
     theme,
 )
 from app.utils.async_io import run_sync
-from app.utils.cors_config import get_allowed_origins, get_cors_allow_headers
+from app.utils.cors_config import (
+    api_docs_enabled,
+    get_allowed_origins,
+    get_cors_allow_headers,
+    get_cors_allow_methods,
+    get_cors_expose_headers,
+)
 from app.utils.seeder import DatabaseSeeder, seed_on_startup_enabled
 from app.exceptions import (
     AppError,
@@ -35,6 +41,8 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+_DOCS_ENABLED = api_docs_enabled()
 
 
 @asynccontextmanager
@@ -71,21 +79,25 @@ async def lifespan(app: FastAPI):
     logger.info("FastAPI application shutting down...")
 
 
-# Create FastAPI app
+# Create FastAPI app (Phase 12: no /docs|/redoc|/openapi.json in production).
 app = FastAPI(
     title="AI Hackathon Evaluator Backend",
     description="FastAPI backend that evaluates hackathon submission videos with AI",
     version="1.0.0",
     lifespan=lifespan,
+    docs_url="/docs" if _DOCS_ENABLED else None,
+    redoc_url="/redoc" if _DOCS_ENABLED else None,
+    openapi_url="/openapi.json" if _DOCS_ENABLED else None,
 )
 
-# CORS: credentials + explicit origins required for cross-origin HttpOnly cookies.
+# CORS: credentials + explicit origins; methods/headers match SPA preflights.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_allowed_origins(),
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=get_cors_allow_methods(),
     allow_headers=get_cors_allow_headers(),
+    expose_headers=get_cors_expose_headers(),
 )
 
 
@@ -163,12 +175,14 @@ async def general_exception_handler(request, exc: Exception):
 @app.get("/", tags=["root"])
 async def root():
     """Root endpoint"""
-    return {
+    payload = {
         "status": "success",
         "message": "Welcome to AI Hackathon Evaluator backend",
-        "docs": "/docs",
-        "openapi_schema": "/openapi.json",
     }
+    if _DOCS_ENABLED:
+        payload["docs"] = "/docs"
+        payload["openapi_schema"] = "/openapi.json"
+    return payload
 
 
 if __name__ == "__main__":

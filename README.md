@@ -119,10 +119,11 @@ After approval: `report_published=true`, student can read analysis/report/`final
 
 ## API overview
 
-Interactive docs: `http://localhost:8000/docs`
+Interactive docs (local / non-production): `http://localhost:8000/docs`
 
-Paths below are **public absolute URLs** (same as OpenAPI). Do not rename
-these without an API version bump.
+Paths below are **public absolute URLs** (same as OpenAPI when docs are enabled). Do not rename
+these without an API version bump. In production, `/docs`, `/redoc`, and `/openapi.json` are
+disabled by default (`ENVIRONMENT=production`); set `ENABLE_API_DOCS=true` only if needed.
 
 ### Health / root
 
@@ -238,11 +239,13 @@ curl -X POST http://localhost:8000/submissions/from-upload \
 
 As wired in `app/main.py` + `cloudbuild.yaml`: CORS with `allow_credentials=True` and explicit origins from `get_allowed_origins()` / `ALLOWED_ORIGINS`. Production deploy sets:
 
-| Setting | Cloud Run value (`cloudbuild.yaml`) |
-|---------|-------------------------------------|
-| `ENVIRONMENT` | `production` |
-| `COOKIE_SAMESITE` | `none` |
+| Variable | Typical value |
+|----------|----------------|
+| `ENVIRONMENT` | `production` (disables `/docs`, `/redoc`, `/openapi.json` unless `ENABLE_API_DOCS=true`) |
 | `ALLOWED_ORIGINS` | `https://hackniat.vercel.app` |
+| `COOKIE_SAMESITE` | `none` (with Secure cookies) |
+
+CORS **methods/headers** default to the SPA allow-list (`GET/POST/PATCH/DELETE/…`, `Authorization`, `Content-Type`, `X-CSRF-Token`, `Range`, …). Set `CORS_ALLOW_METHODS=*` or `CORS_ALLOW_HEADERS=*` only if you need the old wildcards.
 
 Frontend must send `credentials: "include"`.
 
