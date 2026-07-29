@@ -52,12 +52,12 @@ def test_submission_service_storage_uses_shared_gcs_helper(monkeypatch):
     fake_client = MagicMock()
 
     with (
-        patch("app.services.submission_service.FirebaseService"),
-        patch("app.services.submission_service.UserService"),
-        patch("app.services.submission_service.HackathonService"),
-        patch("app.services.submission_service.ThemeService"),
+        patch("app.services.submission.base.FirebaseService"),
+        patch("app.services.submission.base.UserService"),
+        patch("app.services.submission.base.HackathonService"),
+        patch("app.services.submission.base.ThemeService"),
         patch(
-            "app.services.submission_service.build_storage_client",
+            "app.services.submission.base.build_storage_client",
             return_value=fake_client,
         ) as build_gcs,
     ):
@@ -71,11 +71,11 @@ def test_submission_service_storage_uses_shared_gcs_helper(monkeypatch):
 def test_submission_service_accepts_injected_storage_client():
     injected = MagicMock()
     with (
-        patch("app.services.submission_service.FirebaseService"),
-        patch("app.services.submission_service.UserService"),
-        patch("app.services.submission_service.HackathonService"),
-        patch("app.services.submission_service.ThemeService"),
-        patch("app.services.submission_service.build_storage_client") as build_gcs,
+        patch("app.services.submission.base.FirebaseService"),
+        patch("app.services.submission.base.UserService"),
+        patch("app.services.submission.base.HackathonService"),
+        patch("app.services.submission.base.ThemeService"),
+        patch("app.services.submission.base.build_storage_client") as build_gcs,
     ):
         svc = SubmissionService(storage_client=injected)
         assert svc._storage_client() is injected

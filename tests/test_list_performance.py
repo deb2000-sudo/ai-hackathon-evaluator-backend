@@ -190,7 +190,7 @@ def test_enrich_submissions_batches_analysis_reads():
         }
 
         with patch(
-            "app.services.submission_service.generate_signed_video_url",
+            "app.services.submission.query.generate_signed_video_url",
             return_value="https://v",
         ):
             user = MagicMock()

@@ -24,10 +24,10 @@ def test_submission_service_has_no_hardcoded_project_fallback(monkeypatch):
     monkeypatch.setenv("EVALUATION_BUCKET_NAME", "test-bucket")
 
     with (
-        patch("app.services.submission_service.FirebaseService"),
-        patch("app.services.submission_service.UserService"),
-        patch("app.services.submission_service.HackathonService"),
-        patch("app.services.submission_service.ThemeService"),
+        patch("app.services.submission.base.FirebaseService"),
+        patch("app.services.submission.base.UserService"),
+        patch("app.services.submission.base.HackathonService"),
+        patch("app.services.submission.base.ThemeService"),
     ):
         svc = SubmissionService()
 
@@ -41,10 +41,10 @@ def test_submission_service_uses_env_project(monkeypatch):
     monkeypatch.setenv("EVALUATION_BUCKET_NAME", "my-bucket")
 
     with (
-        patch("app.services.submission_service.FirebaseService"),
-        patch("app.services.submission_service.UserService"),
-        patch("app.services.submission_service.HackathonService"),
-        patch("app.services.submission_service.ThemeService"),
+        patch("app.services.submission.base.FirebaseService"),
+        patch("app.services.submission.base.UserService"),
+        patch("app.services.submission.base.HackathonService"),
+        patch("app.services.submission.base.ThemeService"),
     ):
         svc = SubmissionService()
 
