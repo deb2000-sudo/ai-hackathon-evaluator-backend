@@ -20,6 +20,7 @@ from app.models.metric_scoring_model import (
 )
 from app.models.user_model import CurrentUser
 from app.services.metric_scoring_service import MetricScoringService
+from app.utils.async_io import run_sync
 
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,9 @@ async def create_metric_scoring(
     """
     service = MetricScoringService()
     try:
-        scoring = service.create_scoring(request=request, created_by=admin.user_id)
+        scoring = await run_sync(
+            service.create_scoring, request=request, created_by=admin.user_id
+        )
     except ValueError as e:
         detail = str(e)
         code = (
@@ -62,7 +65,9 @@ async def list_metric_scoring(
     config linked to a specific evaluation requirement.
     """
     service = MetricScoringService()
-    items = service.list_scoring(evaluation_requirement_id=evaluation_requirement_id)
+    items = await run_sync(
+        service.list_scoring, evaluation_requirement_id=evaluation_requirement_id
+    )
     return [MetricScoringResponse(**item) for item in items]
 
 
@@ -73,7 +78,7 @@ async def get_metric_scoring(
 ) -> MetricScoringResponse:
     """Get a single metric-scoring config by id."""
     service = MetricScoringService()
-    scoring = service.get_scoring(scoring_id)
+    scoring = await run_sync(service.get_scoring, scoring_id)
     if not scoring:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -91,7 +96,7 @@ async def update_metric_scoring(
     """Update a metric-scoring config. Admin only."""
     service = MetricScoringService()
     try:
-        scoring = service.update_scoring(scoring_id, request)
+        scoring = await run_sync(service.update_scoring, scoring_id, request)
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -113,7 +118,7 @@ async def delete_metric_scoring(
 ) -> dict:
     """Delete a metric-scoring config. Admin only."""
     service = MetricScoringService()
-    deleted = service.delete_scoring(scoring_id)
+    deleted = await run_sync(service.delete_scoring, scoring_id)
     if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

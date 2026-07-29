@@ -64,7 +64,9 @@ from app.models.submission_model import (
     SubmitForReviewRequest,
 )
 from app.models.user_model import CurrentUser
+from app.services.evaluation_job_service import EvaluationJobService
 from app.services.submission_service import SubmissionService
+from app.utils.async_io import run_sync
 from app.utils.video_upload import (
     accepted_video_types_payload,
     resolve_video_content_type,
@@ -74,14 +76,17 @@ from app.utils.video_upload import (
 router = APIRouter(prefix="/submissions", tags=["submissions"])
 
 
-def _to_submission_response(
+async def _to_submission_response(
     service: SubmissionService,
     submission: dict,
     current_user: CurrentUser | None = None,
 ) -> SubmissionResponse:
-    return SubmissionResponse(
-        **service.enrich_submission_for_response(submission, current_user=current_user)
+    enriched = await run_sync(
+        service.enrich_submission_for_response,
+        submission,
+        current_user=current_user,
     )
+    return SubmissionResponse(**enriched)
 
 
 def _ensure_student_can_view_report(
@@ -163,7 +168,8 @@ async def create_submission(
 
     try:
         service = SubmissionService()
-        submission = service.create_submission(
+        submission = await run_sync(
+            service.create_submission,
             student=student,
             video=video_payload,
             problem_statement=problem_statement,
@@ -183,7 +189,7 @@ async def create_submission(
             detail="Submission upload failed",
         ) from e
 
-    return _to_submission_response(service, submission, current_user=student)
+    return await _to_submission_response(service, submission, current_user=student)
 
 
 @router.get("/accepted-video-types", response_model=AcceptedVideoTypesResponse)
@@ -212,7 +218,8 @@ async def prepare_submission_upload(
     """
     try:
         service = SubmissionService()
-        payload = service.prepare_direct_upload(
+        payload = await run_sync(
+            service.prepare_direct_upload,
             student=student,
             filename=request.filename,
             content_type=request.content_type,
@@ -245,7 +252,8 @@ async def create_submission_from_upload(
     """
     try:
         service = SubmissionService()
-        submission = service.create_submission_from_upload(
+        submission = await run_sync(
+            service.create_submission_from_upload,
             student=student,
             video_path=request.video_path,
             content_type=request.content_type,
@@ -267,7 +275,7 @@ async def create_submission_from_upload(
             detail="Submission finalize failed",
         ) from e
 
-    return _to_submission_response(service, submission, current_user=student)
+    return await _to_submission_response(service, submission, current_user=student)
 
 
 @router.get("", response_model=list[SubmissionResponse])
@@ -276,9 +284,9 @@ async def list_my_submissions(
 ) -> list[SubmissionResponse]:
     """List all submissions for the authenticated student."""
     service = SubmissionService()
-    submissions = service.list_student_submissions(student.user_id)
+    submissions = await run_sync(service.list_student_submissions, student.user_id)
     return [
-        _to_submission_response(service, item, current_user=student)
+        await _to_submission_response(service, item, current_user=student)
         for item in submissions
     ]
 
@@ -294,7 +302,7 @@ async def list_hackathons_for_admin_submissions(
     submissions via ``GET /submissions/admin/hackathons/{hackathon_id}``.
     """
     service = SubmissionService()
-    summaries = service.list_hackathons_with_submission_counts()
+    summaries = await run_sync(service.list_hackathons_with_submission_counts)
     return [HackathonSubmissionSummary(**item) for item in summaries]
 
 
@@ -308,16 +316,16 @@ async def list_submissions_for_hackathon_admin(
 ) -> list[SubmissionResponse]:
     """Admin: list all submissions belonging to a specific hackathon."""
     service = SubmissionService()
-    hackathon = service.hackathon_service.get_hackathon(hackathon_id)
+    hackathon = await run_sync(service.hackathon_service.get_hackathon, hackathon_id)
     if not hackathon:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Hackathon not found",
         )
 
-    submissions = service.list_submissions_for_hackathon(hackathon_id)
+    submissions = await run_sync(service.list_submissions_for_hackathon, hackathon_id)
     return [
-        _to_submission_response(service, item, current_user=admin)
+        await _to_submission_response(service, item, current_user=admin)
         for item in submissions
     ]
 
@@ -338,7 +346,8 @@ async def divide_submissions_equally(
     """
     service = SubmissionService()
     try:
-        assigned = service.divide_equally_among_evaluators(
+        assigned = await run_sync(
+            service.divide_equally_among_evaluators,
             hackathon_id=hackathon_id,
             submission_ids=request.submission_ids,
             assigned_by=admin.user_id,
@@ -364,7 +373,7 @@ async def divide_submissions_equally(
         assigned_count=len(assigned),
         evaluator_count=evaluator_count,
         submissions=[
-            _to_submission_response(service, item, current_user=admin)
+            await _to_submission_response(service, item, current_user=admin)
             for item in assigned
         ],
     )
@@ -376,9 +385,9 @@ async def list_all_submissions_for_admin(
 ) -> list[SubmissionResponse]:
     """Admin review queue: list every student submission."""
     service = SubmissionService()
-    submissions = service.list_all_submissions()
+    submissions = await run_sync(service.list_all_submissions)
     return [
-        _to_submission_response(service, item, current_user=admin)
+        await _to_submission_response(service, item, current_user=admin)
         for item in submissions
     ]
 
@@ -392,7 +401,8 @@ async def list_hackathons_for_evaluator(
     assigned to this evaluator, with assigned counts.
     """
     service = SubmissionService()
-    summaries = service.list_hackathons_with_submission_counts(
+    summaries = await run_sync(
+        service.list_hackathons_with_submission_counts,
         evaluator_id=evaluator.user_id,
     )
     return [HackathonSubmissionSummary(**item) for item in summaries]
@@ -408,19 +418,20 @@ async def list_submissions_for_hackathon_evaluator(
 ) -> list[SubmissionResponse]:
     """Evaluator: list only submissions assigned to them for this hackathon."""
     service = SubmissionService()
-    hackathon = service.hackathon_service.get_hackathon(hackathon_id)
+    hackathon = await run_sync(service.hackathon_service.get_hackathon, hackathon_id)
     if not hackathon:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Hackathon not found",
         )
 
-    submissions = service.list_submissions_for_hackathon(
+    submissions = await run_sync(
+        service.list_submissions_for_hackathon,
         hackathon_id,
         evaluator_id=evaluator.user_id,
     )
     return [
-        _to_submission_response(service, item, current_user=evaluator)
+        await _to_submission_response(service, item, current_user=evaluator)
         for item in submissions
     ]
 
@@ -441,9 +452,9 @@ async def list_my_assigned_submissions(
         )
 
     service = SubmissionService()
-    submissions = service.list_submissions_for_evaluator(current_user.user_id)
+    submissions = await run_sync(service.list_submissions_for_evaluator, current_user.user_id)
     return [
-        _to_submission_response(service, item, current_user=current_user)
+        await _to_submission_response(service, item, current_user=current_user)
         for item in submissions
     ]
 
@@ -461,7 +472,7 @@ async def stream_submission_video(
     authentication as other submission routes (cookie or Bearer token).
     """
     service = SubmissionService()
-    submission = service.get_submission(submission_id, current_user)
+    submission = await run_sync(service.get_submission, submission_id, current_user)
     if not submission:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -469,7 +480,8 @@ async def stream_submission_video(
         )
 
     try:
-        return service.build_video_stream_response(
+        return await run_sync(
+            service.build_video_stream_response,
             submission,
             request.headers.get("range"),
         )
@@ -487,7 +499,7 @@ async def get_submission_analysis(
 ) -> AnalysisResponse:
     """Fetch the analysis document. Students may only access it after publish."""
     service = SubmissionService()
-    submission = service.get_submission(submission_id, current_user)
+    submission = await run_sync(service.get_submission, submission_id, current_user)
     if not submission:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -496,7 +508,7 @@ async def get_submission_analysis(
 
     _ensure_student_can_view_report(service, submission, current_user)
 
-    analysis = service.get_analysis_for_submission(submission_id, current_user)
+    analysis = await run_sync(service.get_analysis_for_submission, submission_id, current_user)
     if not analysis:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -517,7 +529,7 @@ async def get_submission_report(
     Students can only read it after ``report_published`` is true.
     """
     service = SubmissionService()
-    submission = service.get_submission(submission_id, current_user)
+    submission = await run_sync(service.get_submission, submission_id, current_user)
     if not submission:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -526,7 +538,7 @@ async def get_submission_report(
 
     _ensure_student_can_view_report(service, submission, current_user)
 
-    analysis = service.get_analysis_for_submission(submission_id, current_user)
+    analysis = await run_sync(service.get_analysis_for_submission, submission_id, current_user)
     if not analysis or analysis.get("status") != "completed":
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -555,14 +567,14 @@ async def get_submission(
     Analysis content is omitted for students until the report is approved/published.
     """
     service = SubmissionService()
-    submission = service.get_submission(submission_id, current_user)
+    submission = await run_sync(service.get_submission, submission_id, current_user)
     if not submission:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Submission not found",
         )
 
-    return _to_submission_response(service, submission, current_user=current_user)
+    return await _to_submission_response(service, submission, current_user=current_user)
 
 
 @router.post("/{submission_id}/evaluate", response_model=SubmissionResponse, status_code=202)
@@ -576,6 +588,8 @@ async def evaluate_submission(
     Start AI video analysis for a submission.
 
     Allowed for **admins** or the **assigned approved evaluator**.
+    Returns ``202`` immediately; analysis runs via Cloud Tasks (production) or
+    BackgroundTasks (local fallback). Poll ``GET /submissions/{id}`` for status.
     After analysis completes, the evaluator submits for review; admin approval
     publishes the final score to the student.
     """
@@ -586,7 +600,7 @@ async def evaluate_submission(
         )
 
     service = SubmissionService()
-    submission = service.get_submission(submission_id, current_user)
+    submission = await run_sync(service.get_submission, submission_id, current_user)
     if not submission:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -608,7 +622,8 @@ async def evaluate_submission(
         )
 
     try:
-        service.mark_queued_for_evaluation(
+        await run_sync(
+            service.mark_queued_for_evaluation,
             submission_id,
             evaluation_criteria=request.evaluation_criteria,
             analyzed_by=current_user.user_id,
@@ -619,20 +634,45 @@ async def evaluate_submission(
             detail=str(e),
         ) from e
 
-    background_tasks.add_task(
-        service.evaluate_submission,
-        submission_id,
-        evaluation_criteria=request.evaluation_criteria,
-    )
+    job_service = EvaluationJobService()
+    try:
+        if job_service.resolve_mode() == "cloud_tasks":
+            # Network I/O to Cloud Tasks API — off the event loop.
+            await run_sync(
+                job_service.enqueue_cloud_task,
+                submission_id,
+                request.evaluation_criteria,
+            )
+        else:
+            # Must stay on the request thread (BackgroundTasks).
+            job_service.enqueue_background(
+                submission_id,
+                request.evaluation_criteria,
+                background_tasks,
+            )
+    except Exception as e:
+        # Roll status back so the client can retry evaluate.
+        await run_sync(
+            service._update_submission,
+            submission_id,
+            {
+                "status": "failed",
+                "error": f"Failed to schedule evaluation job: {e}",
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to schedule evaluation job",
+        ) from e
 
-    refreshed = service.get_submission(submission_id, current_user)
+    refreshed = await run_sync(service.get_submission, submission_id, current_user)
     if not refreshed:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Submission not found",
         )
 
-    return _to_submission_response(service, refreshed, current_user=current_user)
+    return await _to_submission_response(service, refreshed, current_user=current_user)
 
 
 @router.post("/{submission_id}/submit-for-review", response_model=SubmissionResponse)
@@ -648,7 +688,8 @@ async def submit_evaluation_for_review(
     """
     service = SubmissionService()
     try:
-        submission = service.submit_for_review(
+        submission = await run_sync(
+            service.submit_for_review,
             submission_id=submission_id,
             evaluator_user_id=evaluator.user_id,
             final_score=request.final_score,
@@ -657,7 +698,7 @@ async def submit_evaluation_for_review(
     except ValueError as e:
         raise _http_from_value_error(e) from e
 
-    return _to_submission_response(service, submission, current_user=evaluator)
+    return await _to_submission_response(service, submission, current_user=evaluator)
 
 
 @router.post("/{submission_id}/approve-evaluation", response_model=SubmissionResponse)
@@ -674,7 +715,8 @@ async def approve_evaluation(
     """
     service = SubmissionService()
     try:
-        submission = service.approve_evaluation(
+        submission = await run_sync(
+            service.approve_evaluation,
             submission_id=submission_id,
             admin_user_id=admin.user_id,
             final_score=request.final_score,
@@ -683,7 +725,7 @@ async def approve_evaluation(
     except ValueError as e:
         raise _http_from_value_error(e) from e
 
-    return _to_submission_response(service, submission, current_user=admin)
+    return await _to_submission_response(service, submission, current_user=admin)
 
 
 @router.post("/{submission_id}/request-changes", response_model=SubmissionResponse)
@@ -699,7 +741,8 @@ async def request_evaluation_changes(
     """
     service = SubmissionService()
     try:
-        submission = service.request_evaluation_changes(
+        submission = await run_sync(
+            service.request_evaluation_changes,
             submission_id=submission_id,
             admin_user_id=admin.user_id,
             review_notes=request.review_notes,
@@ -707,7 +750,7 @@ async def request_evaluation_changes(
     except ValueError as e:
         raise _http_from_value_error(e) from e
 
-    return _to_submission_response(service, submission, current_user=admin)
+    return await _to_submission_response(service, submission, current_user=admin)
 
 
 @router.post("/{submission_id}/publish", response_model=SubmissionResponse)
@@ -724,7 +767,8 @@ async def publish_submission_report(
     """
     service = SubmissionService()
     try:
-        submission = service.publish_report(
+        submission = await run_sync(
+            service.publish_report,
             submission_id=submission_id,
             publish=request.publish,
             admin_user_id=admin.user_id,
@@ -732,7 +776,7 @@ async def publish_submission_report(
     except ValueError as e:
         raise _http_from_value_error(e) from e
 
-    return _to_submission_response(service, submission, current_user=admin)
+    return await _to_submission_response(service, submission, current_user=admin)
 
 
 @router.post("/{submission_id}/assign", response_model=SubmissionResponse)
@@ -749,7 +793,8 @@ async def assign_submission_evaluator(
     """
     service = SubmissionService()
     try:
-        submission = service.assign_evaluator(
+        submission = await run_sync(
+            service.assign_evaluator,
             submission_id=submission_id,
             evaluator_id=request.evaluator_id,
             assigned_by=admin.user_id,
@@ -763,4 +808,4 @@ async def assign_submission_evaluator(
         )
         raise HTTPException(status_code=code, detail=detail) from e
 
-    return _to_submission_response(service, submission, current_user=admin)
+    return await _to_submission_response(service, submission, current_user=admin)

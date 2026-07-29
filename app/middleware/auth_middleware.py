@@ -14,6 +14,7 @@ from app.models.user_model import CurrentUser
 from app.services.firebase import FirebaseService
 from app.services.registration_service import RegistrationService
 from app.services.user_service import UserService
+from app.utils.async_io import run_sync
 from app.utils.auth_cookies import AUTH_COOKIE_NAME
 
 
@@ -115,7 +116,7 @@ def _authenticate_token(token: str) -> CurrentUser:
     )
 
 
-def get_current_user(
+async def get_current_user(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> CurrentUser:
@@ -124,6 +125,9 @@ def get_current_user(
 
     Reads the Firebase ID token from the HttpOnly cookie first, then falls
     back to the Authorization Bearer header (useful for API clients/Swagger).
+
+    Token verification and Firestore user lookup run via ``run_sync`` so they
+    do not block the asyncio event loop (behaviour unchanged).
     """
     try:
         token = _extract_token(request, credentials)
@@ -133,7 +137,7 @@ def get_current_user(
                 detail="Not authenticated",
             )
 
-        return _authenticate_token(token)
+        return await run_sync(_authenticate_token, token)
 
     except HTTPException:
         raise

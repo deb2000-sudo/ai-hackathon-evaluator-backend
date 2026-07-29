@@ -16,6 +16,7 @@ from app.middleware.auth_middleware import get_admin_user, get_current_user
 from app.models.theme_model import ThemeCreateRequest, ThemeResponse, ThemeUpdateRequest
 from app.models.user_model import CurrentUser
 from app.services.theme_service import ThemeService
+from app.utils.async_io import run_sync
 
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ async def create_theme(
 ) -> ThemeResponse:
     """Create a reusable theme (name + description). Admin only."""
     service = ThemeService()
-    theme = service.create_theme(request=request, created_by=admin.user_id)
+    theme = await run_sync(service.create_theme, request=request, created_by=admin.user_id)
     return ThemeResponse(**theme)
 
 
@@ -39,7 +40,7 @@ async def list_themes(
 ) -> list[ThemeResponse]:
     """List all themes. Used for the multi-select when creating a hackathon."""
     service = ThemeService()
-    themes = service.list_themes()
+    themes = await run_sync(service.list_themes)
     return [ThemeResponse(**item) for item in themes]
 
 
@@ -50,7 +51,7 @@ async def get_theme(
 ) -> ThemeResponse:
     """Get a single theme by id."""
     service = ThemeService()
-    theme = service.get_theme(theme_id)
+    theme = await run_sync(service.get_theme, theme_id)
     if not theme:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -67,7 +68,7 @@ async def update_theme(
 ) -> ThemeResponse:
     """Update a theme. Admin only."""
     service = ThemeService()
-    theme = service.update_theme(theme_id, request)
+    theme = await run_sync(service.update_theme, theme_id, request)
     if not theme:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -83,7 +84,7 @@ async def delete_theme(
 ) -> dict:
     """Delete a theme. Admin only."""
     service = ThemeService()
-    deleted = service.delete_theme(theme_id)
+    deleted = await run_sync(service.delete_theme, theme_id)
     if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

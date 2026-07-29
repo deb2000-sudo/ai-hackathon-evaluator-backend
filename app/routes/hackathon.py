@@ -33,14 +33,16 @@ from app.models.hackathon_model import (
 from app.models.theme_model import ThemeResponse
 from app.models.user_model import CurrentUser
 from app.services.hackathon_service import HackathonService
+from app.utils.async_io import run_sync
 
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/hackathons", tags=["hackathons"])
 
 
-def _to_response(service: HackathonService, hackathon: dict) -> HackathonResponse:
-    return HackathonResponse(**service.enrich_hackathon_for_response(hackathon))
+async def _to_response(service: HackathonService, hackathon: dict) -> HackathonResponse:
+    enriched = await run_sync(service.enrich_hackathon_for_response, hackathon)
+    return HackathonResponse(**enriched)
 
 
 def _parse_json_field(raw: str | None, field_name: str, default):
@@ -126,7 +128,8 @@ async def create_hackathon(
 
     try:
         service = HackathonService()
-        hackathon = service.create_hackathon(
+        hackathon = await run_sync(
+            service.create_hackathon,
             request=payload,
             created_by=admin.user_id,
             banner=banner_payload,
@@ -143,7 +146,7 @@ async def create_hackathon(
             detail="Failed to create hackathon",
         ) from e
 
-    return _to_response(service, hackathon)
+    return await _to_response(service, hackathon)
 
 
 @router.get("", response_model=list[HackathonResponse])
@@ -152,8 +155,8 @@ async def list_hackathons(
 ) -> list[HackathonResponse]:
     """List all hackathons. Available to any authenticated user."""
     service = HackathonService()
-    hackathons = service.list_hackathons()
-    return [_to_response(service, item) for item in hackathons]
+    hackathons = await run_sync(service.list_hackathons)
+    return [await _to_response(service, item) for item in hackathons]
 
 
 @router.get("/{hackathon_id}/themes", response_model=list[ThemeResponse])
@@ -167,7 +170,7 @@ async def list_hackathon_themes(
     Students use this list on the submission form to pick a theme.
     """
     service = HackathonService()
-    themes = service.get_hackathon_themes(hackathon_id)
+    themes = await run_sync(service.get_hackathon_themes, hackathon_id)
     if themes is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -183,13 +186,13 @@ async def get_hackathon(
 ) -> HackathonResponse:
     """Get a single hackathon by id (includes resolved ``themes``)."""
     service = HackathonService()
-    hackathon = service.get_hackathon(hackathon_id)
+    hackathon = await run_sync(service.get_hackathon, hackathon_id)
     if not hackathon:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Hackathon not found",
         )
-    return _to_response(service, hackathon)
+    return await _to_response(service, hackathon)
 
 
 @router.patch("/{hackathon_id}", response_model=HackathonResponse)
@@ -246,7 +249,8 @@ async def update_hackathon(
 
     try:
         service = HackathonService()
-        hackathon = service.update_hackathon(
+        hackathon = await run_sync(
+            service.update_hackathon,
             hackathon_id=hackathon_id,
             request=payload,
             banner=banner_payload,
@@ -263,7 +267,7 @@ async def update_hackathon(
             detail="Hackathon not found",
         )
 
-    return _to_response(service, hackathon)
+    return await _to_response(service, hackathon)
 
 
 @router.delete("/{hackathon_id}", status_code=200)
@@ -273,7 +277,7 @@ async def delete_hackathon(
 ) -> dict:
     """Delete a hackathon. Admin only."""
     service = HackathonService()
-    deleted = service.delete_hackathon(hackathon_id)
+    deleted = await run_sync(service.delete_hackathon, hackathon_id)
     if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

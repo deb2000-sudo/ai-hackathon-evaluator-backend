@@ -14,10 +14,12 @@ from app.routes import (
     auth,
     evaluation_requirement,
     hackathon,
+    internal_jobs,
     metric_scoring,
     submissions,
     theme,
 )
+from app.utils.async_io import run_sync
 from app.utils.cors_config import get_allowed_origins
 from app.utils.seeder import DatabaseSeeder
 
@@ -38,11 +40,11 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("🚀 FastAPI application starting...")
 
-    # Run database seeding on startup
+    # Run database seeding on startup (sync I/O off the event loop).
     try:
         logger.info("🌱 Initializing database...")
         seeder = DatabaseSeeder()
-        seeder.seed_all()
+        await run_sync(seeder.seed_all)
         logger.info("Database initialization completed")
     except Exception as e:
         logger.warning(f"Database seeding encountered an issue: {str(e)}")
@@ -89,6 +91,7 @@ app.include_router(hackathon.router)
 app.include_router(theme.router)
 app.include_router(evaluation_requirement.router)
 app.include_router(metric_scoring.router)
+app.include_router(internal_jobs.router)
 
 
 # ==================== Error Handlers ====================

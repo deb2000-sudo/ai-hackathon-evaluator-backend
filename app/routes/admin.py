@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.middleware.auth_middleware import get_admin_user
 from app.models.user_model import CurrentUser, UserResponse, UserUpdate
 from app.services.user_service import UserService
+from app.utils.async_io import run_sync
 
 
 logger = logging.getLogger(__name__)
@@ -26,7 +27,7 @@ async def get_users(
     Get all non-admin users.
     """
     try:
-        users = user_service.get_non_admin_users()
+        users = await run_sync(user_service.get_non_admin_users)
         return [user_service.to_user_response(user["id"], user) for user in users]
 
     except Exception as e:
@@ -45,7 +46,10 @@ async def get_pending_evaluators(
     List evaluator registrations awaiting admin approval.
     """
     try:
-        evaluators = user_service.get_evaluators(approval_status="pending")
+        evaluators = await run_sync(
+            user_service.get_evaluators,
+            approval_status="pending",
+        )
         return [user_service.to_user_response(user["id"], user) for user in evaluators]
     except Exception as e:
         logger.error("Error getting pending evaluators: %s", str(e))
@@ -76,7 +80,10 @@ async def get_evaluators(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="approval_status must be pending, approved, or rejected",
             )
-        evaluators = user_service.get_evaluators(approval_status=status_filter)
+        evaluators = await run_sync(
+            user_service.get_evaluators,
+            approval_status=status_filter,
+        )
         return [user_service.to_user_response(user["id"], user) for user in evaluators]
     except HTTPException:
         raise
@@ -97,7 +104,7 @@ async def approve_evaluator(
     Approve a pending evaluator registration.
     """
     try:
-        updated_user = user_service.approve_evaluator(user_id)
+        updated_user = await run_sync(user_service.approve_evaluator, user_id)
         return user_service.to_user_response(user_id, updated_user)
     except ValueError as e:
         raise HTTPException(
@@ -121,7 +128,7 @@ async def get_user(
     Get specific user details.
     """
     try:
-        user_data = user_service.get_user(user_id)
+        user_data = await run_sync(user_service.get_user, user_id)
 
         if not user_data:
             raise HTTPException(
@@ -151,7 +158,7 @@ async def update_user(
     Update user profile.
     """
     try:
-        user_data = user_service.get_user(user_id)
+        user_data = await run_sync(user_service.get_user, user_id)
 
         if not user_data:
             raise HTTPException(
@@ -164,9 +171,9 @@ async def update_user(
             update_data["name"] = data.name
 
         if update_data:
-            user_service.update_user(user_id, update_data)
+            await run_sync(user_service.update_user, user_id, update_data)
 
-        updated_user = user_service.get_user(user_id)
+        updated_user = await run_sync(user_service.get_user, user_id)
         if not updated_user:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

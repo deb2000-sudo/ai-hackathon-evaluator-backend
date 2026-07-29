@@ -20,6 +20,7 @@ from app.models.evaluation_requirement_model import (
 )
 from app.models.user_model import CurrentUser
 from app.services.evaluation_requirement_service import EvaluationRequirementService
+from app.utils.async_io import run_sync
 
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,9 @@ async def create_evaluation_requirement(
     a hackathon round.
     """
     service = EvaluationRequirementService()
-    requirement = service.create_requirement(request=request, created_by=admin.user_id)
+    requirement = await run_sync(
+        service.create_requirement, request=request, created_by=admin.user_id
+    )
     return EvaluationRequirementResponse(**requirement)
 
 
@@ -49,7 +52,7 @@ async def list_evaluation_requirements(
 ) -> list[EvaluationRequirementResponse]:
     """List all evaluation requirements (used to populate the round dropdown)."""
     service = EvaluationRequirementService()
-    requirements = service.list_requirements()
+    requirements = await run_sync(service.list_requirements)
     return [EvaluationRequirementResponse(**item) for item in requirements]
 
 
@@ -60,7 +63,7 @@ async def get_evaluation_requirement(
 ) -> EvaluationRequirementResponse:
     """Get a single evaluation requirement by id."""
     service = EvaluationRequirementService()
-    requirement = service.get_requirement(requirement_id)
+    requirement = await run_sync(service.get_requirement, requirement_id)
     if not requirement:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -77,7 +80,7 @@ async def update_evaluation_requirement(
 ) -> EvaluationRequirementResponse:
     """Update an evaluation requirement. Admin only."""
     service = EvaluationRequirementService()
-    requirement = service.update_requirement(requirement_id, request)
+    requirement = await run_sync(service.update_requirement, requirement_id, request)
     if not requirement:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -93,7 +96,7 @@ async def delete_evaluation_requirement(
 ) -> dict:
     """Delete an evaluation requirement. Admin only."""
     service = EvaluationRequirementService()
-    deleted = service.delete_requirement(requirement_id)
+    deleted = await run_sync(service.delete_requirement, requirement_id)
     if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

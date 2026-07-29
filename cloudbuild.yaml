@@ -43,21 +43,47 @@ steps:
         EOF
         gcloud storage buckets update "$$BUCKET" --cors-file=/tmp/cors.json
 
-  # Step 5: Deploy to Cloud Run
+  # Step 5: Cloud Tasks queue for durable AI evaluation (Phase 2)
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    entrypoint: gcloud
+    entrypoint: bash
     args:
-      - 'run'
-      - 'deploy'
-      - 'ai-hackathon-evaluator-backend'
-      - '--image=asia-south1-docker.pkg.dev/$PROJECT_ID/ai-hackathon-evaluator-backend/ai-hackathon-evaluator-backend:$SHORT_SHA'
-      - '--region=asia-south1'
-      - '--allow-unauthenticated'
-      - '--update-secrets=FIREBASE_PROJECT_ID=FIREBASE_PROJECT_ID:latest,FIREBASE_PRIVATE_KEY=FIREBASE_PRIVATE_KEY:latest,FIREBASE_CLIENT_EMAIL=FIREBASE_CLIENT_EMAIL:latest,FIREBASE_WEB_API_KEY=FIREBASE_WEB_API_KEY:latest,FIREBASE_DATABASE_URL=FIREBASE_DATABASE_URL:latest'
-      - '--set-env-vars=ENVIRONMENT=production,DEBUG=false,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=global,EVALUATION_BUCKET_NAME=$PROJECT_ID-hackathon-evaluations,GEMINI_MODEL=gemini-3.5-flash,GEMINI_ENTERPRISE=true,COOKIE_SAMESITE=none,ALLOWED_ORIGINS=https://hackniat.vercel.app'
-      - '--memory=1Gi'
-      - '--cpu=1'
-      - '--timeout=3600'
+      - '-c'
+      - |
+        gcloud tasks queues describe evaluation-jobs --location=asia-south1 \
+          || gcloud tasks queues create evaluation-jobs --location=asia-south1
+
+  # Step 6: Deploy to Cloud Run, then set Cloud Tasks target URL to this revision's URL
+  # Prerequisite: Secret Manager secret INTERNAL_JOB_SECRET must already exist (see README).
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        set -euo pipefail
+        gcloud run deploy ai-hackathon-evaluator-backend \
+          --image=asia-south1-docker.pkg.dev/$PROJECT_ID/ai-hackathon-evaluator-backend/ai-hackathon-evaluator-backend:$SHORT_SHA \
+          --region=asia-south1 \
+          --allow-unauthenticated \
+          --update-secrets=FIREBASE_PROJECT_ID=FIREBASE_PROJECT_ID:latest,FIREBASE_PRIVATE_KEY=FIREBASE_PRIVATE_KEY:latest,FIREBASE_CLIENT_EMAIL=FIREBASE_CLIENT_EMAIL:latest,FIREBASE_WEB_API_KEY=FIREBASE_WEB_API_KEY:latest,FIREBASE_DATABASE_URL=FIREBASE_DATABASE_URL:latest,INTERNAL_JOB_SECRET=INTERNAL_JOB_SECRET:latest \
+          --set-env-vars=ENVIRONMENT=production,DEBUG=false,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=global,EVALUATION_BUCKET_NAME=$PROJECT_ID-hackathon-evaluations,GEMINI_MODEL=gemini-3.5-flash,GEMINI_ENTERPRISE=true,COOKIE_SAMESITE=none,ALLOWED_ORIGINS=https://hackniat.vercel.app,EVALUATION_JOB_MODE=cloud_tasks,CLOUD_TASKS_LOCATION=asia-south1,CLOUD_TASKS_QUEUE=evaluation-jobs \
+          --memory=1Gi \
+          --cpu=1 \
+          --timeout=3600
+
+        SERVICE_URL=$$(gcloud run services describe ai-hackathon-evaluator-backend \
+          --region=asia-south1 --format='value(status.url)')
+        gcloud run services update ai-hackathon-evaluator-backend \
+          --region=asia-south1 \
+          --update-env-vars=CLOUD_TASKS_TARGET_URL=$${SERVICE_URL}/internal/jobs/evaluate-submission
+
+        # Allow the Cloud Run runtime SA to enqueue tasks
+        PROJECT_NUMBER=$$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
+        RUNTIME_SA=$${PROJECT_NUMBER}-compute@developer.gserviceaccount.com
+        gcloud projects add-iam-policy-binding $PROJECT_ID \
+          --member="serviceAccount:$${RUNTIME_SA}" \
+          --role="roles/cloudtasks.enqueuer" \
+          --condition=None \
+          --quiet || true
     env:
       - 'CLOUDSDK_COMPUTE_REGION=asia-south1'
 

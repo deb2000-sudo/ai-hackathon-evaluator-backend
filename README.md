@@ -255,6 +255,29 @@ Manual apply (same bucket naming as Cloud Build):
 gcloud storage buckets update gs://$PROJECT_ID-hackathon-evaluations --cors-file=cors.json
 ```
 
+### Durable AI evaluation (Phase 2)
+
+`POST /submissions/{id}/evaluate` still returns **202**; clients still poll `GET /submissions/{id}`.  
+Production schedules work with **Cloud Tasks** → `POST /internal/jobs/evaluate-submission` (header `X-Internal-Job-Secret`).  
+Locally, if Cloud Tasks env is unset, the app uses FastAPI `BackgroundTasks` (same feature, not durable across restarts).
+
+**One-time Google Cloud setup (do this before the next Cloud Build that enables Cloud Tasks):**
+
+1. Enable APIs:
+   ```bash
+   gcloud services enable cloudtasks.googleapis.com run.googleapis.com secretmanager.googleapis.com
+   ```
+2. Create a long random secret and store it:
+   ```bash
+   openssl rand -hex 32   # copy the output
+   echo -n 'PASTE_SECRET_HERE' | gcloud secrets create INTERNAL_JOB_SECRET --data-file=-
+   # If the secret already exists:
+   # echo -n 'PASTE_SECRET_HERE' | gcloud secrets versions add INTERNAL_JOB_SECRET --data-file=-
+   ```
+3. Allow the Cloud Build / Cloud Run deploy SA to access that secret (same pattern as your other Firebase secrets).
+4. Deploy via Cloud Build (`cloudbuild.yaml` creates queue `evaluation-jobs`, deploys with `EVALUATION_JOB_MODE=cloud_tasks`, then sets `CLOUD_TASKS_TARGET_URL` to your service URL).
+5. Smoke test: call evaluate as admin/evaluator → Cloud Console → Cloud Tasks → queue `evaluation-jobs` should show a task → submission status becomes `completed` or `failed`.
+
 ---
 
 ## Architecture & deployment (source of truth)
@@ -273,7 +296,7 @@ These files define production architecture and deploy. Do not assume a different
 
 Routers mounted:
 
-- `auth`, `admin`, `submissions`, `hackathon`, `theme`, `evaluation_requirement`, `metric_scoring`
+- `auth`, `admin`, `submissions`, `hackathon`, `theme`, `evaluation_requirement`, `metric_scoring`, `internal_jobs`
 
 Startup: `DatabaseSeeder.seed_all()` (failures logged; startup continues).
 
@@ -282,7 +305,7 @@ Container/Cloud Run: uvicorn on **8080** per Dockerfile.
 
 ### Dependencies (`pyproject.toml` / `requirements.txt`)
 
-Runtime: FastAPI, uvicorn[standard], pydantic v2, firebase-admin, google-cloud-storage, google-genai, python-dotenv, python-multipart, email-validator, requests.
+Runtime: FastAPI, uvicorn[standard], pydantic v2, firebase-admin, google-cloud-storage, google-cloud-tasks, google-genai, python-dotenv, python-multipart, email-validator, requests.
 
 Dev (optional `[dev]`): pytest, pytest-asyncio, black (line-length 100), flake8, mypy.
 
@@ -292,11 +315,12 @@ Dev (optional `[dev]`): pytest, pytest-asyncio, black (line-length 100), flake8,
 2. Build image → `asia-south1-docker.pkg.dev/$PROJECT_ID/ai-hackathon-evaluator-backend/ai-hackathon-evaluator-backend:$SHORT_SHA` (+ `:latest`)  
 3. Push `$SHORT_SHA` tag  
 4. Ensure bucket `gs://$PROJECT_ID-hackathon-evaluations` (create in **us-central1** if missing) and apply CORS for `https://hackniat.vercel.app`, `http://localhost:3000`, `http://localhost:5173`  
-5. Deploy Cloud Run service **`ai-hackathon-evaluator-backend`**:
+5. Ensure Cloud Tasks queue `evaluation-jobs` in **asia-south1**  
+6. Deploy Cloud Run service **`ai-hackathon-evaluator-backend`**:
    - region: **asia-south1**
    - `--allow-unauthenticated`
-   - secrets: `FIREBASE_PROJECT_ID`, `FIREBASE_PRIVATE_KEY`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_WEB_API_KEY`, `FIREBASE_DATABASE_URL`
-   - env: `ENVIRONMENT=production`, `DEBUG=false`, `GOOGLE_CLOUD_PROJECT=$PROJECT_ID`, `GOOGLE_CLOUD_LOCATION=global`, `EVALUATION_BUCKET_NAME=$PROJECT_ID-hackathon-evaluations`, `GEMINI_MODEL=gemini-3.5-flash`, `GEMINI_ENTERPRISE=true`, `COOKIE_SAMESITE=none`, `ALLOWED_ORIGINS=https://hackniat.vercel.app`
+   - secrets: Firebase set + `INTERNAL_JOB_SECRET`
+   - env: production cookie/CORS/Gemini/GCS vars + `EVALUATION_JOB_MODE=cloud_tasks`, `CLOUD_TASKS_QUEUE=evaluation-jobs`, `CLOUD_TASKS_LOCATION=asia-south1`, then `CLOUD_TASKS_TARGET_URL=<service>/internal/jobs/evaluate-submission`
    - **1Gi** memory, **1** CPU, **3600s** timeout
 
 Build options: `E2_HIGHCPU_8`, `CLOUD_LOGGING_ONLY`, build timeout `1800s`.
@@ -362,8 +386,12 @@ uvicorn app.main:app --reload          # :8000
 pip install -e ".[dev]"
 
 # Quality (pyproject optional-deps + tool config)
-pytest
+pytest           # Phase 0 characterization tests under tests/
 black .          # line-length 100
 flake8 app
 mypy app
 ```
+
+### Async note (Phase 1)
+
+Route handlers remain `async def`, but sync Firestore / GCS / Identity Toolkit / service work is offloaded with `app.utils.async_io.run_sync` (`asyncio.to_thread`) so the event loop is not blocked. External API behaviour is unchanged.

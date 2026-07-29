@@ -25,6 +25,7 @@ from app.models.user_model import (
 from app.services.firebase import FirebaseService
 from app.services.registration_service import RegistrationService
 from app.services.user_service import UserService
+from app.utils.async_io import run_sync
 from app.utils.auth_cookies import clear_auth_cookie, set_auth_cookie
 
 
@@ -46,7 +47,7 @@ async def register_student(request: StudentRegisterRequest) -> RegisterResponse:
     when submitting to a hackathon.
     """
     try:
-        return registration_service.register_student(request)
+        return await run_sync(registration_service.register_student, request)
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -69,7 +70,7 @@ async def register_evaluator(request: EvaluatorRegisterRequest) -> RegisterRespo
     password, and confirm password. Account remains pending until admin approval.
     """
     try:
-        return registration_service.register_evaluator(request)
+        return await run_sync(registration_service.register_evaluator, request)
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -103,21 +104,22 @@ async def login(request: LoginRequest) -> JSONResponse:
             )
 
         email = request.email.lower()
-        user = firebase.get_user_by_email(email)
+        user = await run_sync(firebase.get_user_by_email, email)
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid email or password",
             )
 
-        user_data = user_service.get_user(user.uid)
+        user_data = await run_sync(user_service.get_user, user.uid)
         if not user_data:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="User not found in database",
             )
 
-        id_token = _generate_id_token_via_rest_api(
+        id_token = await run_sync(
+            _generate_id_token_via_rest_api,
             email,
             request.password,
             web_api_key,
@@ -204,7 +206,11 @@ async def change_password(
     cleared so the user must sign in again with the new password.
     """
     try:
-        firebase.update_user_password(current_user.user_id, request.new_password)
+        await run_sync(
+            firebase.update_user_password,
+            current_user.user_id,
+            request.new_password,
+        )
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
