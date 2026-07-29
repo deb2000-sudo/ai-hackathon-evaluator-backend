@@ -399,52 +399,68 @@ class SubmissionService:
         evaluation_criteria: str | None = None,
         analyzed_by: str | None = None,
     ) -> str:
-        """Create an analysis document and link it to the submission."""
-        submission = self.firebase.get_document(self.collection, submission_id)
-        if not submission:
-            raise ValueError("Submission not found")
+        """
+        Create an analysis document and link it to the submission.
 
+        Uses a Firestore transaction so two concurrent evaluate calls cannot
+        both move the same submission into ``processing`` / overwrite analysis_id.
+        """
         analysis_id = uuid.uuid4().hex
         now = datetime.utcnow().isoformat()
         criteria = evaluation_criteria.strip() if evaluation_criteria else None
 
-        analysis_doc = {
-            "submission_id": submission_id,
-            "student_id": submission["student_id"],
-            "status": "processing",
-            "evaluation_criteria": criteria,
-            "checklist": None,
-            "report": None,
-            "analyzed_at": None,
-            "error": None,
-            "created_at": now,
-            "updated_at": now,
-        }
-        self.firebase.set_document(self.analysis_collection, analysis_id, analysis_doc)
+        def _txn(transaction):
+            submission = self.firebase.txn_get(
+                transaction, self.collection, submission_id
+            )
+            if not submission:
+                raise ValueError("Submission not found")
+            if submission.get("status") == "processing":
+                raise ValueError("This submission is already being analyzed")
 
-        submission_update: dict[str, Any] = {
-            "analysis_id": analysis_id,
-            "status": "processing",
-            "error": None,
-            "analyzed_by": analyzed_by,
-            # Re-analysis invalidates any previously published / reviewed result.
-            "report_published": False,
-            "published_at": None,
-            "published_by": None,
-            "review_status": "none",
-            "final_score": None,
-            "evaluator_notes": None,
-            "submitted_for_review_at": None,
-            "submitted_for_review_by": None,
-            "reviewed_at": None,
-            "reviewed_by": None,
-            "review_notes": None,
-        }
-        if evaluation_criteria is not None:
-            submission_update["evaluation_criteria"] = criteria
+            analysis_doc = {
+                "submission_id": submission_id,
+                "student_id": submission["student_id"],
+                "status": "processing",
+                "evaluation_criteria": criteria,
+                "checklist": None,
+                "report": None,
+                "analyzed_at": None,
+                "error": None,
+                "created_at": now,
+                "updated_at": now,
+            }
+            self.firebase.txn_set(
+                transaction, self.analysis_collection, analysis_id, analysis_doc
+            )
 
-        self._update_submission(submission_id, submission_update)
-        return analysis_id
+            submission_update: dict[str, Any] = {
+                "analysis_id": analysis_id,
+                "status": "processing",
+                "error": None,
+                "analyzed_by": analyzed_by,
+                "report_published": False,
+                "published_at": None,
+                "published_by": None,
+                "review_status": "none",
+                "final_score": None,
+                "evaluator_notes": None,
+                "submitted_for_review_at": None,
+                "submitted_for_review_by": None,
+                "reviewed_at": None,
+                "reviewed_by": None,
+                "review_notes": None,
+                "updated_at": now,
+            }
+            if evaluation_criteria is not None:
+                submission_update["evaluation_criteria"] = criteria
+
+            self.firebase.txn_update(
+                transaction, self.collection, submission_id, submission_update
+            )
+            return analysis_id
+
+        return self.firebase.run_transaction(_txn)
 
     def evaluate_submission(
         self,
@@ -495,19 +511,17 @@ class SubmissionService:
             )
 
             analyzed_at = datetime.utcnow().isoformat()
-            self._update_analysis(
+            self._commit_analysis_and_submission(
                 analysis_id,
-                {
+                submission_id,
+                analysis_data={
                     "status": "completed",
                     "checklist": checklist,
                     "report": report,
                     "analyzed_at": analyzed_at,
                     "error": None,
                 },
-            )
-            self._update_submission(
-                submission_id,
-                {
+                submission_data={
                     "status": "completed",
                     "error": None,
                 },
@@ -516,14 +530,11 @@ class SubmissionService:
 
         except Exception as e:
             logger.error("Analysis failed for submission %s: %s", submission_id, str(e))
-            if analysis_id:
-                self._update_analysis(
-                    analysis_id,
-                    {"status": "failed", "error": str(e)},
-                )
-            self._update_submission(
+            self._commit_analysis_and_submission(
+                analysis_id,
                 submission_id,
-                {"status": "failed", "error": str(e)},
+                analysis_data={"status": "failed", "error": str(e)} if analysis_id else None,
+                submission_data={"status": "failed", "error": str(e)},
             )
 
     def get_submission(
@@ -637,35 +648,44 @@ class SubmissionService:
         evaluator_notes: str | None = None,
     ) -> dict[str, Any]:
         """Assigned evaluator submits completed evaluation to admin."""
-        submission = self.firebase.get_document(self.collection, submission_id)
-        if not submission:
-            raise ValueError("Submission not found")
-        if submission.get("assigned_evaluator_id") != evaluator_user_id:
-            raise ValueError("Only the assigned evaluator can submit this evaluation")
-        if submission.get("status") != "completed":
-            raise ValueError("AI analysis must be completed before submitting for review")
-
-        analysis_id = submission.get("analysis_id")
-        if not analysis_id:
-            raise ValueError("No analysis linked to this submission")
-        analysis = self.firebase.get_document(self.analysis_collection, analysis_id)
-        if not analysis or analysis.get("status") != "completed":
-            raise ValueError("Analysis report is not ready to submit")
-
-        review_status = submission.get("review_status") or "none"
-        if review_status == "pending_review":
-            raise ValueError("Evaluation is already pending admin review")
-        if review_status == "approved":
-            raise ValueError("Evaluation is already approved; unpublish/request changes first")
-
         notes = evaluator_notes.strip() if evaluator_notes else None
-        self._update_submission(
-            submission_id,
-            {
+        now = datetime.utcnow().isoformat()
+
+        def _txn(transaction):
+            submission = self.firebase.txn_get(
+                transaction, self.collection, submission_id
+            )
+            if not submission:
+                raise ValueError("Submission not found")
+            if submission.get("assigned_evaluator_id") != evaluator_user_id:
+                raise ValueError("Only the assigned evaluator can submit this evaluation")
+            if submission.get("status") != "completed":
+                raise ValueError(
+                    "AI analysis must be completed before submitting for review"
+                )
+
+            analysis_id = submission.get("analysis_id")
+            if not analysis_id:
+                raise ValueError("No analysis linked to this submission")
+            analysis = self.firebase.txn_get(
+                transaction, self.analysis_collection, analysis_id
+            )
+            if not analysis or analysis.get("status") != "completed":
+                raise ValueError("Analysis report is not ready to submit")
+
+            review_status = submission.get("review_status") or "none"
+            if review_status == "pending_review":
+                raise ValueError("Evaluation is already pending admin review")
+            if review_status == "approved":
+                raise ValueError(
+                    "Evaluation is already approved; unpublish/request changes first"
+                )
+
+            update = {
                 "review_status": "pending_review",
                 "final_score": float(final_score),
                 "evaluator_notes": notes,
-                "submitted_for_review_at": datetime.utcnow().isoformat(),
+                "submitted_for_review_at": now,
                 "submitted_for_review_by": evaluator_user_id,
                 # Keep unpublished until admin approves.
                 "report_published": False,
@@ -674,13 +694,14 @@ class SubmissionService:
                 "reviewed_at": None,
                 "reviewed_by": None,
                 "review_notes": None,
-            },
-        )
+                "updated_at": now,
+            }
+            self.firebase.txn_update(
+                transaction, self.collection, submission_id, update
+            )
+            return {"id": submission_id, **submission, **update}
 
-        updated = self.firebase.get_document(self.collection, submission_id)
-        if not updated:
-            raise ValueError("Submission not found")
-        return {"id": submission_id, **updated}
+        return self.firebase.run_transaction(_txn)
 
     def approve_evaluation(
         self,
@@ -690,34 +711,42 @@ class SubmissionService:
         review_notes: str | None = None,
     ) -> dict[str, Any]:
         """Admin approves evaluation → final score + report become visible to student."""
-        submission = self.firebase.get_document(self.collection, submission_id)
-        if not submission:
-            raise ValueError("Submission not found")
-        if submission.get("status") != "completed":
-            raise ValueError("Can only approve a completed evaluation")
-
-        review_status = submission.get("review_status") or "none"
-        if review_status not in ("pending_review", "approved"):
-            raise ValueError(
-                "Evaluation must be submitted for review before admin approval"
-            )
-
-        analysis_id = submission.get("analysis_id")
-        if not analysis_id:
-            raise ValueError("No analysis linked to this submission")
-        analysis = self.firebase.get_document(self.analysis_collection, analysis_id)
-        if not analysis or analysis.get("status") != "completed":
-            raise ValueError("Analysis report is not ready to approve")
-
-        score = final_score if final_score is not None else submission.get("final_score")
-        if score is None:
-            raise ValueError("final_score is required to approve (evaluator did not propose one)")
-
         notes = review_notes.strip() if review_notes else None
         now = datetime.utcnow().isoformat()
-        self._update_submission(
-            submission_id,
-            {
+
+        def _txn(transaction):
+            submission = self.firebase.txn_get(
+                transaction, self.collection, submission_id
+            )
+            if not submission:
+                raise ValueError("Submission not found")
+            if submission.get("status") != "completed":
+                raise ValueError("Can only approve a completed evaluation")
+
+            review_status = submission.get("review_status") or "none"
+            if review_status not in ("pending_review", "approved"):
+                raise ValueError(
+                    "Evaluation must be submitted for review before admin approval"
+                )
+
+            analysis_id = submission.get("analysis_id")
+            if not analysis_id:
+                raise ValueError("No analysis linked to this submission")
+            analysis = self.firebase.txn_get(
+                transaction, self.analysis_collection, analysis_id
+            )
+            if not analysis or analysis.get("status") != "completed":
+                raise ValueError("Analysis report is not ready to approve")
+
+            score = (
+                final_score if final_score is not None else submission.get("final_score")
+            )
+            if score is None:
+                raise ValueError(
+                    "final_score is required to approve (evaluator did not propose one)"
+                )
+
+            update = {
                 "review_status": "approved",
                 "final_score": float(score),
                 "review_notes": notes,
@@ -726,13 +755,14 @@ class SubmissionService:
                 "report_published": True,
                 "published_at": now,
                 "published_by": admin_user_id,
-            },
-        )
+                "updated_at": now,
+            }
+            self.firebase.txn_update(
+                transaction, self.collection, submission_id, update
+            )
+            return {"id": submission_id, **submission, **update}
 
-        updated = self.firebase.get_document(self.collection, submission_id)
-        if not updated:
-            raise ValueError("Submission not found")
-        return {"id": submission_id, **updated}
+        return self.firebase.run_transaction(_txn)
 
     def request_evaluation_changes(
         self,
@@ -741,32 +771,36 @@ class SubmissionService:
         review_notes: str | None = None,
     ) -> dict[str, Any]:
         """Admin sends evaluation back to the assigned evaluator."""
-        submission = self.firebase.get_document(self.collection, submission_id)
-        if not submission:
-            raise ValueError("Submission not found")
-
-        review_status = submission.get("review_status") or "none"
-        if review_status not in ("pending_review", "approved"):
-            raise ValueError("Only pending or approved evaluations can be sent back")
-
         notes = review_notes.strip() if review_notes else None
-        self._update_submission(
-            submission_id,
-            {
+        now = datetime.utcnow().isoformat()
+
+        def _txn(transaction):
+            submission = self.firebase.txn_get(
+                transaction, self.collection, submission_id
+            )
+            if not submission:
+                raise ValueError("Submission not found")
+
+            review_status = submission.get("review_status") or "none"
+            if review_status not in ("pending_review", "approved"):
+                raise ValueError("Only pending or approved evaluations can be sent back")
+
+            update = {
                 "review_status": "changes_requested",
                 "review_notes": notes,
-                "reviewed_at": datetime.utcnow().isoformat(),
+                "reviewed_at": now,
                 "reviewed_by": admin_user_id,
                 "report_published": False,
                 "published_at": None,
                 "published_by": None,
-            },
-        )
+                "updated_at": now,
+            }
+            self.firebase.txn_update(
+                transaction, self.collection, submission_id, update
+            )
+            return {"id": submission_id, **submission, **update}
 
-        updated = self.firebase.get_document(self.collection, submission_id)
-        if not updated:
-            raise ValueError("Submission not found")
-        return {"id": submission_id, **updated}
+        return self.firebase.run_transaction(_txn)
 
     def get_analysis(
         self,
@@ -847,14 +881,22 @@ class SubmissionService:
         assigned_by: str,
     ) -> dict[str, Any]:
         """Assign one approved evaluator to a submission, or clear the assignment."""
-        submission = self.firebase.get_document(self.collection, submission_id)
-        if not submission:
-            raise ValueError("Submission not found")
+        # User lookup stays outside the transaction (different collection / service).
+        evaluator: dict[str, Any] | None = None
+        if evaluator_id is not None and str(evaluator_id).strip():
+            evaluator = self._require_active_evaluator(evaluator_id.strip())
 
-        if evaluator_id is None or not str(evaluator_id).strip():
-            self._update_submission(
-                submission_id,
-                {
+        now = datetime.utcnow().isoformat()
+
+        def _txn(transaction):
+            submission = self.firebase.txn_get(
+                transaction, self.collection, submission_id
+            )
+            if not submission:
+                raise ValueError("Submission not found")
+
+            if evaluator is None:
+                update = {
                     "assigned_evaluator_id": None,
                     "assigned_evaluator_name": None,
                     "assigned_at": None,
@@ -862,28 +904,27 @@ class SubmissionService:
                     "review_status": "none",
                     "submitted_for_review_at": None,
                     "submitted_for_review_by": None,
-                },
-            )
-        else:
-            evaluator = self._require_active_evaluator(evaluator_id.strip())
-            self._update_submission(
-                submission_id,
-                {
+                    "updated_at": now,
+                }
+            else:
+                update = {
                     "assigned_evaluator_id": evaluator["id"],
                     "assigned_evaluator_name": evaluator["name"],
-                    "assigned_at": datetime.utcnow().isoformat(),
+                    "assigned_at": now,
                     "assigned_by": assigned_by,
                     # Reassignment clears in-flight review submission.
                     "review_status": "none",
                     "submitted_for_review_at": None,
                     "submitted_for_review_by": None,
-                },
-            )
+                    "updated_at": now,
+                }
 
-        updated = self.firebase.get_document(self.collection, submission_id)
-        if not updated:
-            raise ValueError("Submission not found")
-        return {"id": submission_id, **updated}
+            self.firebase.txn_update(
+                transaction, self.collection, submission_id, update
+            )
+            return {"id": submission_id, **submission, **update}
+
+        return self.firebase.run_transaction(_txn)
 
     def divide_equally_among_evaluators(
         self,
@@ -924,24 +965,32 @@ class SubmissionService:
         random.shuffle(submissions)
         random.shuffle(evaluators)
 
-        assigned: list[dict[str, Any]] = []
         now = datetime.utcnow().isoformat()
+        operations: list[dict[str, Any]] = []
+        planned: list[dict[str, Any]] = []
         for index, submission in enumerate(submissions):
             evaluator = evaluators[index % len(evaluators)]
-            self._update_submission(
-                submission["id"],
+            update = {
+                "assigned_evaluator_id": evaluator["id"],
+                "assigned_evaluator_name": evaluator["name"],
+                "assigned_at": now,
+                "assigned_by": assigned_by,
+                "updated_at": now,
+            }
+            operations.append(
                 {
-                    "assigned_evaluator_id": evaluator["id"],
-                    "assigned_evaluator_name": evaluator["name"],
-                    "assigned_at": now,
-                    "assigned_by": assigned_by,
-                },
+                    "type": "update",
+                    "collection": self.collection,
+                    "document_id": submission["id"],
+                    "data": update,
+                }
             )
-            refreshed = self.firebase.get_document(self.collection, submission["id"])
-            if refreshed:
-                assigned.append({"id": submission["id"], **refreshed})
+            planned.append({"id": submission["id"], **submission, **update})
 
-        return assigned
+        if operations:
+            self.firebase.batch_write(operations)
+
+        return planned
 
     def _require_active_evaluator(self, evaluator_id: str) -> dict[str, Any]:
         user = self.user_service.get_user(evaluator_id)
@@ -1212,6 +1261,37 @@ class SubmissionService:
     def _update_analysis(self, analysis_id: str, data: dict[str, Any]) -> None:
         data["updated_at"] = datetime.utcnow().isoformat()
         self.firebase.update_document(self.analysis_collection, analysis_id, data)
+
+    def _commit_analysis_and_submission(
+        self,
+        analysis_id: str | None,
+        submission_id: str,
+        analysis_data: dict[str, Any] | None,
+        submission_data: dict[str, Any],
+    ) -> None:
+        """Atomically update analysis + submission (or submission alone on early fail)."""
+        now = datetime.utcnow().isoformat()
+        operations: list[dict[str, Any]] = []
+        if analysis_id and analysis_data is not None:
+            analysis_payload = {**analysis_data, "updated_at": now}
+            operations.append(
+                {
+                    "type": "update",
+                    "collection": self.analysis_collection,
+                    "document_id": analysis_id,
+                    "data": analysis_payload,
+                }
+            )
+        submission_payload = {**submission_data, "updated_at": now}
+        operations.append(
+            {
+                "type": "update",
+                "collection": self.collection,
+                "document_id": submission_id,
+                "data": submission_payload,
+            }
+        )
+        self.firebase.batch_write(operations)
 
     def _resolve_student_team_name(self, student_id: str) -> str:
         """Load team_name from the student's Firestore profile."""

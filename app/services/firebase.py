@@ -388,3 +388,52 @@ class FirebaseService:
         except Exception as e:
             logger.error(f"Error during batch write: {str(e)}")
             raise Exception(f"Error during batch write: {str(e)}")
+
+    # ==================== Transactions (Phase 3) ====================
+
+    def run_transaction(self, callback):
+        """
+        Run ``callback(transaction)`` inside a Firestore transaction.
+
+        The callback must use ``txn_get`` / ``txn_set`` / ``txn_update`` for
+        reads and writes so concurrent updates cannot clobber each other.
+        """
+        from google.cloud.firestore_v1 import transactional
+
+        transaction = self._db.transaction()
+
+        @transactional
+        def _run(txn):
+            return callback(txn)
+
+        return _run(transaction)
+
+    def txn_get(
+        self, transaction, collection: str, document_id: str
+    ) -> Optional[dict[str, Any]]:
+        """Read a document inside an open transaction."""
+        ref = self._db.collection(collection).document(document_id)
+        snapshot = ref.get(transaction=transaction)
+        return snapshot.to_dict() if snapshot.exists else None
+
+    def txn_set(
+        self,
+        transaction,
+        collection: str,
+        document_id: str,
+        data: dict[str, Any],
+    ) -> None:
+        """Create/overwrite a document inside an open transaction."""
+        ref = self._db.collection(collection).document(document_id)
+        transaction.set(ref, data)
+
+    def txn_update(
+        self,
+        transaction,
+        collection: str,
+        document_id: str,
+        data: dict[str, Any],
+    ) -> None:
+        """Update fields on a document inside an open transaction."""
+        ref = self._db.collection(collection).document(document_id)
+        transaction.update(ref, data)

@@ -629,10 +629,8 @@ async def evaluate_submission(
             analyzed_by=current_user.user_id,
         )
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e),
-        ) from e
+        # "not found" → 404; "already being analyzed" → 409; other validation → 400
+        raise _http_from_value_error(e) from e
 
     job_service = EvaluationJobService()
     try:
