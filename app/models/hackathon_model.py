@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.models.string_utils import strip_optional, strip_required
 from app.models.theme_model import ThemeSummary
 
 
@@ -36,6 +37,16 @@ class TimelineRound(BaseModel):
         description="Id of a reusable evaluation requirement linked to this round.",
     )
 
+    @field_validator("title", mode="before")
+    @classmethod
+    def normalize_title(cls, value: str) -> str:
+        return strip_required(value)
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def normalize_description(cls, value: Optional[str]) -> Optional[str]:
+        return strip_optional(value)
+
     @field_validator("start_date", "end_date")
     @classmethod
     def validate_iso_date(cls, value: Optional[str]) -> Optional[str]:
@@ -54,6 +65,11 @@ class HackathonPrizes(BaseModel):
     winner: str = Field(..., min_length=1, max_length=500)
     first_runner_up: str = Field(..., min_length=1, max_length=500)
     second_runner_up: str = Field(..., min_length=1, max_length=500)
+
+    @field_validator("winner", "first_runner_up", "second_runner_up", mode="before")
+    @classmethod
+    def normalize_prize_text(cls, value: str) -> str:
+        return strip_required(value)
 
 
 class HackathonCreateRequest(BaseModel):
@@ -76,6 +92,11 @@ class HackathonCreateRequest(BaseModel):
     )
     timeline: list[TimelineRound] = Field(default_factory=list)
     prizes: HackathonPrizes
+
+    @field_validator("name", "description", "guidelines", mode="before")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        return strip_required(value)
 
     @field_validator("hackathon_url")
     @classmethod
@@ -111,6 +132,13 @@ class HackathonUpdateRequest(BaseModel):
     timeline: Optional[list[TimelineRound]] = None
     prizes: Optional[HackathonPrizes] = None
 
+    @field_validator("name", "description", "guidelines", mode="before")
+    @classmethod
+    def normalize_optional_required_text(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return strip_required(value)
+
     @field_validator("hackathon_url")
     @classmethod
     def validate_hackathon_url(cls, value: Optional[str]) -> Optional[str]:
@@ -126,6 +154,13 @@ class HackathonUpdateRequest(BaseModel):
         except ValueError as e:
             raise ValueError("Dates must be ISO format (YYYY-MM-DD)") from e
         return value
+
+    @model_validator(mode="after")
+    def validate_date_range(self) -> "HackathonUpdateRequest":
+        if self.start_date and self.end_date:
+            if date.fromisoformat(self.end_date) < date.fromisoformat(self.start_date):
+                raise ValueError("end_date cannot be earlier than start_date")
+        return self
 
 
 class HackathonResponse(BaseModel):

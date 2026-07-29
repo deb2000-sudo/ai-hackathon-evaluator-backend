@@ -11,9 +11,9 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Annotated, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
-from fastapi import Depends, Request
+from fastapi import Request
 from google.cloud import storage
 
 from app.services.evaluation_job_service import EvaluationJobService
@@ -168,28 +168,3 @@ def get_submission_service(request: Request) -> SubmissionService:
 
 def get_evaluation_job_service(request: Request) -> EvaluationJobService:
     return get_container(request).evaluation_job_service
-
-
-# Annotated aliases for route signatures
-FirebaseDep = Annotated[FirebaseService, Depends(get_firebase)]
-UserServiceDep = Annotated[UserService, Depends(get_user_service)]
-ThemeServiceDep = Annotated[ThemeService, Depends(get_theme_service)]
-EvaluationRequirementServiceDep = Annotated[
-    EvaluationRequirementService,
-    Depends(get_evaluation_requirement_service),
-]
-MetricScoringServiceDep = Annotated[
-    MetricScoringService,
-    Depends(get_metric_scoring_service),
-]
-HackathonServiceDep = Annotated[HackathonService, Depends(get_hackathon_service)]
-RegistrationServiceDep = Annotated[
-    RegistrationService,
-    Depends(get_registration_service),
-]
-SubmissionServiceDep = Annotated[SubmissionService, Depends(get_submission_service)]
-EvaluationJobServiceDep = Annotated[
-    EvaluationJobService,
-    Depends(get_evaluation_job_service),
-]
-StorageClientDep = Annotated[storage.Client, Depends(get_storage_client)]

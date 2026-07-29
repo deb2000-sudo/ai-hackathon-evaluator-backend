@@ -5,7 +5,9 @@ User data models and schemas
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
+
+from app.models.string_utils import strip_optional, strip_required
 
 
 UserRole = Literal["admin", "evaluator", "student"]
@@ -20,6 +22,11 @@ class TeamMember(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=100)
     email: EmailStr
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        return strip_required(value)
 
 
 class StudentRegisterRequest(BaseModel):
@@ -42,13 +49,28 @@ class StudentRegisterRequest(BaseModel):
     team_member_4_name: Optional[str] = Field(None, max_length=100)
     team_member_4_email: Optional[EmailStr] = None
 
+    @field_validator(
+        "team_name",
+        "university",
+        "team_leader_name",
+        "niat_id",
+        "team_member_1_name",
+        "team_member_2_name",
+        mode="before",
+    )
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        return strip_required(value)
+
+    @field_validator("mobile_no", mode="before")
+    @classmethod
+    def normalize_mobile(cls, value: str) -> str:
+        return strip_required(value)
+
     @field_validator("team_member_3_name", "team_member_4_name", mode="before")
     @classmethod
     def normalize_optional_name(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        stripped = value.strip()
-        return stripped or None
+        return strip_optional(value)
 
     @model_validator(mode="after")
     def validate_registration(self) -> "StudentRegisterRequest":
@@ -122,6 +144,11 @@ class EvaluatorRegisterRequest(BaseModel):
     password: str = Field(..., min_length=6)
     confirm_password: str = Field(..., min_length=6)
 
+    @field_validator("first_name", "last_name", "employee_id", mode="before")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        return strip_required(value)
+
     @field_validator("email")
     @classmethod
     def validate_nxtwave_email(cls, value: str) -> str:
@@ -141,9 +168,18 @@ class UserUpdate(BaseModel):
 
     name: Optional[str] = Field(None, min_length=1, max_length=100)
 
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return strip_required(value)
+
 
 class UserResponse(BaseModel):
     """Schema for user response"""
+
+    model_config = ConfigDict(from_attributes=True)
 
     id: str
     first_name: str = ""
@@ -161,9 +197,6 @@ class UserResponse(BaseModel):
     approval_status: Optional[ApprovalStatus] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
 
 
 class RegisterResponse(BaseModel):

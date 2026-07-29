@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import os
 import uuid
 from datetime import datetime
@@ -20,7 +19,6 @@ from app.utils.video_upload import (
 )
 
 
-logger = logging.getLogger(__name__)
 
 CREATE_SUCCESS_MESSAGE = (
     "Your submission has been recorded successfully. "

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from app.models.user_model import CurrentUser
@@ -11,9 +10,6 @@ from app.utils.gcs_video import (
     generate_signed_video_url,
     parse_gs_uri,
 )
-
-
-logger = logging.getLogger(__name__)
 
 
 class QueryMixin:

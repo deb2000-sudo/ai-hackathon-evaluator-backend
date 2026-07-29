@@ -68,7 +68,7 @@ async def get_pending_evaluators(
 async def get_evaluators(
     approval_status: Optional[str] = Query(
         None,
-        description="Filter by approval_status: pending | approved | rejected",
+        description="Filter by approval_status: pending | approved",
     ),
     admin: CurrentUser = Depends(get_admin_user),
     user_service: UserService = Depends(get_user_service),
@@ -81,10 +81,10 @@ async def get_evaluators(
     """
     try:
         status_filter = approval_status.strip().lower() if approval_status else None
-        if status_filter and status_filter not in ("pending", "approved", "rejected"):
+        if status_filter and status_filter not in ("pending", "approved"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="approval_status must be pending, approved, or rejected",
+                detail="approval_status must be pending or approved",
             )
         evaluators = await run_sync(
             user_service.get_evaluators,

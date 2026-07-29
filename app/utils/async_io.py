@@ -12,13 +12,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from typing import TypeVar
+from typing import Any, TypeVar
 
 
 T = TypeVar("T")
 
 
-async def run_sync(func: Callable[..., T], /, *args, **kwargs) -> T:
+async def run_sync(func: Callable[..., T], /, *args: Any, **kwargs: Any) -> T:
     """
     Await ``func(*args, **kwargs)`` in a thread-pool worker.
 

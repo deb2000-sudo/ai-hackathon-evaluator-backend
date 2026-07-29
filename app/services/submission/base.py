@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import os
 from datetime import datetime
 from typing import Any
@@ -15,9 +14,6 @@ from app.services.hackathon_service import HackathonService
 from app.services.theme_service import ThemeService
 from app.services.user_service import UserService
 from app.utils.gcs_video import build_storage_client
-
-
-logger = logging.getLogger(__name__)
 
 
 class SubmissionServiceBase:
@@ -71,10 +67,6 @@ class SubmissionServiceBase:
     def _update_submission(self, submission_id: str, data: dict[str, Any]) -> None:
         data["updated_at"] = datetime.utcnow().isoformat()
         self.firebase.update_document(self.collection, submission_id, data)
-
-    def _update_analysis(self, analysis_id: str, data: dict[str, Any]) -> None:
-        data["updated_at"] = datetime.utcnow().isoformat()
-        self.firebase.update_document(self.analysis_collection, analysis_id, data)
 
     def _resolve_student_team_name(self, student_id: str) -> str:
         """Load team_name from the student's Firestore profile."""

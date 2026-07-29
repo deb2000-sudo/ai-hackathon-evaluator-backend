@@ -37,6 +37,28 @@ python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
+ignore_missing_imports = true
+
+# Phase 11: gradual typing — start with leaf modules (models / exceptions / utils).
+[[tool.mypy.overrides]]
+module = [
+    "app.models.*",
+    "app.exceptions",
+    "app.utils.async_io",
+    "app.utils.auth_cookies",
+    "app.utils.cors_config",
+]
+disallow_untyped_defs = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = [
+    "app.services.firebase",
+    "app.services.submission.*",
+    "google.*",
+    "firebase_admin.*",
+]
+ignore_errors = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

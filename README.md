@@ -121,6 +121,16 @@ After approval: `report_published=true`, student can read analysis/report/`final
 
 Interactive docs: `http://localhost:8000/docs`
 
+Paths below are **public absolute URLs** (same as OpenAPI). Do not rename
+these without an API version bump.
+
+### Health / root
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/health` | — | Liveness |
+| GET | `/` | — | Service welcome |
+
 ### Auth — `/auth`
 
 | Method | Path | Auth | Description |
@@ -138,7 +148,7 @@ Interactive docs: `http://localhost:8000/docs`
 |--------|------|-------------|
 | GET | `/admin/users` | Non-admin users |
 | GET | `/admin/evaluators/pending` | Pending evaluators |
-| GET | `/admin/evaluators` | All evaluators (`?approval_status=approved`) |
+| GET | `/admin/evaluators` | Evaluators (`?approval_status=pending\|approved`) |
 | POST | `/admin/evaluators/{id}/approve` | Approve evaluator |
 | GET/PATCH | `/admin/user/{id}` | Get / update user |
 
@@ -162,28 +172,34 @@ Per-field scoring prompts (`max_score`, natural-language scoring instructions) f
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/accepted-video-types` | student | Allowed MIME/ext + max size |
-| POST | `/upload-url` | student | Signed PUT URL (record or file) |
-| POST | `/from-upload` | student | Finalize after GCS PUT |
-| POST | `/` | student | Multipart create (≤ ~32 MiB on Cloud Run) |
-| GET | `/` | student | Own submissions |
-| GET | `/admin/hackathons` | admin | Hackathons + submission counts |
-| GET | `/admin/hackathons/{id}` | admin | Submissions for a hackathon |
-| POST | `/admin/hackathons/{id}/assign-equally` | admin | Divide selected among evaluators |
-| GET | `/admin/all` | admin | All submissions |
-| GET | `/evaluator/hackathons` | evaluator | Hackathons with assigned work |
-| GET | `/evaluator/hackathons/{id}` | evaluator | Assigned submissions |
-| GET | `/assigned-to-me` | evaluator | Flat assigned list |
-| GET | `/{id}` | owner / assignee / admin | Submission detail |
-| GET | `/{id}/video` | same | Stream video (Range supported) |
-| GET | `/{id}/analysis` | same* | Analysis doc (*students after publish) |
-| GET | `/{id}/report` | same* | Markdown report |
-| POST | `/{id}/evaluate` | admin or assignee | Start Gemini analysis |
-| POST | `/{id}/submit-for-review` | assignee | Send score to admin |
-| POST | `/{id}/approve-evaluation` | admin | Approve → publish to student |
-| POST | `/{id}/request-changes` | admin | Send back to evaluator |
-| POST | `/{id}/publish` | admin | Manual publish toggle |
-| POST | `/{id}/assign` | admin | Assign / unassign evaluator |
+| GET | `/submissions/accepted-video-types` | student | Allowed MIME/ext + max size |
+| POST | `/submissions/upload-url` | student | Signed PUT URL (record or file) |
+| POST | `/submissions/from-upload` | student | Finalize after GCS PUT |
+| POST | `/submissions` | student | Multipart create (≤ ~32 MiB on Cloud Run) |
+| GET | `/submissions` | student | Own submissions |
+| GET | `/submissions/admin/hackathons` | admin | Hackathons + submission counts |
+| GET | `/submissions/admin/hackathons/{id}` | admin | Submissions for a hackathon |
+| POST | `/submissions/admin/hackathons/{id}/assign-equally` | admin | Divide selected among evaluators |
+| GET | `/submissions/admin/all` | admin | All submissions |
+| GET | `/submissions/evaluator/hackathons` | evaluator | Hackathons with assigned work |
+| GET | `/submissions/evaluator/hackathons/{id}` | evaluator | Assigned submissions |
+| GET | `/submissions/assigned-to-me` | evaluator | Flat assigned list |
+| GET | `/submissions/{id}` | owner / assignee / admin | Submission detail |
+| GET | `/submissions/{id}/video` | same | Stream video (Range supported) |
+| GET | `/submissions/{id}/analysis` | same* | Analysis doc (*students after publish) |
+| GET | `/submissions/{id}/report` | same* | Markdown report |
+| POST | `/submissions/{id}/evaluate` | admin or assignee | Start Gemini analysis |
+| POST | `/submissions/{id}/submit-for-review` | assignee | Send score to admin |
+| POST | `/submissions/{id}/approve-evaluation` | admin | Approve → publish to student |
+| POST | `/submissions/{id}/request-changes` | admin | Send back to evaluator |
+| POST | `/submissions/{id}/publish` | admin | Manual publish toggle |
+| POST | `/submissions/{id}/assign` | admin | Assign / unassign evaluator |
+
+### Internal jobs (Cloud Tasks — not for the SPA)
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/internal/jobs/evaluate-submission` | `X-Internal-Job-Secret` | Run Gemini analysis for a queued submission |
 
 ### Example: signed upload (recommended)
 
@@ -346,7 +362,9 @@ See [.env.example](.env.example) for local development. Production secrets/env c
 
 ```
 app/
-├── main.py                      # app factory, CORS, handlers, lifespan seeder
+├── main.py                      # app factory, CORS, handlers, lifespan + DI container
+├── dependencies.py              # FastAPI Depends providers / AppContainer
+├── exceptions.py                # AppError hierarchy + ValueError status mapping
 ├── middleware/
 │   └── auth_middleware.py       # current / active / admin / student / evaluator deps
 ├── models/                      # Pydantic schemas (users, submissions, hackathons, …)
@@ -357,12 +375,15 @@ app/
 │   ├── hackathon.py             # /hackathons
 │   ├── theme.py                 # /themes
 │   ├── evaluation_requirement.py
-│   └── metric_scoring.py        # /ai-evaluation-metric-scoring
+│   ├── metric_scoring.py        # /ai-evaluation-metric-scoring
+│   └── internal_jobs.py         # /internal/jobs (Cloud Tasks worker)
 ├── services/
 │   ├── firebase.py              # Firebase Admin singleton
 │   ├── user_service.py
 │   ├── registration_service.py
-│   ├── submission_service.py    # GCS + Gemini + review workflow
+│   ├── submission_service.py    # thin re-export of submission package
+│   ├── submission/              # create / analysis / assignment / review / query mixins
+│   ├── evaluation_job_service.py
 │   ├── hackathon_service.py
 │   ├── theme_service.py
 │   ├── evaluation_requirement_service.py
@@ -371,6 +392,7 @@ app/
     ├── seeder.py
     ├── auth_cookies.py
     ├── cors_config.py
+    ├── async_io.py              # run_sync offload helper
     ├── gcs_video.py             # signed GET/PUT + streaming
     ├── video_upload.py          # MIME allow-list (record + upload)
     └── image_upload.py          # hackathon banners

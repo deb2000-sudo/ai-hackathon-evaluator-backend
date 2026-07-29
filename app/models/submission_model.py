@@ -5,9 +5,10 @@ Student hackathon submission schemas.
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.models.analysis_model import AnalysisSummary
+from app.models.string_utils import strip_optional, strip_required
 
 
 SubmissionStatus = Literal["uploaded", "processing", "completed", "failed"]
@@ -150,6 +151,11 @@ class EvaluateSubmissionRequest(BaseModel):
         description="Optional extra focus areas appended to the analysis context (not required).",
     )
 
+    @field_validator("evaluation_criteria", mode="before")
+    @classmethod
+    def normalize_criteria(cls, value: Optional[str]) -> Optional[str]:
+        return strip_optional(value)
+
 
 class SubmitForReviewRequest(BaseModel):
     """Evaluator submits a completed evaluation to admin for approval."""
@@ -165,6 +171,11 @@ class SubmitForReviewRequest(BaseModel):
         max_length=5000,
         description="Optional notes for the admin reviewing this evaluation.",
     )
+
+    @field_validator("evaluator_notes", mode="before")
+    @classmethod
+    def normalize_notes(cls, value: Optional[str]) -> Optional[str]:
+        return strip_optional(value)
 
 
 class ApproveEvaluationRequest(BaseModel):
@@ -182,6 +193,11 @@ class ApproveEvaluationRequest(BaseModel):
         description="Optional admin notes.",
     )
 
+    @field_validator("review_notes", mode="before")
+    @classmethod
+    def normalize_notes(cls, value: Optional[str]) -> Optional[str]:
+        return strip_optional(value)
+
 
 class RequestChangesRequest(BaseModel):
     """Admin sends the evaluation back to the assigned evaluator."""
@@ -191,6 +207,11 @@ class RequestChangesRequest(BaseModel):
         max_length=5000,
         description="What the evaluator should change before resubmitting.",
     )
+
+    @field_validator("review_notes", mode="before")
+    @classmethod
+    def normalize_notes(cls, value: Optional[str]) -> Optional[str]:
+        return strip_optional(value)
 
 
 class PublishReportRequest(BaseModel):
@@ -253,6 +274,16 @@ class PrepareUploadRequest(BaseModel):
         description="'recorded' for MediaRecorder blob, 'uploaded' for local file.",
     )
 
+    @field_validator("filename", mode="before")
+    @classmethod
+    def normalize_filename(cls, value: str) -> str:
+        return strip_required(value)
+
+    @field_validator("content_type", mode="before")
+    @classmethod
+    def normalize_content_type(cls, value: Optional[str]) -> Optional[str]:
+        return strip_optional(value)
+
 
 class PrepareUploadResponse(BaseModel):
     """Signed PUT URL so the browser can upload video directly to GCS."""
@@ -287,4 +318,18 @@ class CreateSubmissionFromUploadRequest(BaseModel):
         None,
         description="'recorded' or 'uploaded' — same GCS path either way.",
     )
+
+    @field_validator(
+        "video_path",
+        "content_type",
+        "source_filename",
+        "hackathon_id",
+        "theme_id",
+        "problem_statement",
+        "solution_description",
+        mode="before",
+    )
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        return strip_required(value)
 

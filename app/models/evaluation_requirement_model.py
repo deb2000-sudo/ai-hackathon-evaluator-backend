@@ -13,6 +13,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.models.string_utils import strip_optional, strip_required
+
 
 FieldType = Literal["text", "textarea", "url", "number", "date", "file", "other"]
 
@@ -36,6 +38,16 @@ class RequirementField(BaseModel):
     placeholder: Optional[str] = Field(None, max_length=300)
     description: Optional[str] = Field(None, max_length=2000)
 
+    @field_validator("label", mode="before")
+    @classmethod
+    def normalize_label(cls, value: str) -> str:
+        return strip_required(value)
+
+    @field_validator("placeholder", "description", mode="before")
+    @classmethod
+    def normalize_optional_text(cls, value: Optional[str]) -> Optional[str]:
+        return strip_optional(value)
+
     @model_validator(mode="after")
     def ensure_key(self) -> "RequirementField":
         if not self.key or not self.key.strip():
@@ -52,6 +64,16 @@ class EvaluationRequirementCreateRequest(BaseModel):
     description: Optional[str] = Field(None, max_length=5000)
     fields: list[RequirementField] = Field(..., min_length=1)
 
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        return strip_required(value)
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def normalize_description(cls, value: Optional[str]) -> Optional[str]:
+        return strip_optional(value)
+
     @field_validator("fields")
     @classmethod
     def unique_field_keys(cls, value: list[RequirementField]) -> list[RequirementField]:
@@ -67,6 +89,18 @@ class EvaluationRequirementUpdateRequest(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=200)
     description: Optional[str] = Field(None, max_length=5000)
     fields: Optional[list[RequirementField]] = Field(None, min_length=1)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return strip_required(value)
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def normalize_description(cls, value: Optional[str]) -> Optional[str]:
+        return strip_optional(value)
 
     @field_validator("fields")
     @classmethod

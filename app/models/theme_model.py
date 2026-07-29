@@ -9,7 +9,9 @@ when submitting.
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.models.string_utils import strip_required
 
 
 class ThemeCreateRequest(BaseModel):
@@ -18,12 +20,24 @@ class ThemeCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     description: str = Field(..., min_length=1, max_length=5000)
 
+    @field_validator("name", "description", mode="before")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        return strip_required(value)
+
 
 class ThemeUpdateRequest(BaseModel):
     """Partial update payload for a theme."""
 
     name: Optional[str] = Field(None, min_length=1, max_length=200)
     description: Optional[str] = Field(None, min_length=1, max_length=5000)
+
+    @field_validator("name", "description", mode="before")
+    @classmethod
+    def normalize_optional_required_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return strip_required(value)
 
 
 class ThemeResponse(BaseModel):

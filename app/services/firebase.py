@@ -2,7 +2,6 @@
 Firebase service for authentication and Firestore database
 """
 
-import json
 import logging
 import os
 from typing import Any, Optional
@@ -281,8 +280,6 @@ class FirebaseService:
         try:
             doc = self._db.collection(collection).document(document_id).get()
             return doc.to_dict() if doc.exists else None
-        except InfrastructureError:
-            raise
         except Exception as e:
             logger.exception("Error getting document %s/%s", collection, document_id)
             raise InfrastructureError(
@@ -363,9 +360,7 @@ class FirebaseService:
                 f"Failed to batch-read collection {collection}"
             ) from e
 
-    def get_collection(
-        self, collection: str, filters: Optional[dict[str, Any]] = None
-    ) -> list[dict[str, Any]]:
+    def get_collection(self, collection: str) -> list[dict[str, Any]]:
         """
         Get all documents from a collection.
 

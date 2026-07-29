@@ -8,8 +8,6 @@ Reusable evaluation-requirement routes.
     DELETE /evaluation-requirements/{id}   -> admin deletes a requirement
 """
 
-import logging
-
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.middleware.auth_middleware import get_admin_user, get_current_user
@@ -24,7 +22,6 @@ from app.dependencies import get_evaluation_requirement_service
 from app.utils.async_io import run_sync
 
 
-logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/evaluation-requirements", tags=["evaluation-requirements"])
 
 

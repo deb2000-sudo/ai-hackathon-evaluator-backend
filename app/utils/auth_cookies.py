@@ -7,6 +7,7 @@ from __future__ import annotations
 import hmac
 import os
 import secrets
+from typing import Literal
 
 from fastapi import Response
 
@@ -20,9 +21,16 @@ CSRF_COOKIE_NAME = "csrf_token"
 CSRF_HEADER_NAME = "X-CSRF-Token"
 CSRF_COOKIE_MAX_AGE = AUTH_COOKIE_MAX_AGE
 
+SameSite = Literal["lax", "strict", "none"]
 
-def _cookie_samesite() -> str:
-    return os.getenv("COOKIE_SAMESITE", "lax").lower()
+
+def _cookie_samesite() -> SameSite:
+    value = os.getenv("COOKIE_SAMESITE", "lax").lower()
+    if value == "strict":
+        return "strict"
+    if value == "none":
+        return "none"
+    return "lax"
 
 
 def _cookie_secure() -> bool:

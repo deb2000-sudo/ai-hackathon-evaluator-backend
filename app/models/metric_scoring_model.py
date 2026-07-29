@@ -13,6 +13,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.models.string_utils import strip_optional, strip_required
+
 
 class FieldScoringMetric(BaseModel):
     """Scoring definition for one field of the linked evaluation requirement."""
@@ -36,6 +38,16 @@ class FieldScoringMetric(BaseModel):
     max_score: float = Field(10, gt=0, le=100)
     weight: Optional[float] = Field(None, ge=0)
 
+    @field_validator("field_key", "scoring_prompt", mode="before")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        return strip_required(value)
+
+    @field_validator("field_label", mode="before")
+    @classmethod
+    def normalize_optional_label(cls, value: Optional[str]) -> Optional[str]:
+        return strip_optional(value)
+
 
 class MetricScoringCreateRequest(BaseModel):
     """Payload for creating a metric-scoring config for an evaluation requirement."""
@@ -43,6 +55,16 @@ class MetricScoringCreateRequest(BaseModel):
     evaluation_requirement_id: str = Field(..., min_length=1)
     name: Optional[str] = Field(None, max_length=200)
     metrics: list[FieldScoringMetric] = Field(..., min_length=1)
+
+    @field_validator("evaluation_requirement_id", mode="before")
+    @classmethod
+    def normalize_requirement_id(cls, value: str) -> str:
+        return strip_required(value)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: Optional[str]) -> Optional[str]:
+        return strip_optional(value)
 
     @field_validator("metrics")
     @classmethod
@@ -58,6 +80,11 @@ class MetricScoringUpdateRequest(BaseModel):
 
     name: Optional[str] = Field(None, max_length=200)
     metrics: Optional[list[FieldScoringMetric]] = Field(None, min_length=1)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: Optional[str]) -> Optional[str]:
+        return strip_optional(value)
 
     @field_validator("metrics")
     @classmethod
