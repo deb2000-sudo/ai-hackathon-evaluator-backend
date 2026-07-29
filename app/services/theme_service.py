@@ -55,11 +55,16 @@ class ThemeService:
 
     def get_themes_by_ids(self, theme_ids: list[str]) -> list[dict[str, Any]]:
         """Fetch themes for the given ids (preserves input order; skips missing)."""
+        ordered_ids = [tid for tid in theme_ids if tid]
+        if not ordered_ids:
+            return []
+
+        by_id = self.firebase.get_documents(self.collection, ordered_ids)
         themes: list[dict[str, Any]] = []
-        for theme_id in theme_ids:
-            theme = self.get_theme(theme_id)
-            if theme:
-                themes.append(theme)
+        for theme_id in ordered_ids:
+            document = by_id.get(theme_id)
+            if document:
+                themes.append({"id": theme_id, **document})
         return themes
 
     def exists(self, theme_id: str) -> bool:
@@ -105,11 +110,14 @@ class ThemeService:
             theme_id = (raw or "").strip()
             if not theme_id or theme_id in seen:
                 continue
-            if not self.exists(theme_id):
-                raise ValueError(f"Unknown theme id: {theme_id}")
-            seen.add(theme_id)
             cleaned.append(theme_id)
+            seen.add(theme_id)
 
         if not cleaned:
             raise ValueError("At least one theme must be selected")
+
+        found = self.firebase.get_documents(self.collection, cleaned)
+        for theme_id in cleaned:
+            if theme_id not in found:
+                raise ValueError(f"Unknown theme id: {theme_id}")
         return cleaned

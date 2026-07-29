@@ -94,6 +94,20 @@ async def _to_submission_response(
     return SubmissionResponse(**enriched)
 
 
+async def _to_submission_responses(
+    service: SubmissionService,
+    submissions: list[dict],
+    current_user: CurrentUser | None = None,
+) -> list[SubmissionResponse]:
+    """Batch enrich list endpoints (Phase 7) — same JSON as one-by-one enrich."""
+    enriched_list = await run_sync(
+        service.enrich_submissions_for_response,
+        submissions,
+        current_user,
+    )
+    return [SubmissionResponse(**item) for item in enriched_list]
+
+
 def _ensure_student_can_view_report(
     service: SubmissionService,
     submission: dict,
@@ -283,10 +297,7 @@ async def list_my_submissions(
     """List all submissions for the authenticated student."""
     service = SubmissionService()
     submissions = await run_sync(service.list_student_submissions, student.user_id)
-    return [
-        await _to_submission_response(service, item, current_user=student)
-        for item in submissions
-    ]
+    return await _to_submission_responses(service, submissions, current_user=student)
 
 
 @router.get("/admin/hackathons", response_model=list[HackathonSubmissionSummary])
@@ -322,10 +333,7 @@ async def list_submissions_for_hackathon_admin(
         )
 
     submissions = await run_sync(service.list_submissions_for_hackathon, hackathon_id)
-    return [
-        await _to_submission_response(service, item, current_user=admin)
-        for item in submissions
-    ]
+    return await _to_submission_responses(service, submissions, current_user=admin)
 
 
 @router.post(
@@ -370,10 +378,7 @@ async def divide_submissions_equally(
     return DivideEquallyResponse(
         assigned_count=len(assigned),
         evaluator_count=evaluator_count,
-        submissions=[
-            await _to_submission_response(service, item, current_user=admin)
-            for item in assigned
-        ],
+        submissions=await _to_submission_responses(service, assigned, current_user=admin),
     )
 
 
@@ -384,10 +389,7 @@ async def list_all_submissions_for_admin(
     """Admin review queue: list every student submission."""
     service = SubmissionService()
     submissions = await run_sync(service.list_all_submissions)
-    return [
-        await _to_submission_response(service, item, current_user=admin)
-        for item in submissions
-    ]
+    return await _to_submission_responses(service, submissions, current_user=admin)
 
 
 @router.get("/evaluator/hackathons", response_model=list[HackathonSubmissionSummary])
@@ -428,10 +430,7 @@ async def list_submissions_for_hackathon_evaluator(
         hackathon_id,
         evaluator_id=evaluator.user_id,
     )
-    return [
-        await _to_submission_response(service, item, current_user=evaluator)
-        for item in submissions
-    ]
+    return await _to_submission_responses(service, submissions, current_user=evaluator)
 
 
 @router.get("/assigned-to-me", response_model=list[SubmissionResponse])
@@ -451,10 +450,7 @@ async def list_my_assigned_submissions(
 
     service = SubmissionService()
     submissions = await run_sync(service.list_submissions_for_evaluator, current_user.user_id)
-    return [
-        await _to_submission_response(service, item, current_user=current_user)
-        for item in submissions
-    ]
+    return await _to_submission_responses(service, submissions, current_user=current_user)
 
 
 @router.get("/{submission_id}/video")

@@ -168,6 +168,26 @@ class HackathonService:
         ]
         return enriched
 
+    def enrich_hackathon_for_submission_summary(
+        self, hackathon: dict[str, Any]
+    ) -> dict[str, Any]:
+        """
+        Lightweight enrich for Submissions-tab hackathon rows (Phase 7).
+
+        Same fields the summary API needs (name/dates/banner_url) without
+        resolving the full themes list.
+        """
+        enriched = dict(hackathon)
+        banner_path = enriched.get("banner_path")
+        if banner_path:
+            enriched["banner_url"] = generate_signed_url(
+                self._get_storage_client(),
+                banner_path,
+            )
+        else:
+            enriched["banner_url"] = None
+        return enriched
+
     def get_hackathon_themes(self, hackathon_id: str) -> list[dict[str, Any]] | None:
         """Return themes released for a hackathon, or None if hackathon missing."""
         hackathon = self.get_hackathon(hackathon_id)

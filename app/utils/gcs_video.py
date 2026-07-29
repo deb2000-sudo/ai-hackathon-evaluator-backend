@@ -55,12 +55,19 @@ def generate_signed_url(
     client: storage.Client,
     gs_uri: str,
     expiry_seconds: int | None = None,
+    *,
+    check_exists: bool = False,
 ) -> str | None:
-    """Return a time-limited HTTPS URL for any GCS object (generic)."""
+    """
+    Return a time-limited HTTPS URL for any GCS object (generic).
+
+    ``check_exists`` defaults to False (Phase 7) to avoid an extra GCS RPC per
+    object on list endpoints. Missing objects still get a URL that fails on GET.
+    """
     try:
         bucket_name, object_name = parse_gs_uri(gs_uri)
         blob = client.bucket(bucket_name).blob(object_name)
-        if not blob.exists():
+        if check_exists and not blob.exists():
             logger.warning("GCS object not found: %s", gs_uri)
             return None
 
@@ -103,12 +110,22 @@ def signed_url_expiry_seconds() -> int:
         return 3600
 
 
-def generate_signed_video_url(client: storage.Client, video_path: str) -> str | None:
-    """Return a time-limited HTTPS URL for browser playback."""
+def generate_signed_video_url(
+    client: storage.Client,
+    video_path: str,
+    *,
+    check_exists: bool = False,
+) -> str | None:
+    """
+    Return a time-limited HTTPS URL for browser playback.
+
+    Skips ``blob.exists()`` by default so list enrichment is one sign RPC per
+    video instead of exists+sign.
+    """
     try:
         bucket_name, object_name = parse_gs_uri(video_path)
         blob = client.bucket(bucket_name).blob(object_name)
-        if not blob.exists():
+        if check_exists and not blob.exists():
             logger.warning("Video object not found in GCS: %s", video_path)
             return None
 

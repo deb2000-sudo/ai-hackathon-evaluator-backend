@@ -644,20 +644,30 @@ class SubmissionService:
         one submission assigned to that evaluator, and count only those.
         """
         hackathons = self.hackathon_service.list_hackathons()
-        submissions = self.firebase.get_collection(self.collection)
+
+        # Phase 7: scoped query for evaluators; avoid loading themes on summary rows.
+        if evaluator_id:
+            submissions = self.firebase.query_collection(
+                self.collection,
+                "assigned_evaluator_id",
+                "==",
+                evaluator_id,
+            )
+        else:
+            submissions = self.firebase.get_collection(self.collection)
 
         counts: dict[str, int] = {}
         for submission in submissions:
             hid = submission.get("hackathon_id")
             if not hid:
                 continue
-            if evaluator_id and submission.get("assigned_evaluator_id") != evaluator_id:
-                continue
             counts[hid] = counts.get(hid, 0) + 1
 
         summaries: list[dict[str, Any]] = []
         for hackathon in hackathons:
-            enriched = self.hackathon_service.enrich_hackathon_for_response(hackathon)
+            enriched = self.hackathon_service.enrich_hackathon_for_submission_summary(
+                hackathon
+            )
             count = counts.get(enriched["id"], 0)
             if evaluator_id and count == 0:
                 continue
@@ -1124,6 +1134,10 @@ class SubmissionService:
         self,
         submission: dict[str, Any],
         current_user: CurrentUser | None = None,
+        *,
+        analysis_by_id: dict[str, dict[str, Any]] | None = None,
+        storage_client: Any | None = None,
+        check_video_exists: bool = False,
     ) -> dict[str, Any]:
         """Attach a browser-playable HTTPS URL alongside the internal gs:// path."""
         enriched = dict(submission)
@@ -1172,9 +1186,11 @@ class SubmissionService:
 
         video_path = enriched.get("video_path")
         if video_path:
+            client = storage_client or self._storage_client()
             enriched["video_url"] = generate_signed_video_url(
-                self._storage_client(),
+                client,
                 video_path,
+                check_exists=check_video_exists,
             )
         else:
             enriched["video_url"] = None
@@ -1186,7 +1202,12 @@ class SubmissionService:
 
         analysis_id = enriched.get("analysis_id")
         if can_see_analysis and analysis_id:
-            analysis_doc = self.firebase.get_document(self.analysis_collection, analysis_id)
+            if analysis_by_id is not None:
+                analysis_doc = analysis_by_id.get(analysis_id)
+            else:
+                analysis_doc = self.firebase.get_document(
+                    self.analysis_collection, analysis_id
+                )
             if analysis_doc and analysis_doc.get("status") == "completed":
                 enriched["analysis"] = {
                     "id": analysis_id,
@@ -1213,6 +1234,48 @@ class SubmissionService:
             enriched["review_notes"] = None
 
         return enriched
+
+    def enrich_submissions_for_response(
+        self,
+        submissions: list[dict[str, Any]],
+        current_user: CurrentUser | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Batch-enrich a submission list (Phase 7).
+
+        Same JSON as calling ``enrich_submission_for_response`` per item, but
+        analysis docs are fetched in one Firestore batch and one GCS client is
+        reused for signed URLs.
+        """
+        if not submissions:
+            return []
+
+        is_staff = bool(
+            current_user and current_user.role in ("admin", "evaluator")
+        )
+        analysis_ids: list[str] = []
+        for submission in submissions:
+            analysis_id = submission.get("analysis_id")
+            if not analysis_id:
+                continue
+            if is_staff or self.student_can_view_report(submission):
+                analysis_ids.append(analysis_id)
+
+        analysis_by_id = self.firebase.get_documents(
+            self.analysis_collection, analysis_ids
+        )
+        storage_client = self._storage_client()
+
+        return [
+            self.enrich_submission_for_response(
+                submission,
+                current_user=current_user,
+                analysis_by_id=analysis_by_id,
+                storage_client=storage_client,
+                check_video_exists=False,
+            )
+            for submission in submissions
+        ]
 
     def build_video_stream_response(
         self,

@@ -334,6 +334,35 @@ class FirebaseService:
                 f"Failed to delete document {collection}/{document_id}"
             ) from e
 
+    def get_documents(
+        self, collection: str, document_ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        """
+        Batch-get documents by id (Phase 7).
+
+        Returns ``{document_id: data}`` for documents that exist. Missing ids are
+        omitted. Empty input → empty dict (no RPC).
+        """
+        unique_ids = list(dict.fromkeys(doc_id for doc_id in document_ids if doc_id))
+        if not unique_ids:
+            return {}
+
+        try:
+            refs = [
+                self._db.collection(collection).document(doc_id)
+                for doc_id in unique_ids
+            ]
+            results: dict[str, dict[str, Any]] = {}
+            for snapshot in self._db.get_all(refs):
+                if snapshot.exists:
+                    results[snapshot.id] = snapshot.to_dict() or {}
+            return results
+        except Exception as e:
+            logger.exception("Error batch-getting documents from %s", collection)
+            raise InfrastructureError(
+                f"Failed to batch-read collection {collection}"
+            ) from e
+
     def get_collection(
         self, collection: str, filters: Optional[dict[str, Any]] = None
     ) -> list[dict[str, Any]]:
