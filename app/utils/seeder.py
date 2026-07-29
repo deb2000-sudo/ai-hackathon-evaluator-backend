@@ -3,6 +3,7 @@ Database seeder - Initialize default data
 """
 
 import logging
+import os
 from datetime import datetime
 from typing import Any, NotRequired, TypedDict
 
@@ -12,6 +13,17 @@ from app.services.user_service import UserService
 
 
 logger = logging.getLogger(__name__)
+
+
+def seed_on_startup_enabled() -> bool:
+    """
+    Whether lifespan should run ``DatabaseSeeder.seed_all``.
+
+    Default **true** preserves today's seed-on-startup behaviour. Set
+    ``SEED_ON_STARTUP=false`` in production once bootstrap accounts exist
+    (Phase 8).
+    """
+    return os.getenv("SEED_ON_STARTUP", "true").lower() in ("1", "true", "yes")
 
 
 class TeamMemberSeed(TypedDict):

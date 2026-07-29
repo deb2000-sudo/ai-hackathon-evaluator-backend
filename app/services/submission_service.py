@@ -122,7 +122,7 @@ class SubmissionService:
         self.project = (
             os.getenv("GOOGLE_CLOUD_PROJECT")
             or os.getenv("FIREBASE_PROJECT_ID")
-            or "nxt-create-deb"
+            or ""
         )
         self.location = os.getenv("GOOGLE_CLOUD_LOCATION", "global")
         self.bucket_name = os.getenv("EVALUATION_BUCKET_NAME") or os.getenv("VIDEO_BUCKET_NAME")

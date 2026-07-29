@@ -21,7 +21,7 @@ from app.routes import (
 )
 from app.utils.async_io import run_sync
 from app.utils.cors_config import get_allowed_origins, get_cors_allow_headers
-from app.utils.seeder import DatabaseSeeder
+from app.utils.seeder import DatabaseSeeder, seed_on_startup_enabled
 from app.exceptions import (
     AppError,
     InfrastructureError,
@@ -45,15 +45,18 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("🚀 FastAPI application starting...")
 
-    # Run database seeding on startup (sync I/O off the event loop).
-    try:
-        logger.info("🌱 Initializing database...")
-        seeder = DatabaseSeeder()
-        await run_sync(seeder.seed_all)
-        logger.info("Database initialization completed")
-    except Exception as e:
-        logger.warning(f"Database seeding encountered an issue: {str(e)}")
-        # Don't fail startup if seeding fails
+    # Phase 8: gate seeder behind SEED_ON_STARTUP (default true = today's behaviour).
+    if seed_on_startup_enabled():
+        try:
+            logger.info("🌱 Initializing database...")
+            seeder = DatabaseSeeder()
+            await run_sync(seeder.seed_all)
+            logger.info("Database initialization completed")
+        except Exception as e:
+            logger.warning(f"Database seeding encountered an issue: {str(e)}")
+            # Don't fail startup if seeding fails
+    else:
+        logger.info("Skipping database seeding (SEED_ON_STARTUP=false)")
 
     yield
     # Shutdown
