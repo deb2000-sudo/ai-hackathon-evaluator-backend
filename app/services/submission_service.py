@@ -6,7 +6,7 @@ import logging
 import os
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, BinaryIO
 
 from google import genai
 from google.cloud import storage
@@ -25,6 +25,10 @@ from app.utils.gcs_video import (
     parse_gs_uri,
 )
 from app.utils.video_upload import (
+    MAX_MULTIPART_VIDEO_BYTES,
+    MAX_VIDEO_UPLOAD_BYTES,
+    assert_video_size,
+    peek_file_header,
     resolve_video_content_type,
     resolve_video_content_type_from_metadata,
 )
@@ -133,7 +137,7 @@ class SubmissionService:
     def create_submission(
         self,
         student: CurrentUser,
-        video: tuple[str, bytes, str],
+        video: tuple[str, bytes | BinaryIO, str],
         problem_statement: str,
         solution_description: str,
         hackathon_id: str,
@@ -161,12 +165,37 @@ class SubmissionService:
 
         team_name = self._resolve_student_team_name(student.user_id)
 
-        filename, video_bytes, content_type = video
-        resolved_type, extension = resolve_video_content_type(
-            content_type,
-            filename,
-            video_bytes,
-        )
+        filename, video_payload, content_type = video
+        if isinstance(video_payload, (bytes, bytearray)):
+            video_bytes = bytes(video_payload)
+            assert_video_size(
+                len(video_bytes),
+                max_bytes=MAX_MULTIPART_VIDEO_BYTES,
+                via="multipart",
+            )
+            resolved_type, extension = resolve_video_content_type(
+                content_type,
+                filename,
+                video_bytes,
+            )
+            upload_target: bytes | BinaryIO = video_bytes
+        else:
+            fileobj = video_payload
+            fileobj.seek(0, 2)
+            size = fileobj.tell()
+            fileobj.seek(0)
+            assert_video_size(
+                size,
+                max_bytes=MAX_MULTIPART_VIDEO_BYTES,
+                via="multipart",
+            )
+            header = peek_file_header(fileobj)
+            resolved_type, extension = resolve_video_content_type(
+                content_type,
+                filename,
+                header,
+            )
+            upload_target = fileobj
 
         submission_id = uuid.uuid4().hex
         now = datetime.utcnow().isoformat()
@@ -175,7 +204,10 @@ class SubmissionService:
         )
         video_path = f"gs://{self.bucket_name}/{object_name}"
 
-        self._upload_bytes(object_name, video_bytes, resolved_type)
+        if isinstance(upload_target, (bytes, bytearray)):
+            self._upload_bytes(object_name, bytes(upload_target), resolved_type)
+        else:
+            self._upload_fileobj(object_name, upload_target, resolved_type)
 
         source = video_source if video_source in ("recorded", "uploaded") else None
 
@@ -240,8 +272,6 @@ class SubmissionService:
         Works for both in-browser recordings and local file picks. Avoids Cloud
         Run's HTTP/1 32 MiB request-body limit (413 Content Too Large).
         """
-        from app.utils.video_upload import MAX_VIDEO_UPLOAD_BYTES
-
         self._validate_configuration()
 
         resolved_type, extension = resolve_video_content_type_from_metadata(
@@ -331,6 +361,9 @@ class SubmissionService:
                 "Video has not been uploaded yet. "
                 "PUT the file to the signed upload_url first."
             )
+        blob.reload()
+        size = int(blob.size or 0)
+        assert_video_size(size, max_bytes=MAX_VIDEO_UPLOAD_BYTES, via="signed")
 
         # Prefer the path segment as the stable submission id.
         parts = object_name.split("/")
@@ -1253,6 +1286,17 @@ class SubmissionService:
     def _upload_bytes(self, object_name: str, payload: bytes, content_type: str) -> None:
         blob = self._storage_client().bucket(self.bucket_name).blob(object_name)
         blob.upload_from_string(payload, content_type=content_type)
+
+    def _upload_fileobj(
+        self,
+        object_name: str,
+        fileobj: BinaryIO,
+        content_type: str,
+    ) -> None:
+        """Stream a file-like object to GCS (avoids holding a second full copy)."""
+        fileobj.seek(0)
+        blob = self._storage_client().bucket(self.bucket_name).blob(object_name)
+        blob.upload_from_file(fileobj, content_type=content_type, rewind=True)
 
     def _update_submission(self, submission_id: str, data: dict[str, Any]) -> None:
         data["updated_at"] = datetime.utcnow().isoformat()

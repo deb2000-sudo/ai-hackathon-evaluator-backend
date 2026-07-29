@@ -16,6 +16,8 @@ def test_accepted_video_types_includes_both_sources():
     assert ".webm" in payload["allowed_extensions"]
     assert ".mp4" in payload["allowed_extensions"]
     assert payload["max_upload_bytes"] > 0
+    assert payload["max_multipart_upload_bytes"] > 0
+    assert payload["max_multipart_upload_bytes"] < payload["max_upload_bytes"]
 
 
 def test_resolve_from_metadata_uses_filename_when_mime_missing():

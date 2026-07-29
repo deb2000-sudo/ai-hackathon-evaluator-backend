@@ -1,8 +1,14 @@
 """
-Video upload type detection for browser screen recordings and file uploads.
+Video upload type detection and size limits for browser recordings and file uploads.
 """
 
+from __future__ import annotations
+
 from pathlib import Path
+from tempfile import SpooledTemporaryFile
+from typing import BinaryIO
+
+from fastapi import UploadFile
 
 
 # MIME types accepted for hackathon submission videos (record OR local upload).
@@ -26,8 +32,20 @@ MIME_ALIASES: dict[str, str] = {
     "binary/octet-stream": "",
 }
 
-# Suggested max size for UX validation (GCS signed PUT has no Cloud Run 32 MiB cap).
+# Signed PUT → GCS path (no Cloud Run body cap). Enforced server-side on finalize.
 MAX_VIDEO_UPLOAD_BYTES = 500 * 1024 * 1024  # 500 MiB
+
+# Cloud Run HTTP/1 rejects request bodies around 32 MiB with 413.
+CLOUD_RUN_REQUEST_BODY_LIMIT_BYTES = 32 * 1024 * 1024
+
+# Multipart video payload soft cap (leaves headroom for form fields + boundaries).
+MAX_MULTIPART_VIDEO_BYTES = 28 * 1024 * 1024  # 28 MiB
+
+# Chunk size when spooling multipart video to disk/memory.
+_UPLOAD_READ_CHUNK_BYTES = 1024 * 1024  # 1 MiB
+
+# Keep small recordings in RAM; spill larger ones to a temp file.
+_SPOOL_MAX_MEMORY_BYTES = 1 * 1024 * 1024  # 1 MiB
 
 # HTML accept= attribute helper for <input type="file">.
 FILE_INPUT_ACCEPT = ",".join(
@@ -66,12 +84,109 @@ def accepted_video_types_payload() -> dict:
         "allowed_extensions": sorted(ALLOWED_VIDEO_TYPES.values()),
         "file_input_accept": FILE_INPUT_ACCEPT,
         "max_upload_bytes": MAX_VIDEO_UPLOAD_BYTES,
+        "max_multipart_upload_bytes": MAX_MULTIPART_VIDEO_BYTES,
         "sources": ["recorded", "uploaded"],
         "note": (
             "Both browser recordings and local file uploads use the same "
-            "signed-URL → GCS → finalize flow. Prefer upload-url for files over ~32 MiB."
+            "signed-URL → GCS → finalize flow. Prefer upload-url for files over "
+            f"~{MAX_MULTIPART_VIDEO_BYTES // (1024 * 1024)} MiB "
+            "(Cloud Run multipart limit ~32 MiB)."
         ),
     }
+
+
+def assert_video_size(
+    size_bytes: int,
+    *,
+    max_bytes: int,
+    via: str = "upload",
+) -> None:
+    """
+    Reject oversized videos with a clear message (maps to HTTP 413 upstream).
+
+    ``via`` is ``\"multipart\"`` or ``\"signed\"`` (or a free-form label).
+    """
+    if size_bytes < 0:
+        raise ValueError("Invalid video size")
+    if size_bytes == 0:
+        raise ValueError("Uploaded video is empty")
+    if size_bytes <= max_bytes:
+        return
+
+    max_mib = max_bytes / (1024 * 1024)
+    got_mib = size_bytes / (1024 * 1024)
+    if via == "multipart":
+        raise ValueError(
+            f"Video is too large for multipart upload "
+            f"({got_mib:.1f} MiB; max {max_mib:.0f} MiB). "
+            "Use POST /submissions/upload-url and POST /submissions/from-upload "
+            "for larger demos."
+        )
+    raise ValueError(
+        f"Video is too large ({got_mib:.1f} MiB; max {max_mib:.0f} MiB)."
+    )
+
+
+def assert_multipart_request_content_length(content_length: str | None) -> None:
+    """
+    Fail fast when Content-Length already exceeds the Cloud Run body limit.
+
+    Missing / unparsable Content-Length is ignored (chunked bodies); the spool
+    reader still enforces ``MAX_MULTIPART_VIDEO_BYTES``.
+    """
+    if not content_length:
+        return
+    try:
+        length = int(content_length)
+    except ValueError:
+        return
+    if length > CLOUD_RUN_REQUEST_BODY_LIMIT_BYTES:
+        raise ValueError(
+            "Request body is too large for multipart upload "
+            f"(Content-Length {length} bytes; Cloud Run limit is about "
+            f"{CLOUD_RUN_REQUEST_BODY_LIMIT_BYTES // (1024 * 1024)} MiB). "
+            "Use POST /submissions/upload-url and POST /submissions/from-upload."
+        )
+
+
+async def spool_upload_file(
+    upload: UploadFile,
+    *,
+    max_bytes: int = MAX_MULTIPART_VIDEO_BYTES,
+) -> SpooledTemporaryFile:
+    """
+    Read an UploadFile in chunks into a spooled temp file, enforcing ``max_bytes``.
+
+    Small files stay in memory; larger ones spill to disk so the process does not
+    hold the full video as a single ``bytes`` object longer than needed.
+    """
+    spool: SpooledTemporaryFile = SpooledTemporaryFile(max_size=_SPOOL_MAX_MEMORY_BYTES)
+    total = 0
+    try:
+        while True:
+            chunk = await upload.read(_UPLOAD_READ_CHUNK_BYTES)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                spool.close()
+                assert_video_size(total, max_bytes=max_bytes, via="multipart")
+            spool.write(chunk)
+    except Exception:
+        spool.close()
+        raise
+
+    assert_video_size(total, max_bytes=max_bytes, via="multipart")
+    spool.seek(0)
+    return spool
+
+
+def peek_file_header(fileobj: BinaryIO, nbytes: int = 64) -> bytes:
+    """Read a small header for magic-byte detection, then rewind."""
+    pos = fileobj.tell()
+    header = fileobj.read(nbytes)
+    fileobj.seek(pos)
+    return header or b""
 
 
 def _mime_from_filename(filename: str | None) -> str | None:

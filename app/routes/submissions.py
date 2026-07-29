@@ -68,8 +68,12 @@ from app.services.evaluation_job_service import EvaluationJobService
 from app.services.submission_service import SubmissionService
 from app.utils.async_io import run_sync
 from app.utils.video_upload import (
+    MAX_MULTIPART_VIDEO_BYTES,
     accepted_video_types_payload,
+    assert_multipart_request_content_length,
+    peek_file_header,
     resolve_video_content_type,
+    spool_upload_file,
 )
 
 
@@ -112,6 +116,8 @@ def _http_from_value_error(e: ValueError) -> HTTPException:
     lower = detail.lower()
     if "not found" in lower:
         code = status.HTTP_404_NOT_FOUND
+    elif "too large" in lower:
+        code = status.HTTP_413_CONTENT_TOO_LARGE
     elif "already" in lower or "conflict" in lower:
         code = status.HTTP_409_CONFLICT
     else:
@@ -121,6 +127,7 @@ def _http_from_value_error(e: ValueError) -> HTTPException:
 
 @router.post("", response_model=SubmissionResponse, status_code=201)
 async def create_submission(
+    request: Request,
     video: UploadFile = File(..., description="Recorded demo or local video file"),
     hackathon_id: str = Form(..., min_length=1, description="Hackathon this submission belongs to"),
     theme_id: str = Form(
@@ -143,30 +150,27 @@ async def create_submission(
     object under ``submissions/{student_id}/{id}/video.*``.
 
     **Cloud Run limit:** HTTP/1 request bodies are capped at ~32 MiB. Larger
-    demos will get ``413 Content Too Large``. Prefer
+    demos get ``413``. Prefer
     ``POST /submissions/upload-url`` + ``POST /submissions/from-upload``.
     """
-    video_bytes = await video.read()
+    try:
+        assert_multipart_request_content_length(request.headers.get("content-length"))
+        spool = await spool_upload_file(video, max_bytes=MAX_MULTIPART_VIDEO_BYTES)
+    except ValueError as e:
+        raise _http_from_value_error(e) from e
 
     try:
+        header = peek_file_header(spool)
         resolved_type, _extension = resolve_video_content_type(
             video.content_type,
             video.filename,
-            video_bytes,
+            header,
         )
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        ) from e
-
-    video_payload = (
-        video.filename or "submission",
-        video_bytes,
-        resolved_type,
-    )
-
-    try:
+        video_payload = (
+            video.filename or "submission",
+            spool,
+            resolved_type,
+        )
         service = SubmissionService()
         submission = await run_sync(
             service.create_submission,
@@ -179,15 +183,14 @@ async def create_submission(
             video_source=video_source,
         )
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        ) from e
+        raise _http_from_value_error(e) from e
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Submission upload failed",
         ) from e
+    finally:
+        spool.close()
 
     return await _to_submission_response(service, submission, current_user=student)
 
@@ -265,10 +268,7 @@ async def create_submission_from_upload(
             video_source=request.video_source,
         )
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        ) from e
+        raise _http_from_value_error(e) from e
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

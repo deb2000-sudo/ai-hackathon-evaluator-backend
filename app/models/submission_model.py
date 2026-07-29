@@ -32,7 +32,17 @@ class AcceptedVideoTypesResponse(BaseModel):
     allowed_mime_types: list[str]
     allowed_extensions: list[str]
     file_input_accept: str
-    max_upload_bytes: int
+    max_upload_bytes: int = Field(
+        ...,
+        description="Max size for signed GCS uploads (upload-url → from-upload).",
+    )
+    max_multipart_upload_bytes: int = Field(
+        ...,
+        description=(
+            "Max video size for legacy multipart POST /submissions. "
+            "Larger files must use the signed-URL flow."
+        ),
+    )
     sources: list[VideoSource]
     note: str
 
