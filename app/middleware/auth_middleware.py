@@ -23,6 +23,7 @@ from app.utils.auth_cookies import (
     csrf_tokens_match,
 )
 from app.exceptions import AppError
+from app.dependencies import get_firebase, get_user_service
 
 
 logger = logging.getLogger(__name__)
@@ -97,9 +98,13 @@ def _enforce_csrf_if_needed(request: Request, used_cookie: bool) -> None:
         )
 
 
-def _authenticate_token(token: str) -> CurrentUser:
-    firebase = FirebaseService()
-    user_service = UserService()
+def _authenticate_token(
+    token: str,
+    firebase: FirebaseService | None = None,
+    user_service: UserService | None = None,
+) -> CurrentUser:
+    firebase = firebase or FirebaseService()
+    user_service = user_service or UserService()
 
     if token.count(".") != 2:
         raise HTTPException(
@@ -160,6 +165,8 @@ def _authenticate_token(token: str) -> CurrentUser:
 async def get_current_user(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    firebase: FirebaseService = Depends(get_firebase),
+    user_service: UserService = Depends(get_user_service),
 ) -> CurrentUser:
     """
     Dependency for getting the current authenticated user.
@@ -179,7 +186,7 @@ async def get_current_user(
             )
 
         _enforce_csrf_if_needed(request, used_cookie)
-        return await run_sync(_authenticate_token, token)
+        return await run_sync(_authenticate_token, token, firebase, user_service)
 
     except HTTPException:
         raise

@@ -19,9 +19,9 @@ class UserService:
     Service for user-related operations
     """
 
-    def __init__(self):
-        """Initialize user service"""
-        self.firebase = FirebaseService()
+    def __init__(self, firebase: FirebaseService | None = None):
+        """Initialize user service (optional Firebase injection for Phase 9 DI)."""
+        self.firebase = firebase or FirebaseService()
 
     def create_user_with_firestore(
         self,

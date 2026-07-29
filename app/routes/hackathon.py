@@ -32,6 +32,7 @@ from app.models.hackathon_model import (
 )
 from app.models.theme_model import ThemeResponse
 from app.models.user_model import CurrentUser
+from app.dependencies import get_hackathon_service
 from app.services.hackathon_service import HackathonService
 from app.utils.async_io import run_sync
 
@@ -95,6 +96,7 @@ async def create_hackathon(
         description="Official hackathon website URL (shown on student dashboard)",
     ),
     admin: CurrentUser = Depends(get_admin_user),
+    service: HackathonService = Depends(get_hackathon_service),
 ) -> HackathonResponse:
     """
     Create a hackathon. Admin only.
@@ -127,7 +129,6 @@ async def create_hackathon(
     banner_payload = await _read_banner(banner)
 
     try:
-        service = HackathonService()
         hackathon = await run_sync(
             service.create_hackathon,
             request=payload,
@@ -152,9 +153,9 @@ async def create_hackathon(
 @router.get("", response_model=list[HackathonResponse])
 async def list_hackathons(
     current_user: CurrentUser = Depends(get_current_user),
+    service: HackathonService = Depends(get_hackathon_service),
 ) -> list[HackathonResponse]:
     """List all hackathons. Available to any authenticated user."""
-    service = HackathonService()
     hackathons = await run_sync(service.list_hackathons)
     return [await _to_response(service, item) for item in hackathons]
 
@@ -163,13 +164,13 @@ async def list_hackathons(
 async def list_hackathon_themes(
     hackathon_id: str,
     current_user: CurrentUser = Depends(get_current_user),
+    service: HackathonService = Depends(get_hackathon_service),
 ) -> list[ThemeResponse]:
     """
     Themes released for this hackathon.
 
     Students use this list on the submission form to pick a theme.
     """
-    service = HackathonService()
     themes = await run_sync(service.get_hackathon_themes, hackathon_id)
     if themes is None:
         raise HTTPException(
@@ -183,9 +184,9 @@ async def list_hackathon_themes(
 async def get_hackathon(
     hackathon_id: str,
     current_user: CurrentUser = Depends(get_current_user),
+    service: HackathonService = Depends(get_hackathon_service),
 ) -> HackathonResponse:
     """Get a single hackathon by id (includes resolved ``themes``)."""
-    service = HackathonService()
     hackathon = await run_sync(service.get_hackathon, hackathon_id)
     if not hackathon:
         raise HTTPException(
@@ -213,6 +214,7 @@ async def update_hackathon(
         description="Official hackathon website URL (omit to leave unchanged)",
     ),
     admin: CurrentUser = Depends(get_admin_user),
+    service: HackathonService = Depends(get_hackathon_service),
 ) -> HackathonResponse:
     """Update a hackathon (partial). Admin only."""
     prizes_data = _parse_json_field(prizes, "prizes", None)
@@ -248,7 +250,6 @@ async def update_hackathon(
     banner_payload = await _read_banner(banner)
 
     try:
-        service = HackathonService()
         hackathon = await run_sync(
             service.update_hackathon,
             hackathon_id=hackathon_id,
@@ -274,9 +275,9 @@ async def update_hackathon(
 async def delete_hackathon(
     hackathon_id: str,
     admin: CurrentUser = Depends(get_admin_user),
+    service: HackathonService = Depends(get_hackathon_service),
 ) -> dict:
     """Delete a hackathon. Admin only."""
-    service = HackathonService()
     deleted = await run_sync(service.delete_hackathon, hackathon_id)
     if not deleted:
         raise HTTPException(

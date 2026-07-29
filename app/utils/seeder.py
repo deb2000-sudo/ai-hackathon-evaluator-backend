@@ -108,10 +108,14 @@ class DatabaseSeeder:
     Creates sample admin, evaluator, and student users.
     """
 
-    def __init__(self):
-        """Initialize seeder"""
-        self.firebase = FirebaseService()
-        self.user_service = UserService()
+    def __init__(
+        self,
+        firebase: FirebaseService | None = None,
+        user_service: UserService | None = None,
+    ):
+        """Initialize seeder (optional DI for shared Firebase/UserService)."""
+        self.firebase = firebase or FirebaseService()
+        self.user_service = user_service or UserService(firebase=self.firebase)
 
     def seed_user(self, seed: SeedUser) -> bool:
         """

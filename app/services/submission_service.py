@@ -11,7 +11,6 @@ from typing import Any, BinaryIO
 from google import genai
 from google.cloud import storage
 from google.genai import types
-from google.oauth2 import service_account
 
 from app.models.user_model import CurrentUser
 from app.services.firebase import FirebaseService
@@ -19,6 +18,7 @@ from app.services.hackathon_service import HackathonService
 from app.services.theme_service import ThemeService
 from app.services.user_service import UserService
 from app.utils.gcs_video import (
+    build_storage_client,
     build_video_streaming_response,
     generate_signed_upload_url,
     generate_signed_video_url,
@@ -118,7 +118,15 @@ class SubmissionService:
     collection = "submissions"
     analysis_collection = "analysis"
 
-    def __init__(self):
+    def __init__(
+        self,
+        firebase: FirebaseService | None = None,
+        user_service: UserService | None = None,
+        hackathon_service: HackathonService | None = None,
+        theme_service: ThemeService | None = None,
+        storage_client: storage.Client | None = None,
+        genai_client: genai.Client | None = None,
+    ):
         self.project = (
             os.getenv("GOOGLE_CLOUD_PROJECT")
             or os.getenv("FIREBASE_PROJECT_ID")
@@ -128,11 +136,15 @@ class SubmissionService:
         self.bucket_name = os.getenv("EVALUATION_BUCKET_NAME") or os.getenv("VIDEO_BUCKET_NAME")
         self.model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
         self.use_enterprise = os.getenv("GEMINI_ENTERPRISE", "true").lower() in ("1", "true", "yes")
-        self.storage_client: storage.Client | None = None
-        self.firebase = FirebaseService()
-        self.user_service = UserService()
-        self.hackathon_service = HackathonService()
-        self.theme_service = ThemeService()
+        self.storage_client: storage.Client | None = storage_client
+        self._genai_client: genai.Client | None = genai_client
+        self.firebase = firebase or FirebaseService()
+        self.user_service = user_service or UserService(firebase=self.firebase)
+        self.hackathon_service = hackathon_service or HackathonService(
+            firebase=self.firebase,
+            storage_client=storage_client,
+        )
+        self.theme_service = theme_service or ThemeService(firebase=self.firebase)
 
     def create_submission(
         self,
@@ -1296,17 +1308,23 @@ class SubmissionService:
         return build_video_streaming_response(blob, content_type, range_header)
 
     def _build_genai_client(self) -> genai.Client:
+        if self._genai_client is not None:
+            return self._genai_client
         if self.use_enterprise:
-            return genai.Client(
+            client = genai.Client(
                 enterprise=True,
                 project=self.project,
                 location=self.location,
             )
-        return genai.Client(
-            vertexai=True,
-            project=self.project,
-            location=self.location,
-        )
+        else:
+            client = genai.Client(
+                vertexai=True,
+                project=self.project,
+                location=self.location,
+            )
+        # Cache on the process-scoped service instance (one client lifecycle).
+        self._genai_client = client
+        return client
 
     def _generate_checklist(
         self,
@@ -1426,23 +1444,5 @@ class SubmissionService:
 
     def _storage_client(self) -> storage.Client:
         if self.storage_client is None:
-            self.storage_client = self._build_storage_client()
+            self.storage_client = build_storage_client(self.project or None)
         return self.storage_client
-
-    def _build_storage_client(self) -> storage.Client:
-        firebase_private_key = os.getenv("FIREBASE_PRIVATE_KEY")
-        firebase_client_email = os.getenv("FIREBASE_CLIENT_EMAIL")
-
-        if firebase_private_key and firebase_client_email:
-            credentials = service_account.Credentials.from_service_account_info(
-                {
-                    "type": "service_account",
-                    "project_id": self.project,
-                    "private_key": firebase_private_key.replace("\\n", "\n"),
-                    "client_email": firebase_client_email,
-                    "token_uri": "https://oauth2.googleapis.com/token",
-                }
-            )
-            return storage.Client(project=self.project, credentials=credentials)
-
-        return storage.Client(project=self.project)

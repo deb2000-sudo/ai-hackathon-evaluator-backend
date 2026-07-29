@@ -8,10 +8,11 @@ Called by Cloud Tasks — not by the SPA. Protected with ``X-Internal-Job-Secret
 
 import logging
 
-from fastapi import APIRouter, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 
 from app.models.evaluation_job_model import EvaluateJobRequest, EvaluateJobResponse
 from app.services.evaluation_job_service import EvaluationJobService
+from app.dependencies import get_evaluation_job_service
 from app.utils.async_io import run_sync
 
 
@@ -30,6 +31,7 @@ async def run_evaluate_submission_job(
         default=None,
         alias="X-Internal-Job-Secret",
     ),
+    jobs: EvaluationJobService = Depends(get_evaluation_job_service),
 ) -> EvaluateJobResponse:
     """
     Execute Gemini analysis for a submission.
@@ -37,7 +39,6 @@ async def run_evaluate_submission_job(
     Invoked by Cloud Tasks after ``POST /submissions/{id}/evaluate``.
     Runs the same ``SubmissionService.evaluate_submission`` path as before.
     """
-    jobs = EvaluationJobService()
     if not jobs.verify_job_secret(x_internal_job_secret):
         logger.warning("Rejected internal evaluate job: invalid or missing secret")
         raise HTTPException(

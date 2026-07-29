@@ -8,6 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.exceptions import AppError, http_exception_from_value_error
+from app.dependencies import get_user_service
 from app.middleware.auth_middleware import get_admin_user
 from app.models.user_model import CurrentUser, UserResponse, UserUpdate
 from app.services.user_service import UserService
@@ -17,12 +18,11 @@ from app.utils.async_io import run_sync
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
 
-user_service = UserService()
-
 
 @router.get("/users", status_code=200)
 async def get_users(
     admin: CurrentUser = Depends(get_admin_user),
+    user_service: UserService = Depends(get_user_service),
 ) -> list[UserResponse]:
     """
     Get all non-admin users.
@@ -43,6 +43,7 @@ async def get_users(
 @router.get("/evaluators/pending", status_code=200)
 async def get_pending_evaluators(
     admin: CurrentUser = Depends(get_admin_user),
+    user_service: UserService = Depends(get_user_service),
 ) -> list[UserResponse]:
     """
     List evaluator registrations awaiting admin approval.
@@ -70,6 +71,7 @@ async def get_evaluators(
         description="Filter by approval_status: pending | approved | rejected",
     ),
     admin: CurrentUser = Depends(get_admin_user),
+    user_service: UserService = Depends(get_user_service),
 ) -> list[UserResponse]:
     """
     List evaluator accounts.
@@ -105,6 +107,7 @@ async def get_evaluators(
 async def approve_evaluator(
     user_id: str,
     admin: CurrentUser = Depends(get_admin_user),
+    user_service: UserService = Depends(get_user_service),
 ) -> UserResponse:
     """
     Approve a pending evaluator registration.
@@ -129,6 +132,7 @@ async def approve_evaluator(
 async def get_user(
     user_id: str,
     admin: CurrentUser = Depends(get_admin_user),
+    user_service: UserService = Depends(get_user_service),
 ) -> UserResponse:
     """
     Get specific user details.
@@ -161,6 +165,7 @@ async def update_user(
     user_id: str,
     data: UserUpdate,
     admin: CurrentUser = Depends(get_admin_user),
+    user_service: UserService = Depends(get_user_service),
 ) -> UserResponse:
     """
     Update user profile.

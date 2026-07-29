@@ -22,9 +22,13 @@ logger = logging.getLogger(__name__)
 class RegistrationService:
     """Handles self-registration for students and evaluators."""
 
-    def __init__(self):
-        self.firebase = FirebaseService()
-        self.user_service = UserService()
+    def __init__(
+        self,
+        firebase: FirebaseService | None = None,
+        user_service: UserService | None = None,
+    ):
+        self.firebase = firebase or FirebaseService()
+        self.user_service = user_service or UserService(firebase=self.firebase)
 
     def register_student(self, request: StudentRegisterRequest) -> RegisterResponse:
         """Register a student team account (immediately approved)."""

@@ -28,7 +28,10 @@ JobMode = Literal["cloud_tasks", "background"]
 class EvaluationJobService:
     """Schedule and (via the worker route) execute AI evaluation jobs."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        submission_service: "SubmissionService | None" = None,
+    ) -> None:
         self.project = (
             os.getenv("GOOGLE_CLOUD_PROJECT")
             or os.getenv("FIREBASE_PROJECT_ID")
@@ -40,6 +43,15 @@ class EvaluationJobService:
         self.job_secret = os.getenv("INTERNAL_JOB_SECRET", "").strip()
         # Explicit override: background | cloud_tasks | auto (default)
         self.mode_override = os.getenv("EVALUATION_JOB_MODE", "auto").strip().lower()
+        self._submission_service = submission_service
+
+    def _get_submission_service(self):
+        """Use injected service when present; else construct (tests / local)."""
+        if self._submission_service is not None:
+            return self._submission_service
+        from app.services.submission_service import SubmissionService
+
+        return SubmissionService()
 
     def resolve_mode(self) -> JobMode:
         if self.mode_override == "background":
@@ -77,9 +89,7 @@ class EvaluationJobService:
         Must be called on the request thread (not via ``run_sync``) because
         Starlette ``BackgroundTasks.add_task`` is not thread-safe across workers.
         """
-        from app.services.submission_service import SubmissionService
-
-        service = SubmissionService()
+        service = self._get_submission_service()
         background_tasks.add_task(
             service.evaluate_submission,
             submission_id,
@@ -101,9 +111,7 @@ class EvaluationJobService:
 
         Idempotent skip when submission + analysis are already ``completed``.
         """
-        from app.services.submission_service import SubmissionService
-
-        service = SubmissionService()
+        service = self._get_submission_service()
         submission = service.firebase.get_document(service.collection, submission_id)
         if not submission:
             raise ValueError("Submission not found")

@@ -79,8 +79,20 @@ def test_enqueue_background_schedules_task(monkeypatch):
         assert bg.add_task.call_args[0][0] == svc_cls.return_value.evaluate_submission
 
 
-def test_internal_worker_rejects_bad_secret():
-    with patch("app.main.DatabaseSeeder") as seeder_cls:
+def test_internal_worker_rejects_bad_secret(monkeypatch):
+    monkeypatch.setenv("INTERNAL_JOB_SECRET", "expected-secret")
+    jobs = EvaluationJobService()
+    fake_container = MagicMock()
+    fake_container.evaluation_job_service = jobs
+
+    def fake_init(app):
+        app.state.container = fake_container
+        return fake_container
+
+    with (
+        patch("app.main.DatabaseSeeder") as seeder_cls,
+        patch("app.dependencies.init_app_container", side_effect=fake_init),
+    ):
         seeder_cls.return_value.seed_all.return_value = True
         from app.main import app
 

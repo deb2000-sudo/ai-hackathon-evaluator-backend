@@ -20,6 +20,7 @@ from app.models.evaluation_requirement_model import (
 )
 from app.models.user_model import CurrentUser
 from app.services.evaluation_requirement_service import EvaluationRequirementService
+from app.dependencies import get_evaluation_requirement_service
 from app.utils.async_io import run_sync
 
 
@@ -31,6 +32,7 @@ router = APIRouter(prefix="/evaluation-requirements", tags=["evaluation-requirem
 async def create_evaluation_requirement(
     request: EvaluationRequirementCreateRequest,
     admin: CurrentUser = Depends(get_admin_user),
+    service: EvaluationRequirementService = Depends(get_evaluation_requirement_service),
 ) -> EvaluationRequirementResponse:
     """
     Create a reusable evaluation requirement. Admin only.
@@ -39,7 +41,6 @@ async def create_evaluation_requirement(
     Description, GitHub link, MVP link). The returned ``id`` is what you link to
     a hackathon round.
     """
-    service = EvaluationRequirementService()
     requirement = await run_sync(
         service.create_requirement, request=request, created_by=admin.user_id
     )
@@ -49,9 +50,9 @@ async def create_evaluation_requirement(
 @router.get("", response_model=list[EvaluationRequirementResponse])
 async def list_evaluation_requirements(
     current_user: CurrentUser = Depends(get_current_user),
+    service: EvaluationRequirementService = Depends(get_evaluation_requirement_service),
 ) -> list[EvaluationRequirementResponse]:
     """List all evaluation requirements (used to populate the round dropdown)."""
-    service = EvaluationRequirementService()
     requirements = await run_sync(service.list_requirements)
     return [EvaluationRequirementResponse(**item) for item in requirements]
 
@@ -60,9 +61,9 @@ async def list_evaluation_requirements(
 async def get_evaluation_requirement(
     requirement_id: str,
     current_user: CurrentUser = Depends(get_current_user),
+    service: EvaluationRequirementService = Depends(get_evaluation_requirement_service),
 ) -> EvaluationRequirementResponse:
     """Get a single evaluation requirement by id."""
-    service = EvaluationRequirementService()
     requirement = await run_sync(service.get_requirement, requirement_id)
     if not requirement:
         raise HTTPException(
@@ -77,9 +78,9 @@ async def update_evaluation_requirement(
     requirement_id: str,
     request: EvaluationRequirementUpdateRequest,
     admin: CurrentUser = Depends(get_admin_user),
+    service: EvaluationRequirementService = Depends(get_evaluation_requirement_service),
 ) -> EvaluationRequirementResponse:
     """Update an evaluation requirement. Admin only."""
-    service = EvaluationRequirementService()
     requirement = await run_sync(service.update_requirement, requirement_id, request)
     if not requirement:
         raise HTTPException(
@@ -93,9 +94,9 @@ async def update_evaluation_requirement(
 async def delete_evaluation_requirement(
     requirement_id: str,
     admin: CurrentUser = Depends(get_admin_user),
+    service: EvaluationRequirementService = Depends(get_evaluation_requirement_service),
 ) -> dict:
     """Delete an evaluation requirement. Admin only."""
-    service = EvaluationRequirementService()
     deleted = await run_sync(service.delete_requirement, requirement_id)
     if not deleted:
         raise HTTPException(

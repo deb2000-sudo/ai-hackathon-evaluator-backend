@@ -26,16 +26,24 @@ class HackathonService:
 
     collection = "hackathons"
 
-    def __init__(self):
+    def __init__(
+        self,
+        firebase: FirebaseService | None = None,
+        evaluation_requirements: EvaluationRequirementService | None = None,
+        theme_service: ThemeService | None = None,
+        storage_client: storage.Client | None = None,
+    ):
         self.project = (
             os.getenv("GOOGLE_CLOUD_PROJECT")
             or os.getenv("FIREBASE_PROJECT_ID")
         )
         self.bucket_name = os.getenv("EVALUATION_BUCKET_NAME") or os.getenv("VIDEO_BUCKET_NAME")
-        self.storage_client: storage.Client | None = None
-        self.firebase = FirebaseService()
-        self.evaluation_requirements = EvaluationRequirementService()
-        self.theme_service = ThemeService()
+        self.storage_client: storage.Client | None = storage_client
+        self.firebase = firebase or FirebaseService()
+        self.evaluation_requirements = evaluation_requirements or (
+            EvaluationRequirementService(firebase=self.firebase)
+        )
+        self.theme_service = theme_service or ThemeService(firebase=self.firebase)
 
     def create_hackathon(
         self,

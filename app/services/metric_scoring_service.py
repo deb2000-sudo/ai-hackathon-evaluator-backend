@@ -26,9 +26,15 @@ class MetricScoringService:
 
     collection = "ai_evaluation_metric_scoring"
 
-    def __init__(self):
-        self.firebase = FirebaseService()
-        self.requirements = EvaluationRequirementService()
+    def __init__(
+        self,
+        firebase: FirebaseService | None = None,
+        requirements: EvaluationRequirementService | None = None,
+    ):
+        self.firebase = firebase or FirebaseService()
+        self.requirements = requirements or EvaluationRequirementService(
+            firebase=self.firebase
+        )
 
     def create_scoring(
         self,

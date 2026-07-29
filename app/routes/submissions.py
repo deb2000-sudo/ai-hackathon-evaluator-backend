@@ -66,6 +66,7 @@ from app.models.submission_model import (
 )
 from app.models.user_model import CurrentUser
 from app.services.evaluation_job_service import EvaluationJobService
+from app.dependencies import get_evaluation_job_service, get_submission_service
 from app.services.submission_service import SubmissionService
 from app.utils.async_io import run_sync
 from app.utils.video_upload import (
@@ -148,6 +149,7 @@ async def create_submission(
         description="'recorded' (MediaRecorder) or 'uploaded' (local file).",
     ),
     student: CurrentUser = Depends(get_student_user),
+    service: SubmissionService = Depends(get_submission_service),
 ) -> SubmissionResponse:
     """
     Create a student submission via multipart upload through Cloud Run.
@@ -177,7 +179,6 @@ async def create_submission(
             spool,
             resolved_type,
         )
-        service = SubmissionService()
         submission = await run_sync(
             service.create_submission,
             student=student,
@@ -220,6 +221,7 @@ async def get_accepted_video_types(
 async def prepare_submission_upload(
     request: PrepareUploadRequest,
     student: CurrentUser = Depends(get_student_user),
+    service: SubmissionService = Depends(get_submission_service),
 ) -> PrepareUploadResponse:
     """
     Get a signed GCS PUT URL for a recorded blob or a local video file.
@@ -228,7 +230,6 @@ async def prepare_submission_upload(
     may exceed Cloud Run's ~32 MiB limit.
     """
     try:
-        service = SubmissionService()
         payload = await run_sync(
             service.prepare_direct_upload,
             student=student,
@@ -256,6 +257,7 @@ async def prepare_submission_upload(
 async def create_submission_from_upload(
     request: CreateSubmissionFromUploadRequest,
     student: CurrentUser = Depends(get_student_user),
+    service: SubmissionService = Depends(get_submission_service),
 ) -> SubmissionResponse:
     """
     Finalize a submission after the video was PUT to the signed upload URL.
@@ -264,7 +266,6 @@ async def create_submission_from_upload(
     Firestore submission document. Works for both recorded and local uploads.
     """
     try:
-        service = SubmissionService()
         submission = await run_sync(
             service.create_submission_from_upload,
             student=student,
@@ -293,9 +294,9 @@ async def create_submission_from_upload(
 @router.get("", response_model=list[SubmissionResponse])
 async def list_my_submissions(
     student: CurrentUser = Depends(get_student_user),
+    service: SubmissionService = Depends(get_submission_service),
 ) -> list[SubmissionResponse]:
     """List all submissions for the authenticated student."""
-    service = SubmissionService()
     submissions = await run_sync(service.list_student_submissions, student.user_id)
     return await _to_submission_responses(service, submissions, current_user=student)
 
@@ -303,6 +304,7 @@ async def list_my_submissions(
 @router.get("/admin/hackathons", response_model=list[HackathonSubmissionSummary])
 async def list_hackathons_for_admin_submissions(
     admin: CurrentUser = Depends(get_admin_user),
+    service: SubmissionService = Depends(get_submission_service),
 ) -> list[HackathonSubmissionSummary]:
     """
     Admin Submissions tab: list hackathons with submission counts.
@@ -310,7 +312,6 @@ async def list_hackathons_for_admin_submissions(
     Each row is a hackathon the admin can open to view that hackathon's
     submissions via ``GET /submissions/admin/hackathons/{hackathon_id}``.
     """
-    service = SubmissionService()
     summaries = await run_sync(service.list_hackathons_with_submission_counts)
     return [HackathonSubmissionSummary(**item) for item in summaries]
 
@@ -322,9 +323,9 @@ async def list_hackathons_for_admin_submissions(
 async def list_submissions_for_hackathon_admin(
     hackathon_id: str,
     admin: CurrentUser = Depends(get_admin_user),
+    service: SubmissionService = Depends(get_submission_service),
 ) -> list[SubmissionResponse]:
     """Admin: list all submissions belonging to a specific hackathon."""
-    service = SubmissionService()
     hackathon = await run_sync(service.hackathon_service.get_hackathon, hackathon_id)
     if not hackathon:
         raise HTTPException(
@@ -344,13 +345,13 @@ async def divide_submissions_equally(
     hackathon_id: str,
     request: DivideEquallyRequest,
     admin: CurrentUser = Depends(get_admin_user),
+    service: SubmissionService = Depends(get_submission_service),
 ) -> DivideEquallyResponse:
     """
     Randomly divide selected submissions among active (approved) evaluators.
 
     Used by the bulk action on the admin Submissions table after multi-select.
     """
-    service = SubmissionService()
     try:
         assigned = await run_sync(
             service.divide_equally_among_evaluators,
@@ -385,9 +386,9 @@ async def divide_submissions_equally(
 @router.get("/admin/all", response_model=list[SubmissionResponse])
 async def list_all_submissions_for_admin(
     admin: CurrentUser = Depends(get_admin_user),
+    service: SubmissionService = Depends(get_submission_service),
 ) -> list[SubmissionResponse]:
     """Admin review queue: list every student submission."""
-    service = SubmissionService()
     submissions = await run_sync(service.list_all_submissions)
     return await _to_submission_responses(service, submissions, current_user=admin)
 
@@ -395,12 +396,12 @@ async def list_all_submissions_for_admin(
 @router.get("/evaluator/hackathons", response_model=list[HackathonSubmissionSummary])
 async def list_hackathons_for_evaluator(
     evaluator: CurrentUser = Depends(get_evaluator_user),
+    service: SubmissionService = Depends(get_submission_service),
 ) -> list[HackathonSubmissionSummary]:
     """
     Evaluator Submissions home: hackathons that have at least one submission
     assigned to this evaluator, with assigned counts.
     """
-    service = SubmissionService()
     summaries = await run_sync(
         service.list_hackathons_with_submission_counts,
         evaluator_id=evaluator.user_id,
@@ -415,9 +416,9 @@ async def list_hackathons_for_evaluator(
 async def list_submissions_for_hackathon_evaluator(
     hackathon_id: str,
     evaluator: CurrentUser = Depends(get_evaluator_user),
+    service: SubmissionService = Depends(get_submission_service),
 ) -> list[SubmissionResponse]:
     """Evaluator: list only submissions assigned to them for this hackathon."""
-    service = SubmissionService()
     hackathon = await run_sync(service.hackathon_service.get_hackathon, hackathon_id)
     if not hackathon:
         raise HTTPException(
@@ -436,6 +437,7 @@ async def list_submissions_for_hackathon_evaluator(
 @router.get("/assigned-to-me", response_model=list[SubmissionResponse])
 async def list_my_assigned_submissions(
     current_user: CurrentUser = Depends(get_active_user),
+    service: SubmissionService = Depends(get_submission_service),
 ) -> list[SubmissionResponse]:
     """
     Flat list of submissions assigned to the current user.
@@ -448,7 +450,6 @@ async def list_my_assigned_submissions(
             detail="Only evaluators can list assigned submissions",
         )
 
-    service = SubmissionService()
     submissions = await run_sync(service.list_submissions_for_evaluator, current_user.user_id)
     return await _to_submission_responses(service, submissions, current_user=current_user)
 
@@ -458,6 +459,7 @@ async def stream_submission_video(
     submission_id: str,
     request: Request,
     current_user: CurrentUser = Depends(get_active_user),
+    service: SubmissionService = Depends(get_submission_service),
 ):
     """
     Stream the submission video over HTTPS.
@@ -465,7 +467,6 @@ async def stream_submission_video(
     Supports HTTP Range requests for in-browser seeking. Requires the same
     authentication as other submission routes (cookie or Bearer token).
     """
-    service = SubmissionService()
     submission = await run_sync(service.get_submission, submission_id, current_user)
     if not submission:
         raise HTTPException(
@@ -490,9 +491,9 @@ async def stream_submission_video(
 async def get_submission_analysis(
     submission_id: str,
     current_user: CurrentUser = Depends(get_active_user),
+    service: SubmissionService = Depends(get_submission_service),
 ) -> AnalysisResponse:
     """Fetch the analysis document. Students may only access it after publish."""
-    service = SubmissionService()
     submission = await run_sync(service.get_submission, submission_id, current_user)
     if not submission:
         raise HTTPException(
@@ -515,6 +516,7 @@ async def get_submission_analysis(
 async def get_submission_report(
     submission_id: str,
     current_user: CurrentUser = Depends(get_active_user),
+    service: SubmissionService = Depends(get_submission_service),
 ) -> AnalysisReportResponse:
     """
     Fetch the AI-generated markdown analysis report.
@@ -522,7 +524,6 @@ async def get_submission_report(
     Admins/evaluators can always read a completed report.
     Students can only read it after ``report_published`` is true.
     """
-    service = SubmissionService()
     submission = await run_sync(service.get_submission, submission_id, current_user)
     if not submission:
         raise HTTPException(
@@ -553,6 +554,7 @@ async def get_submission_report(
 async def get_submission(
     submission_id: str,
     current_user: CurrentUser = Depends(get_active_user),
+    service: SubmissionService = Depends(get_submission_service),
 ) -> SubmissionResponse:
     """
     Get a submission by id.
@@ -560,7 +562,6 @@ async def get_submission(
     Students may read their own; assigned evaluators and admins may read theirs.
     Analysis content is omitted for students until the report is approved/published.
     """
-    service = SubmissionService()
     submission = await run_sync(service.get_submission, submission_id, current_user)
     if not submission:
         raise HTTPException(
@@ -577,6 +578,8 @@ async def evaluate_submission(
     request: EvaluateSubmissionRequest,
     background_tasks: BackgroundTasks,
     current_user: CurrentUser = Depends(get_active_user),
+    service: SubmissionService = Depends(get_submission_service),
+    job_service: EvaluationJobService = Depends(get_evaluation_job_service),
 ) -> SubmissionResponse:
     """
     Start AI video analysis for a submission.
@@ -593,7 +596,6 @@ async def evaluate_submission(
             detail="Only admins or assigned evaluators can start analysis",
         )
 
-    service = SubmissionService()
     submission = await run_sync(service.get_submission, submission_id, current_user)
     if not submission:
         raise HTTPException(
@@ -626,7 +628,6 @@ async def evaluate_submission(
         # "not found" → 404; "already being analyzed" → 409; other validation → 400
         raise _http_from_value_error(e) from e
 
-    job_service = EvaluationJobService()
     try:
         if job_service.resolve_mode() == "cloud_tasks":
             # Network I/O to Cloud Tasks API — off the event loop.
@@ -672,13 +673,13 @@ async def submit_evaluation_for_review(
     submission_id: str,
     request: SubmitForReviewRequest,
     evaluator: CurrentUser = Depends(get_evaluator_user),
+    service: SubmissionService = Depends(get_submission_service),
 ) -> SubmissionResponse:
     """
     Assigned evaluator submits a completed evaluation to admin for approval.
 
     Requires AI analysis ``status=completed``. Sets ``review_status=pending_review``.
     """
-    service = SubmissionService()
     try:
         submission = await run_sync(
             service.submit_for_review,
@@ -698,6 +699,7 @@ async def approve_evaluation(
     submission_id: str,
     request: ApproveEvaluationRequest,
     admin: CurrentUser = Depends(get_admin_user),
+    service: SubmissionService = Depends(get_submission_service),
 ) -> SubmissionResponse:
     """
     Admin approves a pending evaluation.
@@ -705,7 +707,6 @@ async def approve_evaluation(
     Sets ``review_status=approved``, locks ``final_score``, and publishes the
     report so the student can see the result.
     """
-    service = SubmissionService()
     try:
         submission = await run_sync(
             service.approve_evaluation,
@@ -725,13 +726,13 @@ async def request_evaluation_changes(
     submission_id: str,
     request: RequestChangesRequest,
     admin: CurrentUser = Depends(get_admin_user),
+    service: SubmissionService = Depends(get_submission_service),
 ) -> SubmissionResponse:
     """
     Admin sends a pending/approved evaluation back to the assigned evaluator.
 
     Unpublishes the student report and sets ``review_status=changes_requested``.
     """
-    service = SubmissionService()
     try:
         submission = await run_sync(
             service.request_evaluation_changes,
@@ -750,6 +751,7 @@ async def publish_submission_report(
     submission_id: str,
     request: PublishReportRequest,
     admin: CurrentUser = Depends(get_admin_user),
+    service: SubmissionService = Depends(get_submission_service),
 ) -> SubmissionResponse:
     """
     Publish or unpublish the analysis report for the student. **Admin only.**
@@ -757,7 +759,6 @@ async def publish_submission_report(
     Prefer ``approve-evaluation`` for the evaluator review workflow. This remains
     available for direct admin publish without the review gate.
     """
-    service = SubmissionService()
     try:
         submission = await run_sync(
             service.publish_report,
@@ -776,6 +777,7 @@ async def assign_submission_evaluator(
     submission_id: str,
     request: AssignEvaluatorRequest,
     admin: CurrentUser = Depends(get_admin_user),
+    service: SubmissionService = Depends(get_submission_service),
 ) -> SubmissionResponse:
     """
     Assign one approved (active) evaluator to a submission, or clear assignment.
@@ -783,7 +785,6 @@ async def assign_submission_evaluator(
     Used by the per-row Evaluator dropdown on the admin Submissions table.
     Pass ``evaluator_id: null`` to unassign.
     """
-    service = SubmissionService()
     try:
         submission = await run_sync(
             service.assign_evaluator,

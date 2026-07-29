@@ -13,6 +13,11 @@ from fastapi.responses import JSONResponse
 
 from app.middleware.auth_middleware import get_current_user
 from app.exceptions import AppError
+from app.dependencies import (
+    get_firebase,
+    get_registration_service,
+    get_user_service,
+)
 from app.models.user_model import (
     ChangePasswordRequest,
     CurrentUser,
@@ -37,13 +42,13 @@ from app.utils.auth_cookies import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
-firebase = FirebaseService()
-user_service = UserService()
-registration_service = RegistrationService()
 
 
 @router.post("/register/student", response_model=RegisterResponse, status_code=201)
-async def register_student(request: StudentRegisterRequest) -> RegisterResponse:
+async def register_student(
+    request: StudentRegisterRequest,
+    registration_service: RegistrationService = Depends(get_registration_service),
+) -> RegisterResponse:
     """
     Register a new student team account.
 
@@ -70,7 +75,10 @@ async def register_student(request: StudentRegisterRequest) -> RegisterResponse:
 
 
 @router.post("/register/evaluator", response_model=RegisterResponse, status_code=201)
-async def register_evaluator(request: EvaluatorRegisterRequest) -> RegisterResponse:
+async def register_evaluator(
+    request: EvaluatorRegisterRequest,
+    registration_service: RegistrationService = Depends(get_registration_service),
+) -> RegisterResponse:
     """
     Register a new evaluator account.
 
@@ -95,7 +103,11 @@ async def register_evaluator(request: EvaluatorRegisterRequest) -> RegisterRespo
 
 
 @router.post("/login", status_code=200)
-async def login(request: LoginRequest) -> JSONResponse:
+async def login(
+    request: LoginRequest,
+    firebase: FirebaseService = Depends(get_firebase),
+    user_service: UserService = Depends(get_user_service),
+) -> JSONResponse:
     """
     Login with email and password.
 
@@ -210,6 +222,7 @@ async def logout() -> JSONResponse:
 async def change_password(
     request: ChangePasswordRequest,
     current_user: CurrentUser = Depends(get_current_user),
+    firebase: FirebaseService = Depends(get_firebase),
 ) -> JSONResponse:
     """
     Change the authenticated user's password.
@@ -324,6 +337,7 @@ def _decode_unverified_payload(token: str) -> dict:
 @router.get("/me", response_model=UserResponse, status_code=200)
 async def get_current_user_profile(
     current_user: CurrentUser = Depends(get_current_user),
+    user_service: UserService = Depends(get_user_service),
 ) -> UserResponse:
     """
     Get current user profile.

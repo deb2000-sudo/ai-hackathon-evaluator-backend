@@ -20,6 +20,7 @@ from app.models.metric_scoring_model import (
 )
 from app.models.user_model import CurrentUser
 from app.services.metric_scoring_service import MetricScoringService
+from app.dependencies import get_metric_scoring_service
 from app.utils.async_io import run_sync
 
 
@@ -31,6 +32,7 @@ router = APIRouter(prefix="/ai-evaluation-metric-scoring", tags=["ai-evaluation-
 async def create_metric_scoring(
     request: MetricScoringCreateRequest,
     admin: CurrentUser = Depends(get_admin_user),
+    service: MetricScoringService = Depends(get_metric_scoring_service),
 ) -> MetricScoringResponse:
     """
     Create a metric-scoring config for an evaluation requirement. Admin only.
@@ -38,7 +40,6 @@ async def create_metric_scoring(
     Each metric's ``field_key`` must match a field of the linked evaluation
     requirement; ``scoring_prompt`` is the natural-language scoring instruction.
     """
-    service = MetricScoringService()
     try:
         scoring = await run_sync(
             service.create_scoring, request=request, created_by=admin.user_id
@@ -59,12 +60,12 @@ async def create_metric_scoring(
 async def list_metric_scoring(
     evaluation_requirement_id: str | None = None,
     current_user: CurrentUser = Depends(get_current_user),
+    service: MetricScoringService = Depends(get_metric_scoring_service),
 ) -> list[MetricScoringResponse]:
     """
     List metric-scoring configs. Pass ``?evaluation_requirement_id=`` to fetch the
     config linked to a specific evaluation requirement.
     """
-    service = MetricScoringService()
     items = await run_sync(
         service.list_scoring, evaluation_requirement_id=evaluation_requirement_id
     )
@@ -75,9 +76,9 @@ async def list_metric_scoring(
 async def get_metric_scoring(
     scoring_id: str,
     current_user: CurrentUser = Depends(get_current_user),
+    service: MetricScoringService = Depends(get_metric_scoring_service),
 ) -> MetricScoringResponse:
     """Get a single metric-scoring config by id."""
-    service = MetricScoringService()
     scoring = await run_sync(service.get_scoring, scoring_id)
     if not scoring:
         raise HTTPException(
@@ -92,9 +93,9 @@ async def update_metric_scoring(
     scoring_id: str,
     request: MetricScoringUpdateRequest,
     admin: CurrentUser = Depends(get_admin_user),
+    service: MetricScoringService = Depends(get_metric_scoring_service),
 ) -> MetricScoringResponse:
     """Update a metric-scoring config. Admin only."""
-    service = MetricScoringService()
     try:
         scoring = await run_sync(service.update_scoring, scoring_id, request)
     except ValueError as e:
@@ -115,9 +116,9 @@ async def update_metric_scoring(
 async def delete_metric_scoring(
     scoring_id: str,
     admin: CurrentUser = Depends(get_admin_user),
+    service: MetricScoringService = Depends(get_metric_scoring_service),
 ) -> dict:
     """Delete a metric-scoring config. Admin only."""
-    service = MetricScoringService()
     deleted = await run_sync(service.delete_scoring, scoring_id)
     if not deleted:
         raise HTTPException(

@@ -45,11 +45,19 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("🚀 FastAPI application starting...")
 
+    # Phase 9: shared Firebase / GCS / service graph (request-immutable singletons).
+    from app.dependencies import init_app_container
+
+    container = init_app_container(app)
+
     # Phase 8: gate seeder behind SEED_ON_STARTUP (default true = today's behaviour).
     if seed_on_startup_enabled():
         try:
             logger.info("🌱 Initializing database...")
-            seeder = DatabaseSeeder()
+            seeder = DatabaseSeeder(
+                firebase=container.firebase,
+                user_service=container.user_service,
+            )
             await run_sync(seeder.seed_all)
             logger.info("Database initialization completed")
         except Exception as e:

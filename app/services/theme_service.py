@@ -19,8 +19,8 @@ class ThemeService:
 
     collection = "themes"
 
-    def __init__(self):
-        self.firebase = FirebaseService()
+    def __init__(self, firebase: FirebaseService | None = None):
+        self.firebase = firebase or FirebaseService()
 
     def create_theme(
         self,

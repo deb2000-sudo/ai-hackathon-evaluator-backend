@@ -22,8 +22,8 @@ class EvaluationRequirementService:
 
     collection = "evaluation_requirements"
 
-    def __init__(self):
-        self.firebase = FirebaseService()
+    def __init__(self, firebase: FirebaseService | None = None):
+        self.firebase = firebase or FirebaseService()
 
     def create_requirement(
         self,
