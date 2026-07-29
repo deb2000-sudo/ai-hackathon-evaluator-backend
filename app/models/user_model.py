@@ -192,6 +192,15 @@ class ChangePasswordRequest(BaseModel):
 
     new_password: str = Field(..., min_length=6, max_length=128)
     confirm_new_password: str = Field(..., min_length=6, max_length=128)
+    current_password: Optional[str] = Field(
+        None,
+        min_length=6,
+        max_length=128,
+        description=(
+            "Current password. Required when REQUIRE_CURRENT_PASSWORD_ON_CHANGE=true "
+            "(default)."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_passwords_match(self) -> "ChangePasswordRequest":

@@ -15,11 +15,19 @@ from app.services.firebase import FirebaseService
 from app.services.registration_service import RegistrationService
 from app.services.user_service import UserService
 from app.utils.async_io import run_sync
-from app.utils.auth_cookies import AUTH_COOKIE_NAME
+from app.utils.auth_cookies import (
+    AUTH_COOKIE_NAME,
+    CSRF_COOKIE_NAME,
+    CSRF_HEADER_NAME,
+    csrf_protection_enabled,
+    csrf_tokens_match,
+)
 
 
 logger = logging.getLogger(__name__)
 security = HTTPBearer(auto_error=False)
+
+_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 
 def _normalize_token(token: str) -> str:
@@ -45,16 +53,47 @@ def _decode_unverified_payload(token: str) -> dict:
 def _extract_token(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None,
-) -> str | None:
-    """Read the Firebase ID token from the HttpOnly cookie or Authorization header."""
+) -> tuple[str | None, bool]:
+    """
+    Read the Firebase ID token from the HttpOnly cookie or Authorization header.
+
+    Returns ``(token, used_cookie)``. Cookie wins when both are present (same as
+    before); ``used_cookie`` drives CSRF checks for browser sessions.
+    """
     cookie_token = request.cookies.get(AUTH_COOKIE_NAME)
     if cookie_token:
-        return _normalize_token(cookie_token)
+        return _normalize_token(cookie_token), True
 
     if credentials and credentials.credentials:
-        return _normalize_token(credentials.credentials)
+        return _normalize_token(credentials.credentials), False
 
-    return None
+    return None, False
+
+
+def _enforce_csrf_if_needed(request: Request, used_cookie: bool) -> None:
+    """
+    Double-submit CSRF for cookie-authenticated mutating requests.
+
+    Bearer-only clients (Swagger / scripts) skip CSRF. Default is enabled
+    (``CSRF_PROTECTION=true``); the SPA must send ``X-CSRF-Token``.
+    """
+    if not csrf_protection_enabled():
+        return
+    if not used_cookie:
+        return
+    if request.method.upper() not in _UNSAFE_METHODS:
+        return
+
+    cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
+    header_token = request.headers.get(CSRF_HEADER_NAME)
+    if not csrf_tokens_match(cookie_token, header_token):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"CSRF validation failed. Send header {CSRF_HEADER_NAME} matching "
+                f"the {CSRF_COOKIE_NAME} cookie."
+            ),
+        )
 
 
 def _authenticate_token(token: str) -> CurrentUser:
@@ -83,7 +122,8 @@ def _authenticate_token(token: str) -> CurrentUser:
         )
 
     try:
-        decoded_token = firebase.verify_id_token(token)
+        # Phase 5a: reject revoked tokens (e.g. after password change).
+        decoded_token = firebase.verify_id_token(token, check_revoked=True)
     except ValueError as token_error:
         logger.warning("Invalid ID token: %s", str(token_error))
         raise HTTPException(
@@ -127,16 +167,17 @@ async def get_current_user(
     back to the Authorization Bearer header (useful for API clients/Swagger).
 
     Token verification and Firestore user lookup run via ``run_sync`` so they
-    do not block the asyncio event loop (behaviour unchanged).
+    do not block the asyncio event loop (behaviour unchanged for happy path).
     """
     try:
-        token = _extract_token(request, credentials)
+        token, used_cookie = _extract_token(request, credentials)
         if not token:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Not authenticated",
             )
 
+        _enforce_csrf_if_needed(request, used_cookie)
         return await run_sync(_authenticate_token, token)
 
     except HTTPException:
