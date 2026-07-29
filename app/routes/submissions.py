@@ -40,6 +40,7 @@ from fastapi import (
     status,
 )
 
+from app.exceptions import AppError, http_exception_from_value_error
 from app.middleware.auth_middleware import (
     get_active_user,
     get_admin_user,
@@ -112,17 +113,8 @@ def _ensure_student_can_view_report(
 
 
 def _http_from_value_error(e: ValueError) -> HTTPException:
-    detail = str(e)
-    lower = detail.lower()
-    if "not found" in lower:
-        code = status.HTTP_404_NOT_FOUND
-    elif "too large" in lower:
-        code = status.HTTP_413_CONTENT_TOO_LARGE
-    elif "already" in lower or "conflict" in lower:
-        code = status.HTTP_409_CONFLICT
-    else:
-        code = status.HTTP_400_BAD_REQUEST
-    return HTTPException(status_code=code, detail=detail)
+    """Preserve historical submissions status mapping (delegates to Phase 6 helper)."""
+    return http_exception_from_value_error(e)
 
 
 @router.post("", response_model=SubmissionResponse, status_code=201)
@@ -184,6 +176,8 @@ async def create_submission(
         )
     except ValueError as e:
         raise _http_from_value_error(e) from e
+    except AppError:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -233,6 +227,8 @@ async def prepare_submission_upload(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         ) from e
+    except AppError:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -269,6 +265,8 @@ async def create_submission_from_upload(
         )
     except ValueError as e:
         raise _http_from_value_error(e) from e
+    except AppError:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

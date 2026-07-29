@@ -7,6 +7,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from app.exceptions import AppError, http_exception_from_value_error
 from app.middleware.auth_middleware import get_admin_user
 from app.models.user_model import CurrentUser, UserResponse, UserUpdate
 from app.services.user_service import UserService
@@ -29,13 +30,14 @@ async def get_users(
     try:
         users = await run_sync(user_service.get_non_admin_users)
         return [user_service.to_user_response(user["id"], user) for user in users]
-
+    except AppError:
+        raise
     except Exception as e:
-        logger.error(f"Error getting users: {str(e)}")
+        logger.exception("Error getting users")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error retrieving users",
-        )
+        ) from e
 
 
 @router.get("/evaluators/pending", status_code=200)
@@ -51,12 +53,14 @@ async def get_pending_evaluators(
             approval_status="pending",
         )
         return [user_service.to_user_response(user["id"], user) for user in evaluators]
+    except AppError:
+        raise
     except Exception as e:
-        logger.error("Error getting pending evaluators: %s", str(e))
+        logger.exception("Error getting pending evaluators")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error retrieving pending evaluators",
-        )
+        ) from e
 
 
 @router.get("/evaluators", status_code=200)
@@ -87,12 +91,14 @@ async def get_evaluators(
         return [user_service.to_user_response(user["id"], user) for user in evaluators]
     except HTTPException:
         raise
+    except AppError:
+        raise
     except Exception as e:
-        logger.error("Error getting evaluators: %s", str(e))
+        logger.exception("Error getting evaluators")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error retrieving evaluators",
-        )
+        ) from e
 
 
 @router.post("/evaluators/{user_id}/approve", response_model=UserResponse, status_code=200)
@@ -106,17 +112,17 @@ async def approve_evaluator(
     try:
         updated_user = await run_sync(user_service.approve_evaluator, user_id)
         return user_service.to_user_response(user_id, updated_user)
+    except AppError:
+        raise
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        ) from e
+        # Keep admin approve ValueError → mapped status (already → 409, etc.)
+        raise http_exception_from_value_error(e) from e
     except Exception as e:
-        logger.error("Error approving evaluator %s: %s", user_id, str(e))
+        logger.exception("Error approving evaluator %s", user_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error approving evaluator",
-        )
+        ) from e
 
 
 @router.get("/user/{user_id}", status_code=200)
@@ -140,12 +146,14 @@ async def get_user(
 
     except HTTPException:
         raise
+    except AppError:
+        raise
     except Exception as e:
-        logger.error(f"Error getting user: {str(e)}")
+        logger.exception("Error getting user")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error retrieving user",
-        )
+        ) from e
 
 
 @router.patch("/user/{user_id}", status_code=200)
@@ -184,9 +192,11 @@ async def update_user(
 
     except HTTPException:
         raise
+    except AppError:
+        raise
     except Exception as e:
-        logger.error(f"Error updating user: {str(e)}")
+        logger.exception("Error updating user")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error updating user",
-        )
+        ) from e

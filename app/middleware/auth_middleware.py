@@ -22,6 +22,7 @@ from app.utils.auth_cookies import (
     csrf_protection_enabled,
     csrf_tokens_match,
 )
+from app.exceptions import AppError
 
 
 logger = logging.getLogger(__name__)
@@ -182,6 +183,9 @@ async def get_current_user(
 
     except HTTPException:
         raise
+    except AppError:
+        # Let Phase 6 handlers map InfrastructureError → 503, etc.
+        raise
     except ValueError as e:
         logger.warning("Authentication validation error: %s", str(e))
         raise HTTPException(
@@ -189,10 +193,7 @@ async def get_current_user(
             detail=f"Authentication failed: {str(e)}",
         ) from e
     except Exception as e:
-        logger.error("Unexpected authentication error: %s", str(e))
-        import traceback
-
-        logger.error("Traceback:\n%s", traceback.format_exc())
+        logger.exception("Unexpected authentication error")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Authentication error",

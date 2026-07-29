@@ -10,6 +10,8 @@ from typing import Any, Optional
 import firebase_admin
 from firebase_admin import auth, credentials, firestore
 
+from app.exceptions import InfrastructureError
+
 
 logger = logging.getLogger(__name__)
 
@@ -215,35 +217,33 @@ class FirebaseService:
 
     def get_user(self, user_id: str) -> Any:
         """
-        Get user by ID
+        Get Auth user by ID.
 
-        Args:
-            user_id: User ID
-
-        Returns:
-            Firebase user object
+        Returns ``None`` only when the user does not exist. Other failures raise
+        ``InfrastructureError`` (Phase 6 — do not disguise outages as missing).
         """
         try:
             return self._auth.get_user(user_id)
-        except Exception as e:
-            logger.error(f"Error getting user {user_id}: {str(e)}")
+        except auth.UserNotFoundError:
             return None
+        except Exception as e:
+            logger.exception("Firebase Auth get_user failed for %s", user_id)
+            raise InfrastructureError("Firebase Auth is temporarily unavailable") from e
 
     def get_user_by_email(self, email: str) -> Any:
         """
-        Get user by email
+        Get Auth user by email.
 
-        Args:
-            email: User email
-
-        Returns:
-            Firebase user object
+        Returns ``None`` only when the user does not exist. Other failures raise
+        ``InfrastructureError``.
         """
         try:
             return self._auth.get_user_by_email(email)
-        except Exception as e:
-            logger.error(f"Error getting user by email {email}: {str(e)}")
+        except auth.UserNotFoundError:
             return None
+        except Exception as e:
+            logger.exception("Firebase Auth get_user_by_email failed")
+            raise InfrastructureError("Firebase Auth is temporarily unavailable") from e
 
     # ==================== Firestore Methods ====================
 
@@ -266,26 +266,28 @@ class FirebaseService:
             logger.info(f"Document set: {collection}/{document_id}")
             return True
         except Exception as e:
-            logger.error(f"Error setting document: {str(e)}")
-            raise Exception(f"Error setting document: {str(e)}")
+            logger.exception("Error setting document %s/%s", collection, document_id)
+            raise InfrastructureError(
+                f"Failed to write document {collection}/{document_id}"
+            ) from e
 
     def get_document(self, collection: str, document_id: str) -> Optional[dict[str, Any]]:
         """
-        Get a document from Firestore
+        Get a document from Firestore.
 
-        Args:
-            collection: Collection name
-            document_id: Document ID
-
-        Returns:
-            Document data or None if not found
+        Returns ``None`` only if the document is missing. Outages raise
+        ``InfrastructureError`` instead of pretending the doc was not found.
         """
         try:
             doc = self._db.collection(collection).document(document_id).get()
             return doc.to_dict() if doc.exists else None
+        except InfrastructureError:
+            raise
         except Exception as e:
-            logger.error(f"Error getting document: {str(e)}")
-            return None
+            logger.exception("Error getting document %s/%s", collection, document_id)
+            raise InfrastructureError(
+                f"Failed to read document {collection}/{document_id}"
+            ) from e
 
     def update_document(
         self, collection: str, document_id: str, data: dict[str, Any]
@@ -306,8 +308,10 @@ class FirebaseService:
             logger.info(f"Document updated: {collection}/{document_id}")
             return True
         except Exception as e:
-            logger.error(f"Error updating document: {str(e)}")
-            raise Exception(f"Error updating document: {str(e)}")
+            logger.exception("Error updating document %s/%s", collection, document_id)
+            raise InfrastructureError(
+                f"Failed to update document {collection}/{document_id}"
+            ) from e
 
     def delete_document(self, collection: str, document_id: str) -> bool:
         """
@@ -325,43 +329,37 @@ class FirebaseService:
             logger.info(f"Document deleted: {collection}/{document_id}")
             return True
         except Exception as e:
-            logger.error(f"Error deleting document: {str(e)}")
-            raise Exception(f"Error deleting document: {str(e)}")
+            logger.exception("Error deleting document %s/%s", collection, document_id)
+            raise InfrastructureError(
+                f"Failed to delete document {collection}/{document_id}"
+            ) from e
 
     def get_collection(
         self, collection: str, filters: Optional[dict[str, Any]] = None
     ) -> list[dict[str, Any]]:
         """
-        Get all documents from a collection
+        Get all documents from a collection.
 
-        Args:
-            collection: Collection name
-            filters: Optional filters (not implemented simply here)
-
-        Returns:
-            List of documents with their IDs
+        Returns an empty list only when the collection has no documents.
+        Outages raise ``InfrastructureError``.
         """
         try:
             docs = self._db.collection(collection).stream()
             return [{"id": doc.id, **doc.to_dict()} for doc in docs]
         except Exception as e:
-            logger.error(f"Error getting collection: {str(e)}")
-            return []
+            logger.exception("Error getting collection %s", collection)
+            raise InfrastructureError(
+                f"Failed to list collection {collection}"
+            ) from e
 
     def query_collection(
         self, collection: str, field: str, operator: str, value: Any
     ) -> list[dict[str, Any]]:
         """
-        Query a collection
+        Query a collection.
 
-        Args:
-            collection: Collection name
-            field: Field to query
-            operator: Comparison operator (==, <, >, <=, >=)
-            value: Value to compare
-
-        Returns:
-            List of matching documents
+        Returns an empty list only when there are no matches. Outages raise
+        ``InfrastructureError``.
         """
         try:
             query = self._db.collection(collection)
@@ -380,8 +378,12 @@ class FirebaseService:
             docs = query.stream()
             return [{"id": doc.id, **doc.to_dict()} for doc in docs]
         except Exception as e:
-            logger.error(f"Error querying collection: {str(e)}")
-            return []
+            logger.exception(
+                "Error querying collection %s (%s %s ...)", collection, field, operator
+            )
+            raise InfrastructureError(
+                f"Failed to query collection {collection}"
+            ) from e
 
     def batch_write(self, operations: list[dict[str, Any]]) -> bool:
         """
@@ -416,8 +418,8 @@ class FirebaseService:
             logger.info("Batch write completed")
             return True
         except Exception as e:
-            logger.error(f"Error during batch write: {str(e)}")
-            raise Exception(f"Error during batch write: {str(e)}")
+            logger.exception("Error during batch write")
+            raise InfrastructureError("Failed to commit Firestore batch write") from e
 
     # ==================== Transactions (Phase 3) ====================
 
@@ -430,13 +432,21 @@ class FirebaseService:
         """
         from google.cloud.firestore_v1 import transactional
 
+        from app.exceptions import AppError
+
         transaction = self._db.transaction()
 
         @transactional
         def _run(txn):
             return callback(txn)
 
-        return _run(transaction)
+        try:
+            return _run(transaction)
+        except (ValueError, AppError):
+            raise
+        except Exception as e:
+            logger.exception("Firestore transaction failed")
+            raise InfrastructureError("Firestore transaction failed") from e
 
     def txn_get(
         self, transaction, collection: str, document_id: str

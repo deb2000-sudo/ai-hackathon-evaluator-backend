@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 
 from app.middleware.auth_middleware import get_current_user
+from app.exceptions import AppError
 from app.models.user_model import (
     ChangePasswordRequest,
     CurrentUser,
@@ -58,8 +59,10 @@ async def register_student(request: StudentRegisterRequest) -> RegisterResponse:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         ) from e
+    except AppError:
+        raise
     except Exception as e:
-        logger.error("Student registration error: %s", str(e))
+        logger.exception("Student registration error")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Registration failed",
@@ -81,8 +84,10 @@ async def register_evaluator(request: EvaluatorRegisterRequest) -> RegisterRespo
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         ) from e
+    except AppError:
+        raise
     except Exception as e:
-        logger.error("Evaluator registration error: %s", str(e))
+        logger.exception("Evaluator registration error")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Registration failed",
@@ -183,12 +188,14 @@ async def login(request: LoginRequest) -> JSONResponse:
 
     except HTTPException:
         raise
+    except AppError:
+        raise
     except Exception as e:
-        logger.error(f"Login error: {str(e)}")
+        logger.exception("Login error")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
-        )
+        ) from e
 
 
 @router.post("/logout", status_code=200)
@@ -234,8 +241,10 @@ async def change_password(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=str(e),
             ) from e
+        except AppError:
+            raise
         except Exception as e:
-            logger.error("Current password verification error: %s", str(e))
+            logger.exception("Current password verification error")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to verify current password",
@@ -257,8 +266,10 @@ async def change_password(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         ) from e
+    except AppError:
+        raise
     except Exception as e:
-        logger.error("Change password error: %s", str(e))
+        logger.exception("Change password error")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to change password",
@@ -330,9 +341,11 @@ async def get_current_user_profile(
 
     except HTTPException:
         raise
+    except AppError:
+        raise
     except Exception as e:
-        logger.error(f"Error getting user profile: {str(e)}")
+        logger.exception("Error getting user profile")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error retrieving user profile",
-        )
+        ) from e

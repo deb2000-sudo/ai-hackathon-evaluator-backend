@@ -22,6 +22,11 @@ from app.routes import (
 from app.utils.async_io import run_sync
 from app.utils.cors_config import get_allowed_origins, get_cors_allow_headers
 from app.utils.seeder import DatabaseSeeder
+from app.exceptions import (
+    AppError,
+    InfrastructureError,
+    status_code_for_value_error_message,
+)
 
 
 # Configure logging
@@ -94,21 +99,49 @@ app.include_router(metric_scoring.router)
 app.include_router(internal_jobs.router)
 
 
-# ==================== Error Handlers ====================
-@app.exception_handler(ValueError)
-async def value_error_handler(request, exc):
-    """Handle ValueError exceptions"""
-    logger.error(f"ValueError: {str(exc)}")
+# ==================== Error Handlers (Phase 6) ====================
+@app.exception_handler(AppError)
+async def app_error_handler(request, exc: AppError):
+    """Typed application errors — same status codes clients already expect."""
+    if exc.status_code >= 500:
+        logger.exception("AppError %s: %s", exc.status_code, exc.detail)
+        # Keep 5xx client body generic for infrastructure; detail may be ops-facing.
+        client_detail = (
+            exc.detail
+            if not isinstance(exc, InfrastructureError)
+            else "Service temporarily unavailable"
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": client_detail},
+        )
+    logger.warning("AppError %s: %s", exc.status_code, exc.detail)
     return JSONResponse(
-        status_code=400,
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+    )
+
+
+@app.exception_handler(ValueError)
+async def value_error_handler(request, exc: ValueError):
+    """
+    Map uncaught ValueError to the same 400/404/409/413 rules routes already use.
+    """
+    code = status_code_for_value_error_message(str(exc))
+    if code >= 500:
+        logger.exception("ValueError mapped to %s: %s", code, str(exc))
+    else:
+        logger.warning("ValueError mapped to %s: %s", code, str(exc))
+    return JSONResponse(
+        status_code=code,
         content={"detail": str(exc)},
     )
 
 
 @app.exception_handler(Exception)
-async def general_exception_handler(request, exc):
-    """Handle general exceptions"""
-    logger.error(f"Unhandled exception: {str(exc)}")
+async def general_exception_handler(request, exc: Exception):
+    """Unhandled errors: log stack trace; generic client body."""
+    logger.exception("Unhandled exception")
     return JSONResponse(
         status_code=500,
         content={"detail": "Internal server error"},
