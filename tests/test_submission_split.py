@@ -22,7 +22,7 @@ def _stub_create_mixin() -> CreateMixin:
             self.firebase = MagicMock()
             self._team = "Team Alpha"
 
-        def _validate_configuration(self):
+        def _validate_configuration(self, *, require_bucket: bool = True):
             return None
 
         def _resolve_student_team_name(self, student_id: str) -> str:

@@ -101,6 +101,28 @@ class EvaluationJobService:
             submission_id,
         )
 
+    def schedule_evaluation(
+        self,
+        submission_id: str,
+        evaluation_criteria: str | None,
+        background_tasks: BackgroundTasks | None = None,
+    ) -> str:
+        """
+        Enqueue analysis after ``mark_queued_for_evaluation``.
+
+        Returns ``\"cloud_tasks\"`` or ``\"background\"``.
+        """
+        mode = self.resolve_mode()
+        if mode == "cloud_tasks":
+            self.enqueue_cloud_task(submission_id, evaluation_criteria)
+            return "cloud_tasks"
+        if background_tasks is None:
+            raise ValueError(
+                "BackgroundTasks is required when Cloud Tasks is not configured"
+            )
+        self.enqueue_background(submission_id, evaluation_criteria, background_tasks)
+        return "background"
+
     def process_evaluation_job(
         self,
         submission_id: str,

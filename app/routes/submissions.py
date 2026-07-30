@@ -28,6 +28,8 @@ Student submission routes.
     POST   /submissions/{id}/assign     -> admin assigns one evaluator (dropdown)
 """
 
+import json
+
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -65,6 +67,7 @@ from app.models.submission_model import (
     SubmitForReviewRequest,
 )
 from app.models.user_model import CurrentUser
+from app.services.auto_ai_evaluation import queue_auto_ai_evaluations
 from app.services.evaluation_job_service import EvaluationJobService
 from app.dependencies import get_evaluation_job_service, get_submission_service
 from app.services.submission_service import SubmissionService
@@ -135,7 +138,6 @@ def _http_from_value_error(e: ValueError) -> HTTPException:
 @router.post("", response_model=SubmissionResponse, status_code=201)
 async def create_submission(
     request: Request,
-    video: UploadFile = File(..., description="Recorded demo or local video file"),
     hackathon_id: str = Form(..., min_length=1, description="Hackathon this submission belongs to"),
     theme_id: str = Form(
         ...,
@@ -144,9 +146,22 @@ async def create_submission(
     ),
     problem_statement: str = Form(..., min_length=1, max_length=5000),
     solution_description: str = Form(..., min_length=1, max_length=5000),
+    video: UploadFile | None = File(
+        None,
+        description=(
+            "Recorded demo or local video file. Required when the hackathon has "
+            "working_demo_video_required=true."
+        ),
+    ),
     video_source: str | None = Form(
         None,
         description="'recorded' (MediaRecorder) or 'uploaded' (local file).",
+    ),
+    mvp_link: str | None = Form(None, max_length=2000),
+    github_link: str | None = Form(None, max_length=2000),
+    field_answers: str | None = Form(
+        None,
+        description='Optional JSON object of extra field answers, e.g. {"mvp_link":"https://..."}',
     ),
     student: CurrentUser = Depends(get_student_user),
     service: SubmissionService = Depends(get_submission_service),
@@ -157,28 +172,53 @@ async def create_submission(
     Accepts either an in-browser recording or a local file — both become a GCS
     object under ``submissions/{student_id}/{id}/video.*``.
 
+    When the hackathon's ``working_demo_video_required`` is false, ``video`` may
+    be omitted.
+
     **Cloud Run limit:** HTTP/1 request bodies are capped at ~32 MiB. Larger
     demos get ``413``. Prefer
     ``POST /submissions/upload-url`` + ``POST /submissions/from-upload``.
     """
-    try:
-        assert_multipart_request_content_length(request.headers.get("content-length"))
-        spool = await spool_upload_file(video, max_bytes=MAX_MULTIPART_VIDEO_BYTES)
-    except ValueError as e:
-        raise _http_from_value_error(e) from e
+    parsed_answers: dict[str, str] | None = None
+    if field_answers and field_answers.strip():
+        try:
+            raw = json.loads(field_answers)
+        except json.JSONDecodeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"field_answers must be valid JSON: {e}",
+            ) from e
+        if not isinstance(raw, dict):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="field_answers must be a JSON object",
+            )
+        parsed_answers = {str(k): str(v) for k, v in raw.items() if v is not None}
 
+    video_payload: tuple[str, object, str] | None = None
+    spool = None
     try:
-        header = peek_file_header(spool)
-        resolved_type, _extension = resolve_video_content_type(
-            video.content_type,
-            video.filename,
-            header,
-        )
-        video_payload = (
-            video.filename or "submission",
-            spool,
-            resolved_type,
-        )
+        if video is not None and (video.filename or video.content_type):
+            try:
+                assert_multipart_request_content_length(
+                    request.headers.get("content-length")
+                )
+                spool = await spool_upload_file(video, max_bytes=MAX_MULTIPART_VIDEO_BYTES)
+            except ValueError as e:
+                raise _http_from_value_error(e) from e
+
+            header = peek_file_header(spool)
+            resolved_type, _extension = resolve_video_content_type(
+                video.content_type,
+                video.filename,
+                header,
+            )
+            video_payload = (
+                video.filename or "submission",
+                spool,
+                resolved_type,
+            )
+
         submission = await run_sync(
             service.create_submission,
             student=student,
@@ -188,6 +228,9 @@ async def create_submission(
             hackathon_id=hackathon_id,
             theme_id=theme_id,
             video_source=video_source,
+            mvp_link=mvp_link,
+            github_link=github_link,
+            field_answers=parsed_answers,
         )
     except ValueError as e:
         raise _http_from_value_error(e) from e
@@ -199,7 +242,8 @@ async def create_submission(
             detail="Submission upload failed",
         ) from e
     finally:
-        spool.close()
+        if spool is not None:
+            spool.close()
 
     return await _to_submission_response(service, submission, current_user=student)
 
@@ -277,6 +321,9 @@ async def create_submission_from_upload(
             hackathon_id=request.hackathon_id,
             theme_id=request.theme_id,
             video_source=request.video_source,
+            mvp_link=request.mvp_link,
+            github_link=request.github_link,
+            field_answers=request.field_answers,
         )
     except ValueError as e:
         raise _http_from_value_error(e) from e
@@ -344,13 +391,17 @@ async def list_submissions_for_hackathon_admin(
 async def divide_submissions_equally(
     hackathon_id: str,
     request: DivideEquallyRequest,
+    background_tasks: BackgroundTasks,
     admin: CurrentUser = Depends(get_admin_user),
     service: SubmissionService = Depends(get_submission_service),
+    job_service: EvaluationJobService = Depends(get_evaluation_job_service),
 ) -> DivideEquallyResponse:
     """
     Randomly divide selected submissions among active (approved) evaluators.
 
     Used by the bulk action on the admin Submissions table after multi-select.
+    When the hackathon has ``auto_ai_evaluation=true``, AI evaluation jobs are
+    queued for each newly assigned submission (Cloud Tasks / BackgroundTasks).
     """
     try:
         assigned = await run_sync(
@@ -369,6 +420,16 @@ async def divide_submissions_equally(
         )
         raise HTTPException(status_code=code, detail=detail) from e
 
+    hackathon = await run_sync(service.hackathon_service.get_hackathon, hackathon_id)
+    queued = await queue_auto_ai_evaluations(
+        service=service,
+        job_service=job_service,
+        background_tasks=background_tasks,
+        submissions=assigned,
+        analyzed_by=admin.user_id,
+        hackathon=hackathon,
+    )
+
     evaluator_count = len(
         {
             item.get("assigned_evaluator_id")
@@ -376,10 +437,23 @@ async def divide_submissions_equally(
             if item.get("assigned_evaluator_id")
         }
     )
+    # Refresh so responses reflect processing status when auto-queued.
+    refreshed_ids = [item["id"] for item in assigned if item.get("id")]
+    refreshed: list[dict] = []
+    for sid in refreshed_ids:
+        doc = await run_sync(service.get_submission, sid, admin)
+        if doc:
+            refreshed.append(doc)
+    if not refreshed:
+        refreshed = assigned
+
     return DivideEquallyResponse(
         assigned_count=len(assigned),
         evaluator_count=evaluator_count,
-        submissions=await _to_submission_responses(service, assigned, current_user=admin),
+        auto_ai_evaluation_queued=queued,
+        submissions=await _to_submission_responses(
+            service, refreshed, current_user=admin
+        ),
     )
 
 
@@ -546,6 +620,7 @@ async def get_submission_report(
         status=analysis["status"],
         checklist=analysis["checklist"],
         report=analysis["report"],
+        field_scores=analysis.get("field_scores"),
         analyzed_at=analysis["analyzed_at"],
     )
 
@@ -582,11 +657,16 @@ async def evaluate_submission(
     job_service: EvaluationJobService = Depends(get_evaluation_job_service),
 ) -> SubmissionResponse:
     """
-    Start AI video analysis for a submission.
+    Start AI analysis for a submission (manual AI Evaluation button / admin).
 
     Allowed for **admins** or the **assigned approved evaluator**.
     Returns ``202`` immediately; analysis runs via Cloud Tasks (production) or
     BackgroundTasks (local fallback). Poll ``GET /submissions/{id}`` for status.
+
+    When the hackathon has ``auto_ai_evaluation=true``, jobs are usually queued
+    on assign; this endpoint still works for re-runs. When auto mode is off,
+    evaluators use this endpoint from the AI Evaluation button.
+
     After analysis completes, the evaluator submits for review; admin approval
     publishes the final score to the student.
     """
@@ -776,14 +856,19 @@ async def publish_submission_report(
 async def assign_submission_evaluator(
     submission_id: str,
     request: AssignEvaluatorRequest,
+    background_tasks: BackgroundTasks,
     admin: CurrentUser = Depends(get_admin_user),
     service: SubmissionService = Depends(get_submission_service),
+    job_service: EvaluationJobService = Depends(get_evaluation_job_service),
 ) -> SubmissionResponse:
     """
     Assign one approved (active) evaluator to a submission, or clear assignment.
 
     Used by the per-row Evaluator dropdown on the admin Submissions table.
     Pass ``evaluator_id: null`` to unassign.
+
+    When the hackathon has ``auto_ai_evaluation=true`` and an evaluator is
+    assigned, AI evaluation is queued automatically.
     """
     try:
         submission = await run_sync(
@@ -800,5 +885,17 @@ async def assign_submission_evaluator(
             else status.HTTP_400_BAD_REQUEST
         )
         raise HTTPException(status_code=code, detail=detail) from e
+
+    if request.evaluator_id:
+        await queue_auto_ai_evaluations(
+            service=service,
+            job_service=job_service,
+            background_tasks=background_tasks,
+            submissions=[submission],
+            analyzed_by=admin.user_id,
+        )
+        refreshed = await run_sync(service.get_submission, submission_id, admin)
+        if refreshed:
+            submission = refreshed
 
     return await _to_submission_response(service, submission, current_user=admin)

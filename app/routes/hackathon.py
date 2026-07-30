@@ -58,6 +58,26 @@ def _parse_json_field(raw: str | None, field_name: str, default):
         ) from e
 
 
+def _parse_form_bool(
+    raw: str | None,
+    *,
+    default: bool = True,
+    field_name: str = "value",
+) -> bool:
+    """Parse multipart bool strings; empty/omitted uses default."""
+    if raw is None or str(raw).strip() == "":
+        return default
+    value = str(raw).strip().lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=f"{field_name} must be true or false",
+    )
+
+
 async def _read_banner(banner: UploadFile | None) -> tuple[str, bytes, str] | None:
     if banner is None:
         return None
@@ -95,6 +115,17 @@ async def create_hackathon(
         max_length=2000,
         description="Official hackathon website URL (shown on student dashboard)",
     ),
+    working_demo_video_required: str | None = Form(
+        "true",
+        description="Toggle: students must record/upload a working demo video (true/false).",
+    ),
+    auto_ai_evaluation: str | None = Form(
+        "false",
+        description=(
+            "Toggle: automatically run AI evaluation when submissions are assigned "
+            "to evaluators (true/false). When false, evaluators use the AI Evaluation button."
+        ),
+    ),
     admin: CurrentUser = Depends(get_admin_user),
     service: HackathonService = Depends(get_hackathon_service),
 ) -> HackathonResponse:
@@ -107,6 +138,16 @@ async def create_hackathon(
     prizes_data = _parse_json_field(prizes, "prizes", {})
     theme_ids_data = _parse_json_field(theme_ids, "theme_ids", [])
     timeline_data = _parse_json_field(timeline, "timeline", [])
+    demo_video_required = _parse_form_bool(
+        working_demo_video_required,
+        default=True,
+        field_name="working_demo_video_required",
+    )
+    auto_ai = _parse_form_bool(
+        auto_ai_evaluation,
+        default=False,
+        field_name="auto_ai_evaluation",
+    )
 
     try:
         payload = HackathonCreateRequest(
@@ -119,6 +160,8 @@ async def create_hackathon(
             hackathon_url=hackathon_url,
             prizes=HackathonPrizes(**prizes_data),
             timeline=[TimelineRound(**item) for item in timeline_data],
+            working_demo_video_required=demo_video_required,
+            auto_ai_evaluation=auto_ai,
         )
     except (ValidationError, ValueError, TypeError) as e:
         raise HTTPException(
@@ -213,6 +256,17 @@ async def update_hackathon(
         max_length=2000,
         description="Official hackathon website URL (omit to leave unchanged)",
     ),
+    working_demo_video_required: str | None = Form(
+        None,
+        description="Toggle working demo video requirement (true/false). Omit to leave unchanged.",
+    ),
+    auto_ai_evaluation: str | None = Form(
+        None,
+        description=(
+            "Toggle automatic AI evaluation on assignment (true/false). "
+            "Omit to leave unchanged."
+        ),
+    ),
     admin: CurrentUser = Depends(get_admin_user),
     service: HackathonService = Depends(get_hackathon_service),
 ) -> HackathonResponse:
@@ -238,6 +292,18 @@ async def update_hackathon(
     # Only touch hackathon_url when the form field is present (allows clearing).
     if hackathon_url is not None:
         update_kwargs["hackathon_url"] = hackathon_url
+    if working_demo_video_required is not None and str(working_demo_video_required).strip() != "":
+        update_kwargs["working_demo_video_required"] = _parse_form_bool(
+            working_demo_video_required,
+            default=True,
+            field_name="working_demo_video_required",
+        )
+    if auto_ai_evaluation is not None and str(auto_ai_evaluation).strip() != "":
+        update_kwargs["auto_ai_evaluation"] = _parse_form_bool(
+            auto_ai_evaluation,
+            default=False,
+            field_name="auto_ai_evaluation",
+        )
 
     try:
         payload = HackathonUpdateRequest(**update_kwargs)

@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from app.routes import (
     admin,
     auth,
+    evaluation_prompt,
     evaluation_requirement,
     hackathon,
     internal_jobs,
@@ -118,6 +119,7 @@ app.include_router(submissions.router)
 app.include_router(hackathon.router)
 app.include_router(theme.router)
 app.include_router(evaluation_requirement.router)
+app.include_router(evaluation_prompt.router)
 app.include_router(metric_scoring.router)
 app.include_router(internal_jobs.router)
 

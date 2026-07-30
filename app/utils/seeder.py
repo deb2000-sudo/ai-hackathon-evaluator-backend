@@ -261,8 +261,21 @@ class DatabaseSeeder:
                 logger.info("%s", "=" * 60)
                 self.seed_user(seed_user)
 
+            self._seed_evaluation_prompts()
+
             logger.info("\nDatabase seeding completed successfully!")
             return True
         except Exception as e:
             logger.error("Error during seeding: %s", str(e))
             raise
+
+    def _seed_evaluation_prompts(self) -> None:
+        """Idempotently seed default Gemini checklist / analyze_video templates."""
+        try:
+            from app.services.evaluation_prompt_service import EvaluationPromptService
+
+            EvaluationPromptService(firebase=self.firebase).ensure_defaults(
+                seeded_by="system"
+            )
+        except Exception as e:
+            logger.warning("Could not seed AI evaluation prompts: %s", str(e))

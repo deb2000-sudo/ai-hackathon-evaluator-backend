@@ -19,12 +19,16 @@ from app.utils.video_upload import (
 )
 
 
-
 CREATE_SUCCESS_MESSAGE = (
     "Your submission has been recorded successfully. "
     "You will receive the evaluation result once an evaluator finishes "
     "review and the admin approves the final score."
 )
+
+
+def demo_video_required(hackathon: dict[str, Any]) -> bool:
+    """Older hackathons without the flag still require a demo video."""
+    return bool(hackathon.get("working_demo_video_required", True))
 
 
 class CreateMixin:
@@ -33,60 +37,76 @@ class CreateMixin:
     def create_submission(
         self,
         student: CurrentUser,
-        video: tuple[str, bytes | BinaryIO, str],
         problem_statement: str,
         solution_description: str,
         hackathon_id: str,
         theme_id: str,
+        video: tuple[str, bytes | BinaryIO, str] | None = None,
         video_source: str | None = None,
+        mvp_link: str | None = None,
+        github_link: str | None = None,
+        field_answers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        """Upload a student video and create a submission document."""
-        self._validate_configuration()
+        """Create a submission; upload video when provided / required."""
         hackathon, theme, theme_id = self._validate_hackathon_and_theme(
             hackathon_id, theme_id
         )
+        video_required = demo_video_required(hackathon)
+        if video_required and video is None:
+            raise ValueError(
+                "A working demo video is required for this hackathon. "
+                "Record or upload a video before submitting."
+            )
+
+        self._validate_configuration(require_bucket=video is not None or video_required)
         team_name = self._resolve_student_team_name(student.user_id)
 
-        filename, video_payload, content_type = video
-        if isinstance(video_payload, (bytes, bytearray)):
-            video_bytes = bytes(video_payload)
-            assert_video_size(
-                len(video_bytes),
-                max_bytes=MAX_MULTIPART_VIDEO_BYTES,
-                via="multipart",
-            )
-            resolved_type, extension = resolve_video_content_type(
-                content_type,
-                filename,
-                video_bytes,
-            )
-            upload_target: bytes | BinaryIO = video_bytes
-        else:
-            fileobj = video_payload
-            fileobj.seek(0, 2)
-            size = fileobj.tell()
-            fileobj.seek(0)
-            assert_video_size(
-                size,
-                max_bytes=MAX_MULTIPART_VIDEO_BYTES,
-                via="multipart",
-            )
-            header = peek_file_header(fileobj)
-            resolved_type, extension = resolve_video_content_type(
-                content_type,
-                filename,
-                header,
-            )
-            upload_target = fileobj
+        video_path: str | None = None
+        resolved_type: str | None = None
+        filename = ""
+        if video is not None:
+            filename, video_payload, content_type = video
+            if isinstance(video_payload, (bytes, bytearray)):
+                video_bytes = bytes(video_payload)
+                assert_video_size(
+                    len(video_bytes),
+                    max_bytes=MAX_MULTIPART_VIDEO_BYTES,
+                    via="multipart",
+                )
+                resolved_type, extension = resolve_video_content_type(
+                    content_type,
+                    filename,
+                    video_bytes,
+                )
+                upload_target: bytes | BinaryIO = video_bytes
+            else:
+                fileobj = video_payload
+                fileobj.seek(0, 2)
+                size = fileobj.tell()
+                fileobj.seek(0)
+                assert_video_size(
+                    size,
+                    max_bytes=MAX_MULTIPART_VIDEO_BYTES,
+                    via="multipart",
+                )
+                header = peek_file_header(fileobj)
+                resolved_type, extension = resolve_video_content_type(
+                    content_type,
+                    filename,
+                    header,
+                )
+                upload_target = fileobj
 
-        submission_id = uuid.uuid4().hex
-        object_name = self._video_object_name(student.user_id, submission_id, extension)
-        video_path = f"gs://{self.bucket_name}/{object_name}"
+            submission_id = uuid.uuid4().hex
+            object_name = self._video_object_name(student.user_id, submission_id, extension)
+            video_path = f"gs://{self.bucket_name}/{object_name}"
 
-        if isinstance(upload_target, (bytes, bytearray)):
-            self._upload_bytes(object_name, bytes(upload_target), resolved_type)
+            if isinstance(upload_target, (bytes, bytearray)):
+                self._upload_bytes(object_name, bytes(upload_target), resolved_type)
+            else:
+                self._upload_fileobj(object_name, upload_target, resolved_type)
         else:
-            self._upload_fileobj(object_name, upload_target, resolved_type)
+            submission_id = uuid.uuid4().hex
 
         submission = self._build_new_submission_document(
             student_id=student.user_id,
@@ -99,8 +119,11 @@ class CreateMixin:
             solution_description=solution_description,
             video_path=video_path,
             content_type=resolved_type,
-            source_filename=filename,
+            source_filename=filename or None,
             video_source=video_source,
+            mvp_link=mvp_link,
+            github_link=github_link,
+            field_answers=field_answers,
         )
         return self._persist_new_submission(submission_id, submission)
 
@@ -150,58 +173,75 @@ class CreateMixin:
     def create_submission_from_upload(
         self,
         student: CurrentUser,
-        video_path: str,
-        content_type: str,
-        source_filename: str,
         problem_statement: str,
         solution_description: str,
         hackathon_id: str,
         theme_id: str,
+        video_path: str | None = None,
+        content_type: str | None = None,
+        source_filename: str | None = None,
         video_source: str | None = None,
+        mvp_link: str | None = None,
+        github_link: str | None = None,
+        field_answers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        """Create a submission after the video was uploaded via signed URL."""
-        self._validate_configuration()
+        """Create a submission after optional signed-URL video upload."""
         hackathon, theme, theme_id = self._validate_hackathon_and_theme(
             hackathon_id, theme_id
         )
+        video_required = demo_video_required(hackathon)
+        has_video = bool(video_path and str(video_path).strip())
 
-        resolved_type, extension = resolve_video_content_type_from_metadata(
-            content_type,
-            source_filename,
-        )
-
-        video_path = video_path.strip()
-        try:
-            bucket_name, object_name = parse_gs_uri(video_path)
-        except ValueError as e:
-            raise ValueError("Invalid video_path") from e
-
-        expected_prefix = f"submissions/{student.user_id}/"
-        if bucket_name != self.bucket_name:
-            raise ValueError("video_path does not belong to the evaluation bucket")
-        if not object_name.startswith(expected_prefix):
-            raise ValueError("video_path is not owned by the current student")
-        if not object_name.endswith(f"/video{extension}"):
-            raise ValueError("video_path does not match the expected upload object")
-
-        blob = self._storage_client().bucket(bucket_name).blob(object_name)
-        if not blob.exists():
+        if video_required and not has_video:
             raise ValueError(
-                "Video has not been uploaded yet. "
-                "PUT the file to the signed upload_url first."
+                "A working demo video is required for this hackathon. "
+                "Upload the video via the signed URL, then finalize."
             )
-        blob.reload()
-        size = int(blob.size or 0)
-        assert_video_size(size, max_bytes=MAX_VIDEO_UPLOAD_BYTES, via="signed")
 
-        # Prefer the path segment as the stable submission id.
-        parts = object_name.split("/")
-        # submissions/{student_id}/{submission_id}/video.ext
-        submission_id = parts[2] if len(parts) >= 4 else uuid.uuid4().hex
+        self._validate_configuration(require_bucket=has_video or video_required)
 
-        existing = self.firebase.get_document(self.collection, submission_id)
-        if existing:
-            raise ValueError("A submission already exists for this uploaded video")
+        resolved_type: str | None = None
+        submission_id = uuid.uuid4().hex
+
+        if has_video:
+            assert video_path is not None
+            resolved_type, extension = resolve_video_content_type_from_metadata(
+                content_type,
+                source_filename or "submission.mp4",
+            )
+
+            video_path = video_path.strip()
+            try:
+                bucket_name, object_name = parse_gs_uri(video_path)
+            except ValueError as e:
+                raise ValueError("Invalid video_path") from e
+
+            expected_prefix = f"submissions/{student.user_id}/"
+            if bucket_name != self.bucket_name:
+                raise ValueError("video_path does not belong to the evaluation bucket")
+            if not object_name.startswith(expected_prefix):
+                raise ValueError("video_path is not owned by the current student")
+            if not object_name.endswith(f"/video{extension}"):
+                raise ValueError("video_path does not match the expected upload object")
+
+            blob = self._storage_client().bucket(bucket_name).blob(object_name)
+            if not blob.exists():
+                raise ValueError(
+                    "Video has not been uploaded yet. "
+                    "PUT the file to the signed upload_url first."
+                )
+            blob.reload()
+            size = int(blob.size or 0)
+            assert_video_size(size, max_bytes=MAX_VIDEO_UPLOAD_BYTES, via="signed")
+
+            # Prefer the path segment as the stable submission id.
+            parts = object_name.split("/")
+            # submissions/{student_id}/{submission_id}/video.ext
+            submission_id = parts[2] if len(parts) >= 4 else uuid.uuid4().hex
+
+            existing = self.firebase.get_document(self.collection, submission_id)
+            if existing:
+                raise ValueError("A submission already exists for this uploaded video")
 
         team_name = self._resolve_student_team_name(student.user_id)
         submission = self._build_new_submission_document(
@@ -213,10 +253,13 @@ class CreateMixin:
             team_name=team_name,
             problem_statement=problem_statement,
             solution_description=solution_description,
-            video_path=video_path,
+            video_path=video_path.strip() if has_video and video_path else None,
             content_type=resolved_type,
             source_filename=source_filename,
-            video_source=video_source,
+            video_source=video_source if has_video else None,
+            mvp_link=mvp_link,
+            github_link=github_link,
+            field_answers=field_answers,
         )
         return self._persist_new_submission(submission_id, submission)
 
@@ -264,14 +307,27 @@ class CreateMixin:
         team_name: str,
         problem_statement: str,
         solution_description: str,
-        video_path: str,
-        content_type: str,
-        source_filename: str,
+        video_path: str | None,
+        content_type: str | None,
+        source_filename: str | None,
         video_source: str | None,
+        mvp_link: str | None = None,
+        github_link: str | None = None,
+        field_answers: dict[str, str] | None = None,
         now: str | None = None,
     ) -> dict[str, Any]:
         """Single document shape for multipart and signed-URL create paths."""
         created_at = now or datetime.utcnow().isoformat()
+        answers = dict(field_answers or {})
+        # Keep top-level PS/SD as the source of truth; mirror into field_answers.
+        answers.setdefault("problem_statement", problem_statement.strip())
+        answers.setdefault("solution_description", solution_description.strip())
+        if mvp_link:
+            answers.setdefault("mvp_link", mvp_link.strip())
+        if github_link:
+            answers.setdefault("github_link", github_link.strip())
+            answers.setdefault("project_github_link", github_link.strip())
+
         return {
             "student_id": student_id,
             "hackathon_id": hackathon_id,
@@ -281,12 +337,15 @@ class CreateMixin:
             "theme_name": theme["name"],
             "problem_statement": problem_statement.strip(),
             "solution_description": solution_description.strip(),
+            "mvp_link": (mvp_link or "").strip() or None,
+            "github_link": (github_link or "").strip() or None,
+            "field_answers": answers,
             "evaluation_criteria": None,
             "status": "uploaded",
             "video_path": video_path,
             "content_type": content_type,
             "source_filename": source_filename,
-            "video_source": self._normalize_video_source(video_source),
+            "video_source": self._normalize_video_source(video_source) if video_path else None,
             "analysis_id": None,
             "report_published": False,
             "published_at": None,

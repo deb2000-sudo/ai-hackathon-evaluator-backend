@@ -17,6 +17,7 @@ from fastapi import Request
 from google.cloud import storage
 
 from app.services.evaluation_job_service import EvaluationJobService
+from app.services.evaluation_prompt_service import EvaluationPromptService
 from app.services.evaluation_requirement_service import EvaluationRequirementService
 from app.services.firebase import FirebaseService
 from app.services.hackathon_service import HackathonService
@@ -51,6 +52,7 @@ class AppContainer:
     user_service: UserService
     theme_service: ThemeService
     evaluation_requirement_service: EvaluationRequirementService
+    evaluation_prompt_service: EvaluationPromptService
     metric_scoring_service: MetricScoringService
     hackathon_service: HackathonService
     registration_service: RegistrationService
@@ -72,6 +74,7 @@ def build_app_container() -> AppContainer:
     user_service = UserService(firebase=firebase)
     theme_service = ThemeService(firebase=firebase)
     evaluation_requirement_service = EvaluationRequirementService(firebase=firebase)
+    evaluation_prompt_service = EvaluationPromptService(firebase=firebase)
     metric_scoring_service = MetricScoringService(
         firebase=firebase,
         requirements=evaluation_requirement_service,
@@ -92,6 +95,8 @@ def build_app_container() -> AppContainer:
         hackathon_service=hackathon_service,
         theme_service=theme_service,
         storage_client=storage_client,
+        evaluation_prompt_service=evaluation_prompt_service,
+        metric_scoring_service=metric_scoring_service,
     )
     evaluation_job_service = EvaluationJobService(
         submission_service=submission_service,
@@ -104,6 +109,7 @@ def build_app_container() -> AppContainer:
         user_service=user_service,
         theme_service=theme_service,
         evaluation_requirement_service=evaluation_requirement_service,
+        evaluation_prompt_service=evaluation_prompt_service,
         metric_scoring_service=metric_scoring_service,
         hackathon_service=hackathon_service,
         registration_service=registration_service,
@@ -148,6 +154,10 @@ def get_evaluation_requirement_service(
     request: Request,
 ) -> EvaluationRequirementService:
     return get_container(request).evaluation_requirement_service
+
+
+def get_evaluation_prompt_service(request: Request) -> EvaluationPromptService:
+    return get_container(request).evaluation_prompt_service
 
 
 def get_metric_scoring_service(request: Request) -> MetricScoringService:

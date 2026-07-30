@@ -1,4 +1,9 @@
-"""Gemini prompts for submission video analysis."""
+"""Gemini prompts for submission video analysis.
+
+Default templates. Admins can override these via the ``ai_evaluation_prompts``
+Firestore collection (see ``EvaluationPromptService``). Placeholders must stay
+in sync with ``REQUIRED_PLACEHOLDERS`` in ``evaluation_prompt_model``.
+"""
 
 CHECKLIST_PROMPT = """You are a product analyst. Based on the PROBLEM STATEMENT and SOLUTION
 DESCRIPTION below, produce a "Product & Feature Validation Checklist" that
@@ -75,3 +80,38 @@ Concrete, actionable suggestions to align the video with the context.
 """
 
 
+FIELD_SCORE_PROMPT = """You are a hackathon submission evaluator.
+
+Score the student's answer for the field "{field_label}" using the scoring
+instructions below. Be strict but fair. Return ONLY valid JSON with this shape:
+{{
+  "score": <number from 0 to {max_score}>,
+  "rationale": "<2-4 sentences explaining the score>"
+}}
+
+--- SCORING INSTRUCTIONS ---
+{scoring_prompt}
+--- END SCORING INSTRUCTIONS ---
+
+--- STUDENT ANSWER ---
+{student_answer}
+--- END STUDENT ANSWER ---
+"""
+
+
+DEFAULT_PROMPT_META = {
+    "checklist": {
+        "name": "Product & Feature Validation Checklist",
+        "description": (
+            "Builds a checklist from problem statement + solution description "
+            "before video analysis. Placeholders: {problem_statement}, {solution_description}."
+        ),
+    },
+    "analyze_video": {
+        "name": "Working Demo Video Analysis",
+        "description": (
+            "Compares the submitted demo video against the checklist/context. "
+            "Placeholder: {context}."
+        ),
+    },
+}

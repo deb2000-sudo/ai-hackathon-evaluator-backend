@@ -72,6 +72,8 @@ class HackathonService:
             "hackathon_url": request.hackathon_url,
             "timeline": [round_.model_dump() for round_ in request.timeline],
             "prizes": request.prizes.model_dump(),
+            "working_demo_video_required": bool(request.working_demo_video_required),
+            "auto_ai_evaluation": bool(request.auto_ai_evaluation),
             "banner_path": banner_path,
             "created_by": created_by,
             "created_at": now,
@@ -126,6 +128,12 @@ class HackathonService:
             update["timeline"] = [round_.model_dump() for round_ in request.timeline]
         if request.prizes is not None:
             update["prizes"] = request.prizes.model_dump()
+        if request.working_demo_video_required is not None:
+            update["working_demo_video_required"] = bool(
+                request.working_demo_video_required
+            )
+        if request.auto_ai_evaluation is not None:
+            update["auto_ai_evaluation"] = bool(request.auto_ai_evaluation)
         if banner is not None:
             update["banner_path"] = self._upload_banner(hackathon_id, banner)
 
@@ -154,6 +162,10 @@ class HackathonService:
         enriched = dict(hackathon)
         enriched.setdefault("theme_ids", [])
         enriched.setdefault("hackathon_url", None)
+        # Older docs omit this flag — treat as required so existing flows stay safe.
+        enriched.setdefault("working_demo_video_required", True)
+        # Older docs omit auto AI — default off so evaluators keep the manual button.
+        enriched.setdefault("auto_ai_evaluation", False)
 
         banner_path = enriched.get("banner_path")
         if banner_path:
@@ -194,6 +206,7 @@ class HackathonService:
             )
         else:
             enriched["banner_url"] = None
+        enriched.setdefault("auto_ai_evaluation", False)
         return enriched
 
     def get_hackathon_themes(self, hackathon_id: str) -> list[dict[str, Any]] | None:

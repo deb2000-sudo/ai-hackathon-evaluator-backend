@@ -92,6 +92,21 @@ class HackathonCreateRequest(BaseModel):
     )
     timeline: list[TimelineRound] = Field(default_factory=list)
     prizes: HackathonPrizes
+    working_demo_video_required: bool = Field(
+        True,
+        description=(
+            "When true, students must record or upload a working demo video "
+            "with their submission. When false, text fields alone are enough."
+        ),
+    )
+    auto_ai_evaluation: bool = Field(
+        False,
+        description=(
+            "When true, AI evaluation is queued automatically (Cloud Tasks / "
+            "background) when submissions are assigned to evaluators. When false, "
+            "evaluators start AI evaluation manually via the AI Evaluation button."
+        ),
+    )
 
     @field_validator("name", "description", "guidelines", mode="before")
     @classmethod
@@ -131,6 +146,17 @@ class HackathonUpdateRequest(BaseModel):
     hackathon_url: Optional[str] = Field(None, max_length=2000)
     timeline: Optional[list[TimelineRound]] = None
     prizes: Optional[HackathonPrizes] = None
+    working_demo_video_required: Optional[bool] = Field(
+        None,
+        description="Toggle whether students must submit a working demo video.",
+    )
+    auto_ai_evaluation: Optional[bool] = Field(
+        None,
+        description=(
+            "Toggle automatic AI evaluation on evaluator assignment. "
+            "When false, evaluators use the manual AI Evaluation button."
+        ),
+    )
 
     @field_validator("name", "description", "guidelines", mode="before")
     @classmethod
@@ -183,6 +209,21 @@ class HackathonResponse(BaseModel):
     )
     timeline: list[TimelineRound]
     prizes: HackathonPrizes
+    working_demo_video_required: bool = Field(
+        True,
+        description=(
+            "When true, the student submit wizard must collect a demo video. "
+            "Defaults to true for older hackathons that predate this flag."
+        ),
+    )
+    auto_ai_evaluation: bool = Field(
+        False,
+        description=(
+            "When true, AI evaluation runs automatically after admin assigns "
+            "evaluators. When false, evaluators click AI Evaluation per submission. "
+            "Defaults to false for older hackathons."
+        ),
+    )
     banner_path: Optional[str] = Field(
         None,
         description="Internal gs:// path of the banner image (not browser-playable).",

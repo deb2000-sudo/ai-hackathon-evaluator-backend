@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import uuid
 from datetime import datetime
 from typing import Any
@@ -11,7 +13,8 @@ from google import genai
 from google.genai import types
 
 from app.models.user_model import CurrentUser
-from app.services.submission.prompts import ANALYZE_VIDEO_PROMPT, CHECKLIST_PROMPT
+from app.services.submission.create import demo_video_required
+from app.services.submission.prompts import FIELD_SCORE_PROMPT
 
 
 logger = logging.getLogger(__name__)
@@ -50,6 +53,7 @@ class AnalysisMixin:
                 "evaluation_criteria": criteria,
                 "checklist": None,
                 "report": None,
+                "field_scores": None,
                 "analyzed_at": None,
                 "error": None,
                 "created_at": now,
@@ -92,7 +96,7 @@ class AnalysisMixin:
         submission_id: str,
         evaluation_criteria: str | None = None,
     ) -> None:
-        """Run Gemini video analysis for a submission (background task)."""
+        """Run Gemini analysis for a submission (background task)."""
         analysis_id: str | None = None
         try:
             submission = self.firebase.get_document(self.collection, submission_id)
@@ -106,12 +110,21 @@ class AnalysisMixin:
 
             problem = (submission.get("problem_statement") or "").strip()
             solution = (submission.get("solution_description") or "").strip()
-            video_uri = submission.get("video_path")
-            content_type = submission.get("content_type", "video/mp4")
+            video_uri = (submission.get("video_path") or "").strip() or None
+            content_type = submission.get("content_type") or "video/mp4"
 
             if not problem or not solution:
                 raise ValueError("Submission is missing problem statement or solution description")
-            if not video_uri:
+
+            hackathon = None
+            hackathon_id = (submission.get("hackathon_id") or "").strip()
+            if hackathon_id:
+                hackathon = self.hackathon_service.get_hackathon(hackathon_id)
+
+            video_required = (
+                demo_video_required(hackathon) if hackathon else bool(video_uri)
+            )
+            if video_required and not video_uri:
                 raise ValueError("Submission is missing video_path (GCS URI)")
 
             client = self._build_genai_client()
@@ -127,13 +140,40 @@ class AnalysisMixin:
                     + extra_criteria.strip()
                 )
 
-            logger.info("Analyzing video for submission %s: %s", submission_id, video_uri)
-            report = self._analyze_video(
-                client=client,
-                video_uri=video_uri,
-                content_type=content_type,
-                context=checklist,
-            )
+            field_scores = self._score_requirement_fields(client, submission, hackathon)
+            field_scores_section = self._format_field_scores_markdown(field_scores)
+
+            if video_uri:
+                logger.info("Analyzing video for submission %s: %s", submission_id, video_uri)
+                video_report = self._analyze_video(
+                    client=client,
+                    video_uri=video_uri,
+                    content_type=content_type,
+                    context=checklist,
+                )
+                report = video_report
+                if field_scores_section:
+                    report = f"{video_report.rstrip()}\n\n{field_scores_section}"
+            else:
+                logger.info(
+                    "No video on submission %s — scoring text fields only",
+                    submission_id,
+                )
+                report_parts = [
+                    "## Text-only evaluation",
+                    (
+                        "This hackathon does not require a working demo video "
+                        "(or none was uploaded). Field scores below are based on "
+                        "the problem statement, solution description, and other "
+                        "submitted answers."
+                    ),
+                    "",
+                    "## Generated checklist (from problem & solution)",
+                    checklist,
+                ]
+                if field_scores_section:
+                    report_parts.extend(["", field_scores_section])
+                report = "\n".join(report_parts)
 
             analyzed_at = datetime.utcnow().isoformat()
             self._commit_analysis_and_submission(
@@ -143,6 +183,7 @@ class AnalysisMixin:
                     "status": "completed",
                     "checklist": checklist,
                     "report": report,
+                    "field_scores": field_scores or None,
                     "analyzed_at": analyzed_at,
                     "error": None,
                 },
@@ -282,7 +323,8 @@ class AnalysisMixin:
         problem_statement: str,
         solution_description: str,
     ) -> str:
-        prompt = CHECKLIST_PROMPT.format(
+        template = self.evaluation_prompt_service.get_template("checklist")
+        prompt = template.format(
             problem_statement=problem_statement.strip(),
             solution_description=solution_description.strip(),
         )
@@ -303,7 +345,8 @@ class AnalysisMixin:
         context: str,
     ) -> str:
         video_part = types.Part.from_uri(file_uri=video_uri, mime_type=content_type)
-        prompt = ANALYZE_VIDEO_PROMPT.format(context=context)
+        template = self.evaluation_prompt_service.get_template("analyze_video")
+        prompt = template.format(context=context)
 
         response = client.models.generate_content(
             model=self.model,
@@ -313,6 +356,178 @@ class AnalysisMixin:
         if not report:
             raise ValueError("The analyzer returned an empty report")
         return report
+
+    def _score_requirement_fields(
+        self,
+        client: genai.Client,
+        submission: dict[str, Any],
+        hackathon: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        """Score submission answers using metric scoring prompts for the round."""
+        requirement_id = self._resolve_evaluation_requirement_id(hackathon)
+        if not requirement_id:
+            return []
+
+        scoring = self.metric_scoring_service.get_scoring_for_requirement(requirement_id)
+        if not scoring:
+            logger.info(
+                "No metric scoring config for requirement %s — skipping field scores",
+                requirement_id,
+            )
+            return []
+
+        metrics = scoring.get("metrics") or []
+        if not metrics:
+            return []
+
+        results: list[dict[str, Any]] = []
+        for metric in metrics:
+            field_key = metric.get("field_key") or ""
+            answer = self._resolve_field_answer(submission, field_key)
+            if not answer:
+                results.append(
+                    {
+                        "field_key": field_key,
+                        "field_label": metric.get("field_label") or field_key,
+                        "score": 0,
+                        "max_score": float(metric.get("max_score") or 10),
+                        "weight": metric.get("weight"),
+                        "rationale": "No student answer provided for this field.",
+                        "skipped": True,
+                    }
+                )
+                continue
+
+            scored = self._score_single_field(client, metric, answer)
+            results.append(scored)
+        return results
+
+    def _score_single_field(
+        self,
+        client: genai.Client,
+        metric: dict[str, Any],
+        student_answer: str,
+    ) -> dict[str, Any]:
+        field_key = metric.get("field_key") or ""
+        field_label = metric.get("field_label") or field_key
+        max_score = float(metric.get("max_score") or 10)
+        scoring_prompt = (metric.get("scoring_prompt") or "").strip()
+        if not scoring_prompt:
+            return {
+                "field_key": field_key,
+                "field_label": field_label,
+                "score": 0,
+                "max_score": max_score,
+                "weight": metric.get("weight"),
+                "rationale": "Scoring prompt is empty for this field.",
+                "skipped": True,
+            }
+
+        prompt = FIELD_SCORE_PROMPT.format(
+            field_label=field_label,
+            max_score=max_score,
+            scoring_prompt=scoring_prompt,
+            student_answer=student_answer.strip(),
+        )
+        response = client.models.generate_content(
+            model=self.model,
+            contents=[prompt],
+            config=types.GenerateContentConfig(response_mime_type="application/json"),
+        )
+        raw = (response.text or "").strip()
+        parsed = self._parse_field_score_json(raw, max_score)
+        return {
+            "field_key": field_key,
+            "field_label": field_label,
+            "score": parsed["score"],
+            "max_score": max_score,
+            "weight": metric.get("weight"),
+            "rationale": parsed["rationale"],
+            "skipped": False,
+        }
+
+    @staticmethod
+    def _parse_field_score_json(raw: str, max_score: float) -> dict[str, Any]:
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            if not match:
+                return {"score": 0.0, "rationale": "Model returned unparseable score JSON."}
+            try:
+                data = json.loads(match.group(0))
+            except json.JSONDecodeError:
+                return {"score": 0.0, "rationale": "Model returned unparseable score JSON."}
+
+        try:
+            score = float(data.get("score", 0))
+        except (TypeError, ValueError):
+            score = 0.0
+        score = max(0.0, min(score, max_score))
+        rationale = str(data.get("rationale") or "").strip() or "No rationale provided."
+        return {"score": score, "rationale": rationale}
+
+    @staticmethod
+    def _format_field_scores_markdown(field_scores: list[dict[str, Any]]) -> str:
+        if not field_scores:
+            return ""
+        lines = ["## Requirement field scores", ""]
+        for item in field_scores:
+            label = item.get("field_label") or item.get("field_key")
+            score = item.get("score", 0)
+            max_score = item.get("max_score", 10)
+            rationale = item.get("rationale") or ""
+            lines.append(f"### {label}")
+            lines.append(f"- **Score:** {score} / {max_score}")
+            lines.append(f"- **Rationale:** {rationale}")
+            lines.append("")
+        return "\n".join(lines).rstrip()
+
+    @staticmethod
+    def _resolve_evaluation_requirement_id(hackathon: dict[str, Any] | None) -> str | None:
+        if not hackathon:
+            return None
+        for round_ in hackathon.get("timeline") or []:
+            if isinstance(round_, dict):
+                req_id = (round_.get("evaluation_requirement_id") or "").strip()
+            else:
+                req_id = (getattr(round_, "evaluation_requirement_id", None) or "").strip()
+            if req_id:
+                return req_id
+        return None
+
+    @staticmethod
+    def _resolve_field_answer(submission: dict[str, Any], field_key: str) -> str:
+        """Map requirement field keys onto submission answers."""
+        key = (field_key or "").strip().lower()
+        answers = submission.get("field_answers") or {}
+        if isinstance(answers, dict):
+            for candidate in (field_key, key):
+                value = answers.get(candidate)
+                if value and str(value).strip():
+                    return str(value).strip()
+
+        aliases = {
+            "problem_statement": ["problem_statement", "problem"],
+            "solution_description": ["solution_description", "solution"],
+            "mvp_link": ["mvp_link", "mvp", "mvp_url"],
+            "github_link": ["github_link", "project_github_link", "github", "repo_link"],
+            "project_github_link": ["project_github_link", "github_link", "github"],
+        }
+        for canonical, keys in aliases.items():
+            if key in keys or key == canonical:
+                for attr in keys + [canonical]:
+                    top = submission.get(attr)
+                    if top and str(top).strip():
+                        return str(top).strip()
+                    nested = answers.get(attr) if isinstance(answers, dict) else None
+                    if nested and str(nested).strip():
+                        return str(nested).strip()
+
+        top_level = submission.get(field_key) or submission.get(key)
+        if top_level and str(top_level).strip():
+            return str(top_level).strip()
+        return ""
 
     def _commit_analysis_and_submission(
         self,
@@ -344,4 +559,3 @@ class AnalysisMixin:
             }
         )
         self.firebase.batch_write(operations)
-

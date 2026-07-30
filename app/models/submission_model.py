@@ -25,7 +25,13 @@ class HackathonSubmissionSummary(BaseModel):
     end_date: str
     submission_count: int
     banner_url: Optional[str] = None
-
+    auto_ai_evaluation: bool = Field(
+        False,
+        description=(
+            "When true, AI runs automatically after assignment; when false, "
+            "evaluators see the AI Evaluation button."
+        ),
+    )
 
 class AcceptedVideoTypesResponse(BaseModel):
     """Constraints for Record demo vs Upload from disk pickers."""
@@ -60,6 +66,18 @@ class SubmissionResponse(BaseModel):
     theme_name: str
     problem_statement: str
     solution_description: str
+    mvp_link: Optional[str] = Field(
+        None,
+        description="Optional MVP / live demo URL submitted by the student.",
+    )
+    github_link: Optional[str] = Field(
+        None,
+        description="Optional project GitHub repository URL.",
+    )
+    field_answers: Optional[dict[str, str]] = Field(
+        None,
+        description="Map of evaluation-requirement field keys to student answers.",
+    )
     evaluation_criteria: Optional[str] = Field(
         None,
         description="Optional extra focus supplied when starting AI analysis.",
@@ -112,13 +130,16 @@ class SubmissionResponse(BaseModel):
         None,
         description="Optional admin notes when approving or requesting changes.",
     )
-    video_path: str
+    video_path: Optional[str] = Field(
+        None,
+        description="gs:// URI of the demo video; null when the hackathon does not require one.",
+    )
     video_url: Optional[str] = Field(
         None,
         description="Time-limited HTTPS URL for browser playback (not gs://).",
     )
-    content_type: str
-    source_filename: str
+    content_type: Optional[str] = None
+    source_filename: Optional[str] = None
     video_source: Optional[VideoSource] = Field(
         None,
         description=(
@@ -131,6 +152,21 @@ class SubmissionResponse(BaseModel):
         description=(
             "Joined analysis summary when completed. For students, only present "
             "after an admin approves/publishes the report."
+        ),
+    )
+    auto_ai_evaluation: bool = Field(
+        False,
+        description=(
+            "Copied from the parent hackathon. When true, AI evaluation is "
+            "queued on assign; when false, use the manual button."
+        ),
+    )
+    show_ai_evaluation_button: bool = Field(
+        False,
+        description=(
+            "True when the current user may start AI evaluation and the "
+            "hackathon is in manual mode (auto_ai_evaluation=false) and the "
+            "submission is not already processing."
         ),
     )
     error: Optional[str] = None
@@ -254,6 +290,13 @@ class DivideEquallyResponse(BaseModel):
 
     assigned_count: int
     evaluator_count: int
+    auto_ai_evaluation_queued: int = Field(
+        0,
+        description=(
+            "How many AI evaluation jobs were auto-queued because the hackathon "
+            "has auto_ai_evaluation enabled."
+        ),
+    )
     submissions: list[SubmissionResponse]
 
 
@@ -305,24 +348,30 @@ class PrepareUploadResponse(BaseModel):
 
 
 class CreateSubmissionFromUploadRequest(BaseModel):
-    """Finalize a submission after the video was uploaded via signed URL."""
+    """Finalize a submission after an optional signed-URL video upload."""
 
-    video_path: str = Field(..., min_length=1, description="gs:// URI from prepare-upload.")
-    content_type: str = Field(..., min_length=1)
-    source_filename: str = Field(..., min_length=1, max_length=500)
+    video_path: Optional[str] = Field(
+        None,
+        description="gs:// URI from prepare-upload. Required when the hackathon needs a demo video.",
+    )
+    content_type: Optional[str] = Field(None, description="MIME type used for the signed PUT.")
+    source_filename: Optional[str] = Field(None, max_length=500)
     hackathon_id: str = Field(..., min_length=1)
     theme_id: str = Field(..., min_length=1)
     problem_statement: str = Field(..., min_length=1, max_length=5000)
     solution_description: str = Field(..., min_length=1, max_length=5000)
+    mvp_link: Optional[str] = Field(None, max_length=2000)
+    github_link: Optional[str] = Field(None, max_length=2000)
+    field_answers: Optional[dict[str, str]] = Field(
+        None,
+        description="Extra answers keyed by evaluation-requirement field keys.",
+    )
     video_source: Optional[VideoSource] = Field(
         None,
         description="'recorded' or 'uploaded' — same GCS path either way.",
     )
 
     @field_validator(
-        "video_path",
-        "content_type",
-        "source_filename",
         "hackathon_id",
         "theme_id",
         "problem_statement",
@@ -332,4 +381,16 @@ class CreateSubmissionFromUploadRequest(BaseModel):
     @classmethod
     def normalize_required_text(cls, value: str) -> str:
         return strip_required(value)
+
+    @field_validator(
+        "video_path",
+        "content_type",
+        "source_filename",
+        "mvp_link",
+        "github_link",
+        mode="before",
+    )
+    @classmethod
+    def normalize_optional_text(cls, value: Optional[str]) -> Optional[str]:
+        return strip_optional(value)
 

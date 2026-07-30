@@ -90,6 +90,19 @@ class MetricScoringService:
             return None
         return {"id": scoring_id, **document}
 
+    def get_scoring_for_requirement(
+        self, evaluation_requirement_id: str
+    ) -> dict[str, Any] | None:
+        """Return the metric-scoring config linked to a requirement, if any."""
+        match = self._find_by_requirement(evaluation_requirement_id)
+        if not match:
+            return None
+        scoring_id = match.get("id")
+        if scoring_id:
+            return match
+        # query_collection may already include id; ensure present.
+        return match
+
     def update_scoring(
         self,
         scoring_id: str,

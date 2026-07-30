@@ -122,6 +122,9 @@ class QueryMixin:
                     "end_date": enriched["end_date"],
                     "submission_count": count,
                     "banner_url": enriched.get("banner_url"),
+                    "auto_ai_evaluation": bool(
+                        enriched.get("auto_ai_evaluation", False)
+                    ),
                 }
             )
         return summaries
@@ -159,6 +162,7 @@ class QueryMixin:
         current_user: CurrentUser | None = None,
         *,
         analysis_by_id: dict[str, dict[str, Any]] | None = None,
+        hackathon_by_id: dict[str, dict[str, Any]] | None = None,
         storage_client: Any | None = None,
         check_video_exists: bool = False,
     ) -> dict[str, Any]:
@@ -179,16 +183,26 @@ class QueryMixin:
         enriched.setdefault("reviewed_by", None)
         enriched.setdefault("review_notes", None)
         enriched.setdefault("video_source", None)
+        enriched.setdefault("mvp_link", None)
+        enriched.setdefault("github_link", None)
+        enriched.setdefault("field_answers", None)
 
         # Backfill hackathon fields for older submissions that predate the link.
         if not enriched.get("hackathon_id"):
             enriched["hackathon_id"] = ""
+        hackathon: dict[str, Any] | None = None
+        if enriched["hackathon_id"]:
+            if hackathon_by_id is not None:
+                hackathon = hackathon_by_id.get(enriched["hackathon_id"])
+            else:
+                hackathon = self.hackathon_service.get_hackathon(enriched["hackathon_id"])
         if not enriched.get("hackathon_name"):
             enriched["hackathon_name"] = "Unknown hackathon"
-            if enriched["hackathon_id"]:
-                hackathon = self.hackathon_service.get_hackathon(enriched["hackathon_id"])
-                if hackathon:
-                    enriched["hackathon_name"] = hackathon.get("name", "Unknown hackathon")
+            if hackathon:
+                enriched["hackathon_name"] = hackathon.get("name", "Unknown hackathon")
+
+        auto_ai = bool((hackathon or {}).get("auto_ai_evaluation", False))
+        enriched["auto_ai_evaluation"] = auto_ai
 
         # Migrate legacy theme_chosen → theme_name for older submissions.
         if not enriched.get("theme_id"):
@@ -236,6 +250,7 @@ class QueryMixin:
                     "id": analysis_id,
                     "checklist": analysis_doc["checklist"],
                     "report": analysis_doc["report"],
+                    "field_scores": analysis_doc.get("field_scores"),
                     "analyzed_at": analysis_doc["analyzed_at"],
                 }
         elif can_see_analysis and enriched.get("analysis") and isinstance(
@@ -255,6 +270,17 @@ class QueryMixin:
             enriched["final_score"] = None
             enriched["evaluator_notes"] = None
             enriched["review_notes"] = None
+
+        can_start = False
+        if current_user and current_user.role in ("admin", "evaluator"):
+            try:
+                self.assert_can_evaluate(enriched, current_user)
+                can_start = True
+            except ValueError:
+                can_start = False
+        enriched["show_ai_evaluation_button"] = (
+            can_start and not auto_ai and enriched.get("status") != "processing"
+        )
 
         return enriched
 
@@ -289,11 +315,23 @@ class QueryMixin:
         )
         storage_client = self._storage_client()
 
+        hackathon_ids = {
+            sid
+            for sid in (s.get("hackathon_id") for s in submissions)
+            if sid
+        }
+        hackathon_by_id: dict[str, dict[str, Any]] = {}
+        for hid in hackathon_ids:
+            hackathon = self.hackathon_service.get_hackathon(hid)
+            if hackathon:
+                hackathon_by_id[hid] = hackathon
+
         return [
             self.enrich_submission_for_response(
                 submission,
                 current_user=current_user,
                 analysis_by_id=analysis_by_id,
+                hackathon_by_id=hackathon_by_id,
                 storage_client=storage_client,
                 check_video_exists=False,
             )
