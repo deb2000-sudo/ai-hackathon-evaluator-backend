@@ -13,8 +13,9 @@ from google import genai
 from google.genai import types
 
 from app.models.user_model import CurrentUser
+from app.services.scorecard import apply_ai_field_scores, build_scorecard_skeleton
 from app.services.submission.create import demo_video_required
-from app.services.submission.prompts import FIELD_SCORE_PROMPT
+from app.services.submission.prompts import FIELD_SCORE_PROMPT, VIDEO_SCORE_PROMPT
 
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,7 @@ class AnalysisMixin:
                 "checklist": None,
                 "report": None,
                 "field_scores": None,
+                "scorecard": None,
                 "analyzed_at": None,
                 "error": None,
                 "created_at": now,
@@ -73,6 +75,8 @@ class AnalysisMixin:
                 "published_by": None,
                 "review_status": "none",
                 "final_score": None,
+                "scorecard": None,
+                "manual_scores": None,
                 "evaluator_notes": None,
                 "submitted_for_review_at": None,
                 "submitted_for_review_by": None,
@@ -140,9 +144,12 @@ class AnalysisMixin:
                     + extra_criteria.strip()
                 )
 
-            field_scores = self._score_requirement_fields(client, submission, hackathon)
-            field_scores_section = self._format_field_scores_markdown(field_scores)
+            _scoring_config, metric_defs = self._load_scoring_config(hackathon)
+            field_scores = self._score_ai_metrics(
+                client, submission, metric_defs, problem=problem, solution=solution
+            )
 
+            video_report = ""
             if video_uri:
                 logger.info("Analyzing video for submission %s: %s", submission_id, video_uri)
                 video_report = self._analyze_video(
@@ -151,14 +158,45 @@ class AnalysisMixin:
                     content_type=content_type,
                     context=checklist,
                 )
-                report = video_report
-                if field_scores_section:
-                    report = f"{video_report.rstrip()}\n\n{field_scores_section}"
+                video_metric = self._find_video_metric(metric_defs)
+                if video_metric:
+                    video_score = self._score_video_metric(
+                        client, video_metric, video_report
+                    )
+                    field_scores.append(video_score)
             else:
                 logger.info(
                     "No video on submission %s — scoring text fields only",
                     submission_id,
                 )
+                video_metric = self._find_video_metric(metric_defs)
+                if video_metric:
+                    field_scores.append(
+                        {
+                            "field_key": video_metric["field_key"],
+                            "field_label": video_metric.get("field_label")
+                            or "Video Explanation",
+                            "score": 0,
+                            "max_score": float(video_metric.get("max_score") or 20),
+                            "weight": video_metric.get("weight"),
+                            "rationale": "No demo video was submitted.",
+                            "skipped": True,
+                        }
+                    )
+
+            field_scores_section = self._format_field_scores_markdown(field_scores)
+            scorecard = None
+            if metric_defs:
+                scorecard = apply_ai_field_scores(
+                    build_scorecard_skeleton(metric_defs),
+                    field_scores,
+                )
+
+            if video_report:
+                report = video_report
+                if field_scores_section:
+                    report = f"{video_report.rstrip()}\n\n{field_scores_section}"
+            else:
                 report_parts = [
                     "## Text-only evaluation",
                     (
@@ -184,12 +222,14 @@ class AnalysisMixin:
                     "checklist": checklist,
                     "report": report,
                     "field_scores": field_scores or None,
+                    "scorecard": scorecard,
                     "analyzed_at": analyzed_at,
                     "error": None,
                 },
                 submission_data={
                     "status": "completed",
                     "error": None,
+                    "scorecard": scorecard,
                 },
             )
             logger.info("Analysis %s completed for submission %s", analysis_id, submission_id)
@@ -357,33 +397,60 @@ class AnalysisMixin:
             raise ValueError("The analyzer returned an empty report")
         return report
 
-    def _score_requirement_fields(
-        self,
-        client: genai.Client,
-        submission: dict[str, Any],
-        hackathon: dict[str, Any] | None,
-    ) -> list[dict[str, Any]]:
-        """Score submission answers using metric scoring prompts for the round."""
+    def _load_scoring_config(
+        self, hackathon: dict[str, Any] | None
+    ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
         requirement_id = self._resolve_evaluation_requirement_id(hackathon)
         if not requirement_id:
-            return []
-
+            return None, []
         scoring = self.metric_scoring_service.get_scoring_for_requirement(requirement_id)
         if not scoring:
             logger.info(
                 "No metric scoring config for requirement %s — skipping field scores",
                 requirement_id,
             )
-            return []
+            return None, []
+        return scoring, list(scoring.get("metrics") or [])
 
-        metrics = scoring.get("metrics") or []
-        if not metrics:
-            return []
+    @staticmethod
+    def _find_video_metric(metrics: list[dict[str, Any]]) -> dict[str, Any] | None:
+        for metric in metrics:
+            if metric.get("scoring_mode", "ai") != "ai":
+                continue
+            key = (metric.get("field_key") or "").lower()
+            if key in ("video_explanation", "video"):
+                return metric
+        return None
 
+    def _score_ai_metrics(
+        self,
+        client: genai.Client,
+        submission: dict[str, Any],
+        metrics: list[dict[str, Any]],
+        *,
+        problem: str,
+        solution: str,
+    ) -> list[dict[str, Any]]:
+        """Score AI text metrics (skips manual + video — video scored separately)."""
         results: list[dict[str, Any]] = []
         for metric in metrics:
+            if (metric.get("scoring_mode") or "ai") != "ai":
+                continue
             field_key = metric.get("field_key") or ""
+            if field_key.lower() in ("video_explanation", "video"):
+                continue
+
             answer = self._resolve_field_answer(submission, field_key)
+            # Solution rubrics need problem context.
+            if field_key.lower() in (
+                "solution_description",
+                "solution",
+            ):
+                answer = (
+                    f"--- PROBLEM STATEMENT ---\n{problem}\n"
+                    f"--- SOLUTION DESCRIPTION ---\n{solution}"
+                )
+
             if not answer:
                 results.append(
                     {
@@ -401,6 +468,42 @@ class AnalysisMixin:
             scored = self._score_single_field(client, metric, answer)
             results.append(scored)
         return results
+
+    def _score_video_metric(
+        self,
+        client: genai.Client,
+        metric: dict[str, Any],
+        video_report: str,
+    ) -> dict[str, Any]:
+        field_key = metric.get("field_key") or "video_explanation"
+        field_label = metric.get("field_label") or "Video Explanation"
+        max_score = float(metric.get("max_score") or 20)
+        scoring_prompt = (metric.get("scoring_prompt") or "").strip() or (
+            "Score how well the demo video explains and demonstrates the product "
+            "against the checklist context covered in the report. Consider clarity, "
+            "feature coverage, narration, and overall demo quality."
+        )
+        prompt = VIDEO_SCORE_PROMPT.format(
+            max_score=max_score,
+            scoring_prompt=scoring_prompt,
+            video_report=video_report.strip()[:120000],
+        )
+        response = client.models.generate_content(
+            model=self.model,
+            contents=[prompt],
+            config=types.GenerateContentConfig(response_mime_type="application/json"),
+        )
+        raw = (response.text or "").strip()
+        parsed = self._parse_field_score_json(raw, max_score)
+        return {
+            "field_key": field_key,
+            "field_label": field_label,
+            "score": parsed["score"],
+            "max_score": max_score,
+            "weight": metric.get("weight"),
+            "rationale": parsed["rationale"],
+            "skipped": False,
+        }
 
     def _score_single_field(
         self,

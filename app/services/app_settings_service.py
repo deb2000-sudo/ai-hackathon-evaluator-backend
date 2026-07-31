@@ -1,0 +1,204 @@
+"""
+Application settings — admin Profile Password and Firestore DB reset.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import logging
+import os
+import secrets
+from datetime import datetime
+from typing import Any
+
+from app.models.settings_model import RESET_CONFIRM_PHRASE
+from app.services.firebase import FirebaseService
+
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_PROFILE_PASSWORD = "12345678"
+
+# Application data wiped on reset. Admin users + app_settings are preserved.
+WIPEABLE_COLLECTIONS: tuple[str, ...] = (
+    "hackathons",
+    "themes",
+    "evaluation_requirements",
+    "ai_evaluation_metric_scoring",
+    "ai_evaluation_prompts",
+    "submissions",
+    "analysis",
+)
+
+SETTINGS_COLLECTION = "app_settings"
+SETTINGS_DOC_ID = "security"
+
+
+class AppSettingsService:
+    """Manages the Profile Password and destructive admin settings actions."""
+
+    def __init__(self, firebase: FirebaseService | None = None):
+        self.firebase = firebase or FirebaseService()
+
+    def get_settings_public(self) -> dict[str, Any]:
+        """Flags for the Application Settings UI (never returns the password)."""
+        doc = self._get_security_doc()
+        is_default = bool(doc.get("is_default_profile_password"))
+        return {
+            "profile_password_configured": bool(doc.get("profile_password_hash")),
+            "default_profile_password_hint": (
+                DEFAULT_PROFILE_PASSWORD if is_default else None
+            ),
+            "wipeable_collections": list(WIPEABLE_COLLECTIONS) + ["users (non-admin)"],
+            "reset_confirm_phrase": RESET_CONFIRM_PHRASE,
+        }
+
+    def ensure_default_profile_password(self) -> None:
+        """Idempotently seed Profile Password to ``12345678`` when missing."""
+        existing = self.firebase.get_document(SETTINGS_COLLECTION, SETTINGS_DOC_ID)
+        if existing and existing.get("profile_password_hash"):
+            return
+        now = datetime.utcnow().isoformat()
+        salt, password_hash = self._hash_password(DEFAULT_PROFILE_PASSWORD)
+        self.firebase.set_document(
+            SETTINGS_COLLECTION,
+            SETTINGS_DOC_ID,
+            {
+                "profile_password_salt": salt,
+                "profile_password_hash": password_hash,
+                "is_default_profile_password": True,
+                "created_at": (existing or {}).get("created_at") or now,
+                "updated_at": now,
+            },
+        )
+        logger.info("Seeded default admin Profile Password")
+
+    def change_profile_password(
+        self,
+        current_password: str,
+        new_password: str,
+        changed_by: str,
+    ) -> None:
+        """Verify current Profile Password, then store a new hash."""
+        if not self.verify_profile_password(current_password):
+            raise ValueError("Current profile password is incorrect")
+        now = datetime.utcnow().isoformat()
+        salt, password_hash = self._hash_password(new_password)
+        existing = self._get_security_doc()
+        self.firebase.set_document(
+            SETTINGS_COLLECTION,
+            SETTINGS_DOC_ID,
+            {
+                "profile_password_salt": salt,
+                "profile_password_hash": password_hash,
+                "is_default_profile_password": False,
+                "created_at": existing.get("created_at") or now,
+                "updated_at": now,
+                "updated_by": changed_by,
+            },
+        )
+
+    def verify_profile_password(self, password: str) -> bool:
+        doc = self._get_security_doc()
+        salt = doc.get("profile_password_salt")
+        expected = doc.get("profile_password_hash")
+        if not salt or not expected:
+            # Auto-heal if seeder never ran.
+            self.ensure_default_profile_password()
+            doc = self._get_security_doc()
+            salt = doc.get("profile_password_salt")
+            expected = doc.get("profile_password_hash")
+        if not salt or not expected:
+            return False
+        candidate = self._hash_with_salt(password, salt)
+        return hmac.compare_digest(candidate, expected)
+
+    def reset_database(
+        self,
+        profile_password: str,
+        *,
+        preserve_user_id: str,
+        confirm_phrase: str,
+    ) -> dict[str, Any]:
+        """
+        Wipe application Firestore collections after Profile Password check.
+
+        Preserves:
+        - ``app_settings/security`` (Profile Password)
+        - All Firestore ``users`` with ``role == admin`` (including the caller)
+        """
+        if confirm_phrase != RESET_CONFIRM_PHRASE:
+            raise ValueError(f'confirm_phrase must be exactly "{RESET_CONFIRM_PHRASE}"')
+        if not self.verify_profile_password(profile_password):
+            raise ValueError("Profile password is incorrect")
+
+        deleted_counts: dict[str, int] = {}
+
+        for collection in WIPEABLE_COLLECTIONS:
+            docs = self.firebase.get_collection(collection)
+            ids = [d["id"] for d in docs if d.get("id")]
+            deleted_counts[collection] = self.firebase.delete_documents(collection, ids)
+
+        # Remove non-admin user profiles (keep admin accounts so login still works).
+        users = self.firebase.get_collection("users")
+        non_admin_ids = [
+            u["id"]
+            for u in users
+            if u.get("id") and u.get("role") != "admin"
+        ]
+        # Never delete the calling admin even if role were mis-set.
+        non_admin_ids = [uid for uid in non_admin_ids if uid != preserve_user_id]
+        deleted_counts["users_non_admin"] = self.firebase.delete_documents(
+            "users", non_admin_ids
+        )
+
+        # Re-seed default Gemini prompts so evaluation still has templates.
+        try:
+            from app.services.evaluation_prompt_service import EvaluationPromptService
+
+            EvaluationPromptService(firebase=self.firebase).ensure_defaults(
+                seeded_by="db-reset"
+            )
+        except Exception as e:
+            logger.warning("Could not re-seed evaluation prompts after reset: %s", e)
+
+        # Ensure profile password doc still present.
+        self.ensure_default_profile_password()
+
+        logger.warning(
+            "Admin %s reset Firestore application data. Counts=%s",
+            preserve_user_id,
+            deleted_counts,
+        )
+        return {
+            "message": (
+                "Database reset completed. Application collections were cleared. "
+                "Admin accounts and the Profile Password were preserved."
+            ),
+            "deleted_counts": deleted_counts,
+            "preserved": [
+                "app_settings/security",
+                "users (role=admin)",
+                f"users/{preserve_user_id}",
+            ],
+        }
+
+    def _get_security_doc(self) -> dict[str, Any]:
+        return self.firebase.get_document(SETTINGS_COLLECTION, SETTINGS_DOC_ID) or {}
+
+    @staticmethod
+    def _hash_password(password: str) -> tuple[str, str]:
+        salt = secrets.token_hex(16)
+        return salt, AppSettingsService._hash_with_salt(password, salt)
+
+    @staticmethod
+    def _hash_with_salt(password: str, salt: str) -> str:
+        iterations = int(os.getenv("PROFILE_PASSWORD_PBKDF2_ITERATIONS", "120000"))
+        digest = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt.encode("utf-8"),
+            iterations,
+        )
+        return digest.hex()

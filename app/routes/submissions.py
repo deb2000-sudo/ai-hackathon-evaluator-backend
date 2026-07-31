@@ -621,6 +621,7 @@ async def get_submission_report(
         checklist=analysis["checklist"],
         report=analysis["report"],
         field_scores=analysis.get("field_scores"),
+        scorecard=analysis.get("scorecard"),
         analyzed_at=analysis["analyzed_at"],
     )
 
@@ -761,12 +762,18 @@ async def submit_evaluation_for_review(
     Requires AI analysis ``status=completed``. Sets ``review_status=pending_review``.
     """
     try:
+        manual = (
+            [m.model_dump() for m in request.manual_metrics]
+            if request.manual_metrics
+            else None
+        )
         submission = await run_sync(
             service.submit_for_review,
             submission_id=submission_id,
             evaluator_user_id=evaluator.user_id,
             final_score=request.final_score,
             evaluator_notes=request.evaluator_notes,
+            manual_metrics=manual,
         )
     except ValueError as e:
         raise _http_from_value_error(e) from e

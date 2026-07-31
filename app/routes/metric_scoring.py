@@ -32,10 +32,12 @@ async def create_metric_scoring(
     service: MetricScoringService = Depends(get_metric_scoring_service),
 ) -> MetricScoringResponse:
     """
-    Create a metric-scoring config for an evaluation requirement. Admin only.
+    Create a metric-scoring / scorecard config for an evaluation requirement.
 
-    Each metric's ``field_key`` must match a field of the linked evaluation
-    requirement; ``scoring_prompt`` is the natural-language scoring instruction.
+    Admin only. Each metric may be ``scoring_mode=ai`` (needs ``scoring_prompt``)
+    or ``manual`` (evaluator segments). ``field_key`` must match a requirement
+    field **or** a synthetic key such as ``video_explanation``. Weights should
+    sum to 100.
     """
     try:
         scoring = await run_sync(

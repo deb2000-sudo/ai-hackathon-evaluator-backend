@@ -3,11 +3,12 @@ Student hackathon submission schemas.
 """
 
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models.analysis_model import AnalysisSummary
+from app.models.scorecard_model import ScorecardResult
 from app.models.string_utils import strip_optional, strip_required
 
 
@@ -169,6 +170,13 @@ class SubmissionResponse(BaseModel):
             "submission is not already processing."
         ),
     )
+    scorecard: Optional[ScorecardResult] = Field(
+        None,
+        description=(
+            "Weighted AI + manual scorecard. AI segments fill after evaluate; "
+            "manual segments fill when the evaluator submits for review."
+        ),
+    )
     error: Optional[str] = None
     message: Optional[str] = Field(
         None,
@@ -193,14 +201,59 @@ class EvaluateSubmissionRequest(BaseModel):
         return strip_optional(value)
 
 
+class ManualSegmentInput(BaseModel):
+    """One nested segment value for a manual metric."""
+
+    key: str = Field(..., min_length=1, max_length=100)
+    value: Optional[Any] = Field(
+        None,
+        description="For boolean/enum segments (true/false, 'public'/'private').",
+    )
+    score: Optional[float] = Field(
+        None,
+        ge=0,
+        le=100,
+        description="For kind=score segments (e.g. GitHub structure marks).",
+    )
+
+
+class ManualMetricInput(BaseModel):
+    """Evaluator-entered scores for one manual scorecard metric."""
+
+    field_key: str = Field(..., min_length=1, max_length=100)
+    score: Optional[float] = Field(
+        None,
+        ge=0,
+        le=100,
+        description="Optional explicit metric total; otherwise derived from segments.",
+    )
+    rationale: Optional[str] = Field(None, max_length=5000)
+    segments: Optional[list[ManualSegmentInput]] = None
+
+    @field_validator("field_key", mode="before")
+    @classmethod
+    def normalize_key(cls, value: str) -> str:
+        return strip_required(value)
+
+
 class SubmitForReviewRequest(BaseModel):
     """Evaluator submits a completed evaluation to admin for approval."""
 
-    final_score: float = Field(
-        ...,
+    final_score: Optional[float] = Field(
+        None,
         ge=0,
         le=100,
-        description="Proposed final score (0-100) for admin approval.",
+        description=(
+            "Optional override. When omitted, the server computes the weighted "
+            "scorecard total from AI + manual_metrics."
+        ),
+    )
+    manual_metrics: Optional[list[ManualMetricInput]] = Field(
+        None,
+        description=(
+            "Manual scorecard entries (GitHub, MVP checklist, …). Required when "
+            "the scorecard has unscored manual metrics."
+        ),
     )
     evaluator_notes: Optional[str] = Field(
         None,
@@ -212,6 +265,14 @@ class SubmitForReviewRequest(BaseModel):
     @classmethod
     def normalize_notes(cls, value: Optional[str]) -> Optional[str]:
         return strip_optional(value)
+
+    @model_validator(mode="after")
+    def require_score_or_manual(self) -> "SubmitForReviewRequest":
+        if self.final_score is None and not self.manual_metrics:
+            raise ValueError(
+                "Provide manual_metrics (preferred) and/or final_score"
+            )
+        return self
 
 
 class ApproveEvaluationRequest(BaseModel):

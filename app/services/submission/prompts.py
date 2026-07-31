@@ -83,10 +83,18 @@ Concrete, actionable suggestions to align the video with the context.
 FIELD_SCORE_PROMPT = """You are a hackathon submission evaluator.
 
 Score the student's answer for the field "{field_label}" using the scoring
-instructions below. Be strict but fair. Return ONLY valid JSON with this shape:
+instructions below. Be strict but fair.
+
+If the instructions define multiple sub-metrics, score each sub-metric first,
+then sum them into the final score (clamped to {max_score}).
+
+Return ONLY valid JSON with this shape:
 {{
   "score": <number from 0 to {max_score}>,
-  "rationale": "<2-4 sentences explaining the score>"
+  "sub_scores": [
+    {{"name": "<sub-metric name>", "score": <number>, "max": <number>, "note": "<brief>"}}
+  ],
+  "rationale": "<2-5 sentences explaining how you arrived at the final score>"
 }}
 
 --- SCORING INSTRUCTIONS ---
@@ -96,6 +104,27 @@ instructions below. Be strict but fair. Return ONLY valid JSON with this shape:
 --- STUDENT ANSWER ---
 {student_answer}
 --- END STUDENT ANSWER ---
+"""
+
+
+VIDEO_SCORE_PROMPT = """You are a hackathon demo-video evaluator.
+
+Using the VIDEO ANALYSIS REPORT and SCORING INSTRUCTIONS below, assign a
+numeric score from 0 to {max_score} for "Video Explanation".
+
+Return ONLY valid JSON:
+{{
+  "score": <number from 0 to {max_score}>,
+  "rationale": "<2-5 sentences>"
+}}
+
+--- SCORING INSTRUCTIONS ---
+{scoring_prompt}
+--- END SCORING INSTRUCTIONS ---
+
+--- VIDEO ANALYSIS REPORT ---
+{video_report}
+--- END VIDEO ANALYSIS REPORT ---
 """
 
 

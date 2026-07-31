@@ -1,7 +1,8 @@
 """
 AI evaluation metric-scoring service.
 
-Manages per-field scoring prompts linked to an evaluation requirement.
+Manages per-field scoring prompts / scorecard metrics linked to an evaluation
+requirement (AI + manual modes, nested segments).
 """
 
 import logging
@@ -10,6 +11,8 @@ from datetime import datetime
 from typing import Any
 
 from app.models.metric_scoring_model import (
+    DEFAULT_METRIC_COLORS,
+    SYNTHETIC_METRIC_KEYS,
     FieldScoringMetric,
     MetricScoringCreateRequest,
     MetricScoringUpdateRequest,
@@ -19,6 +22,11 @@ from app.services.firebase import FirebaseService
 
 
 logger = logging.getLogger(__name__)
+
+SYNTHETIC_LABELS: dict[str, str] = {
+    "video_explanation": "Video Explanation",
+    "video": "Video Explanation",
+}
 
 
 class MetricScoringService:
@@ -94,14 +102,7 @@ class MetricScoringService:
         self, evaluation_requirement_id: str
     ) -> dict[str, Any] | None:
         """Return the metric-scoring config linked to a requirement, if any."""
-        match = self._find_by_requirement(evaluation_requirement_id)
-        if not match:
-            return None
-        scoring_id = match.get("id")
-        if scoring_id:
-            return match
-        # query_collection may already include id; ensure present.
-        return match
+        return self._find_by_requirement(evaluation_requirement_id)
 
     def update_scoring(
         self,
@@ -149,24 +150,51 @@ class MetricScoringService:
         evaluation_requirement_id: str,
         metrics: list[FieldScoringMetric],
     ) -> list[dict[str, Any]]:
-        """Validate metric field_keys against the requirement and snapshot labels."""
+        """Validate metric keys (requirement fields + synthetic) and snapshot labels."""
         requirement = self.requirements.get_requirement(evaluation_requirement_id)
         if not requirement:
             raise ValueError("Evaluation requirement not found")
 
         fields = requirement.get("fields") or []
         label_by_key = {f["key"]: f.get("label") for f in fields}
-        valid_keys = set(label_by_key.keys())
+        valid_keys = set(label_by_key.keys()) | SYNTHETIC_METRIC_KEYS
 
+        weight_sum = 0.0
+        weights_present = 0
         resolved: list[dict[str, Any]] = []
         for metric in metrics:
             if metric.field_key not in valid_keys:
                 raise ValueError(
                     f"field_key '{metric.field_key}' is not a field of the linked "
-                    f"evaluation requirement. Valid keys: {', '.join(sorted(valid_keys))}"
+                    f"evaluation requirement and is not a known synthetic metric "
+                    f"({', '.join(sorted(SYNTHETIC_METRIC_KEYS))}). "
+                    f"Valid requirement keys: {', '.join(sorted(label_by_key)) or '(none)'}"
                 )
             data = metric.model_dump()
-            data["field_label"] = label_by_key.get(metric.field_key)
+            if metric.field_key in SYNTHETIC_METRIC_KEYS:
+                data["field_label"] = (
+                    metric.field_label
+                    or SYNTHETIC_LABELS.get(metric.field_key)
+                    or metric.field_key
+                )
+            else:
+                data["field_label"] = label_by_key.get(metric.field_key) or metric.field_label
+            if not data.get("color"):
+                data["color"] = DEFAULT_METRIC_COLORS.get(metric.field_key)
+            if data.get("weight") is not None:
+                weights_present += 1
+                weight_sum += float(data["weight"])
             resolved.append(data)
+
+        if 0 < weights_present < len(resolved):
+            raise ValueError(
+                "Either every metric must include a weight, or none should. "
+                "For the standard scorecard use weights 15+15+20+20+30 (=100)."
+            )
+        if weights_present and abs(weight_sum - 100.0) > 0.01:
+            raise ValueError(
+                f"Metric weights must sum to 100 (got {weight_sum:.2f}). "
+                "Use weight percentages such as 15+15+20+20+30."
+            )
 
         return resolved

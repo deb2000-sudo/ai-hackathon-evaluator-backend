@@ -5,18 +5,24 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from app.services.scorecard import apply_manual_scores, build_scorecard_skeleton
+
 
 class ReviewMixin:
     def submit_for_review(
         self,
         submission_id: str,
         evaluator_user_id: str,
-        final_score: float,
+        final_score: float | None = None,
         evaluator_notes: str | None = None,
+        manual_metrics: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Assigned evaluator submits completed evaluation to admin."""
         notes = evaluator_notes.strip() if evaluator_notes else None
         now = datetime.utcnow().isoformat()
+        manual_payloads = [
+            m if isinstance(m, dict) else m.model_dump() for m in (manual_metrics or [])
+        ]
 
         def _txn(transaction):
             submission = self.firebase.txn_get(
@@ -48,9 +54,28 @@ class ReviewMixin:
                     "Evaluation is already approved; unpublish/request changes first"
                 )
 
+            scorecard, computed = self._merge_manual_into_scorecard(
+                submission=submission,
+                analysis=analysis,
+                manual_payloads=manual_payloads,
+            )
+            if final_score is not None:
+                resolved_score = float(final_score)
+            elif computed is not None:
+                resolved_score = float(computed)
+            else:
+                raise ValueError(
+                    "Could not compute final_score — provide final_score or complete "
+                    "manual_metrics for all weighted manual scorecard items"
+                )
+            if resolved_score < 0 or resolved_score > 100:
+                raise ValueError("final_score must be between 0 and 100")
+
             update = {
                 "review_status": "pending_review",
-                "final_score": float(final_score),
+                "final_score": resolved_score,
+                "scorecard": scorecard,
+                "manual_scores": manual_payloads or None,
                 "evaluator_notes": notes,
                 "submitted_for_review_at": now,
                 "submitted_for_review_by": evaluator_user_id,
@@ -66,9 +91,90 @@ class ReviewMixin:
             self.firebase.txn_update(
                 transaction, self.collection, submission_id, update
             )
+            if scorecard is not None:
+                self.firebase.txn_update(
+                    transaction,
+                    self.analysis_collection,
+                    analysis_id,
+                    {"scorecard": scorecard, "updated_at": now},
+                )
             return {"id": submission_id, **submission, **update}
 
         return self.firebase.run_transaction(_txn)
+
+    def _merge_manual_into_scorecard(
+        self,
+        *,
+        submission: dict[str, Any],
+        analysis: dict[str, Any],
+        manual_payloads: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any] | None, float | None]:
+        """Merge evaluator manual scores into the AI scorecard; return (scorecard, total)."""
+        scorecard = analysis.get("scorecard") or submission.get("scorecard")
+        metric_defs: list[dict[str, Any]] = []
+
+        hackathon_id = (submission.get("hackathon_id") or "").strip()
+        if hackathon_id:
+            hackathon = self.hackathon_service.get_hackathon(hackathon_id)
+            requirement_id = self._resolve_evaluation_requirement_id(hackathon)
+            if requirement_id:
+                scoring_svc = getattr(self, "metric_scoring_service", None)
+                if scoring_svc is not None:
+                    scoring = scoring_svc.get_scoring_for_requirement(requirement_id)
+                    if scoring:
+                        metric_defs = list(scoring.get("metrics") or [])
+
+        if not scorecard and metric_defs:
+            scorecard = build_scorecard_skeleton(metric_defs)
+            field_scores = analysis.get("field_scores") or []
+            if field_scores:
+                from app.services.scorecard import apply_ai_field_scores
+
+                scorecard = apply_ai_field_scores(scorecard, field_scores)
+
+        if not scorecard:
+            if manual_payloads:
+                raise ValueError(
+                    "No scorecard definition found for this hackathon. "
+                    "Configure AI evaluation metric scoring first."
+                )
+            return None, None
+
+        if manual_payloads:
+            scorecard = apply_manual_scores(
+                scorecard,
+                manual_payloads,
+                metric_defs=metric_defs,
+            )
+
+        # Require all weighted manual metrics to be scored before accept.
+        for item in scorecard.get("metrics") or []:
+            if item.get("scoring_mode") != "manual":
+                continue
+            if item.get("weight") is None:
+                continue
+            if item.get("score") is None:
+                raise ValueError(
+                    f"Manual metric '{item.get('field_key')}' is required before "
+                    "submitting for review"
+                )
+
+        return scorecard, scorecard.get("computed_total")
+
+    @staticmethod
+    def _resolve_evaluation_requirement_id(
+        hackathon: dict[str, Any] | None,
+    ) -> str | None:
+        if not hackathon:
+            return None
+        for round_ in hackathon.get("timeline") or []:
+            if isinstance(round_, dict):
+                req_id = (round_.get("evaluation_requirement_id") or "").strip()
+            else:
+                req_id = (getattr(round_, "evaluation_requirement_id", None) or "").strip()
+            if req_id:
+                return req_id
+        return None
 
     def approve_evaluation(
         self,
@@ -105,17 +211,17 @@ class ReviewMixin:
             if not analysis or analysis.get("status") != "completed":
                 raise ValueError("Analysis report is not ready to approve")
 
-            score = (
-                final_score if final_score is not None else submission.get("final_score")
+            resolved_score = (
+                float(final_score)
+                if final_score is not None
+                else submission.get("final_score")
             )
-            if score is None:
-                raise ValueError(
-                    "final_score is required to approve (evaluator did not propose one)"
-                )
+            if resolved_score is None:
+                raise ValueError("final_score is missing on this submission")
 
             update = {
                 "review_status": "approved",
-                "final_score": float(score),
+                "final_score": float(resolved_score),
                 "review_notes": notes,
                 "reviewed_at": now,
                 "reviewed_by": admin_user_id,
@@ -150,7 +256,9 @@ class ReviewMixin:
 
             review_status = submission.get("review_status") or "none"
             if review_status not in ("pending_review", "approved"):
-                raise ValueError("Only pending or approved evaluations can be sent back")
+                raise ValueError(
+                    "Only pending or approved evaluations can be sent back"
+                )
 
             update = {
                 "review_status": "changes_requested",
@@ -168,4 +276,3 @@ class ReviewMixin:
             return {"id": submission_id, **submission, **update}
 
         return self.firebase.run_transaction(_txn)
-

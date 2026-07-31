@@ -262,6 +262,7 @@ class DatabaseSeeder:
                 self.seed_user(seed_user)
 
             self._seed_evaluation_prompts()
+            self._seed_profile_password()
 
             logger.info("\nDatabase seeding completed successfully!")
             return True
@@ -279,3 +280,12 @@ class DatabaseSeeder:
             )
         except Exception as e:
             logger.warning("Could not seed AI evaluation prompts: %s", str(e))
+
+    def _seed_profile_password(self) -> None:
+        """Idempotently seed admin Profile Password (default ``12345678``)."""
+        try:
+            from app.services.app_settings_service import AppSettingsService
+
+            AppSettingsService(firebase=self.firebase).ensure_default_profile_password()
+        except Exception as e:
+            logger.warning("Could not seed admin Profile Password: %s", str(e))

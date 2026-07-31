@@ -331,6 +331,45 @@ class FirebaseService:
                 f"Failed to delete document {collection}/{document_id}"
             ) from e
 
+    def delete_documents(
+        self,
+        collection: str,
+        document_ids: list[str],
+        *,
+        batch_size: int = 400,
+    ) -> int:
+        """
+        Delete many documents from a collection (chunked batch writes).
+
+        Returns the number of delete operations issued.
+        """
+        unique_ids = list(dict.fromkeys(doc_id for doc_id in document_ids if doc_id))
+        if not unique_ids:
+            return 0
+        deleted = 0
+        try:
+            for offset in range(0, len(unique_ids), batch_size):
+                chunk = unique_ids[offset : offset + batch_size]
+                operations = [
+                    {
+                        "type": "delete",
+                        "collection": collection,
+                        "document_id": doc_id,
+                    }
+                    for doc_id in chunk
+                ]
+                self.batch_write(operations)
+                deleted += len(chunk)
+            logger.info("Deleted %s documents from %s", deleted, collection)
+            return deleted
+        except InfrastructureError:
+            raise
+        except Exception as e:
+            logger.exception("Error bulk-deleting from %s", collection)
+            raise InfrastructureError(
+                f"Failed to bulk-delete collection {collection}"
+            ) from e
+
     def get_documents(
         self, collection: str, document_ids: list[str]
     ) -> dict[str, dict[str, Any]]:

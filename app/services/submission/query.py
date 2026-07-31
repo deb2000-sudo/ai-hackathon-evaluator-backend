@@ -186,6 +186,8 @@ class QueryMixin:
         enriched.setdefault("mvp_link", None)
         enriched.setdefault("github_link", None)
         enriched.setdefault("field_answers", None)
+        enriched.setdefault("scorecard", None)
+        enriched.setdefault("manual_scores", None)
 
         # Backfill hackathon fields for older submissions that predate the link.
         if not enriched.get("hackathon_id"):
@@ -251,8 +253,12 @@ class QueryMixin:
                     "checklist": analysis_doc["checklist"],
                     "report": analysis_doc["report"],
                     "field_scores": analysis_doc.get("field_scores"),
+                    "scorecard": analysis_doc.get("scorecard")
+                    or enriched.get("scorecard"),
                     "analyzed_at": analysis_doc["analyzed_at"],
                 }
+                if analysis_doc.get("scorecard") and not enriched.get("scorecard"):
+                    enriched["scorecard"] = analysis_doc["scorecard"]
         elif can_see_analysis and enriched.get("analysis") and isinstance(
             enriched["analysis"], dict
         ):

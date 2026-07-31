@@ -7,6 +7,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from app.models.scorecard_model import ScorecardResult
+
 
 AnalysisStatus = Literal["processing", "completed", "failed"]
 
@@ -34,6 +36,7 @@ class AnalysisResponse(BaseModel):
     checklist: Optional[str] = None
     report: Optional[str] = None
     field_scores: Optional[list[FieldScoreResult]] = None
+    scorecard: Optional[ScorecardResult] = None
     analyzed_at: Optional[datetime] = None
     error: Optional[str] = None
     created_at: datetime
@@ -47,6 +50,7 @@ class AnalysisSummary(BaseModel):
     checklist: str
     report: str
     field_scores: Optional[list[FieldScoreResult]] = None
+    scorecard: Optional[ScorecardResult] = None
     analyzed_at: datetime
 
 
@@ -59,4 +63,5 @@ class AnalysisReportResponse(BaseModel):
     checklist: str
     report: str
     field_scores: Optional[list[FieldScoreResult]] = None
+    scorecard: Optional[ScorecardResult] = None
     analyzed_at: datetime

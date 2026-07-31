@@ -18,6 +18,8 @@ def service() -> SubmissionService:
         svc.user_service = MagicMock()
         svc.hackathon_service = MagicMock()
         svc.theme_service = MagicMock()
+        svc.metric_scoring_service = MagicMock()
+        svc.metric_scoring_service.get_scoring_for_requirement.return_value = None
         svc.bucket_name = "test-bucket"
         # Execute transactional callbacks immediately (no real Firestore).
         svc.firebase.run_transaction.side_effect = lambda cb: cb(MagicMock())

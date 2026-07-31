@@ -17,6 +17,7 @@ from app.routes import (
     hackathon,
     internal_jobs,
     metric_scoring,
+    settings,
     submissions,
     theme,
 )
@@ -115,6 +116,7 @@ async def health_check():
 # Include routers
 app.include_router(auth.router)
 app.include_router(admin.router)
+app.include_router(settings.router)
 app.include_router(submissions.router)
 app.include_router(hackathon.router)
 app.include_router(theme.router)
