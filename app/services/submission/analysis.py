@@ -15,7 +15,12 @@ from google.genai import types
 from app.models.user_model import CurrentUser
 from app.services.scorecard import apply_ai_field_scores, build_scorecard_skeleton
 from app.services.submission.create import demo_video_required
-from app.services.submission.prompts import FIELD_SCORE_PROMPT, VIDEO_SCORE_PROMPT
+from app.services.submission.prompts import (
+    FIELD_SCORE_PROMPT,
+    VIDEO_SCORE_PROMPT,
+    interpolate_scoring_prompt,
+    scoring_prompt_has_problem_context,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -432,6 +437,9 @@ class AnalysisMixin:
         solution: str,
     ) -> list[dict[str, Any]]:
         """Score AI text metrics (skips manual + video — video scored separately)."""
+        context = self._build_scoring_prompt_context(
+            submission, problem=problem, solution=solution
+        )
         results: list[dict[str, Any]] = []
         for metric in metrics:
             if (metric.get("scoring_mode") or "ai") != "ai":
@@ -441,16 +449,6 @@ class AnalysisMixin:
                 continue
 
             answer = self._resolve_field_answer(submission, field_key)
-            # Solution rubrics need problem context.
-            if field_key.lower() in (
-                "solution_description",
-                "solution",
-            ):
-                answer = (
-                    f"--- PROBLEM STATEMENT ---\n{problem}\n"
-                    f"--- SOLUTION DESCRIPTION ---\n{solution}"
-                )
-
             if not answer:
                 results.append(
                     {
@@ -465,9 +463,33 @@ class AnalysisMixin:
                 )
                 continue
 
-            scored = self._score_single_field(client, metric, answer)
+            scored = self._score_single_field(
+                client, metric, answer, context=context
+            )
             results.append(scored)
         return results
+
+    @staticmethod
+    def _build_scoring_prompt_context(
+        submission: dict[str, Any],
+        *,
+        problem: str,
+        solution: str,
+    ) -> dict[str, str]:
+        """Values for ``{problem_statement}`` / ``{solution_description}`` etc."""
+        context: dict[str, str] = {
+            "problem_statement": (problem or "").strip(),
+            "solution_description": (solution or "").strip(),
+        }
+        answers = submission.get("field_answers") or {}
+        if isinstance(answers, dict):
+            for key, value in answers.items():
+                if value is None:
+                    continue
+                text = str(value).strip()
+                if text and key not in context:
+                    context[str(key)] = text
+        return context
 
     def _score_video_metric(
         self,
@@ -475,17 +497,21 @@ class AnalysisMixin:
         metric: dict[str, Any],
         video_report: str,
     ) -> dict[str, Any]:
+        """
+        Score Video Explanation using the report + admin AI Prompts analyze_video.
+
+        Per-metric ``scoring_prompt`` on the scorecard is intentionally unused —
+        edit the prompt under Application → AI prompts instead.
+        """
         field_key = metric.get("field_key") or "video_explanation"
         field_label = metric.get("field_label") or "Video Explanation"
         max_score = float(metric.get("max_score") or 20)
-        scoring_prompt = (metric.get("scoring_prompt") or "").strip() or (
-            "Score how well the demo video explains and demonstrates the product "
-            "against the checklist context covered in the report. Consider clarity, "
-            "feature coverage, narration, and overall demo quality."
+        analyze_video_prompt = self.evaluation_prompt_service.get_template(
+            "analyze_video"
         )
         prompt = VIDEO_SCORE_PROMPT.format(
             max_score=max_score,
-            scoring_prompt=scoring_prompt,
+            analyze_video_prompt=analyze_video_prompt.strip()[:20000],
             video_report=video_report.strip()[:120000],
         )
         response = client.models.generate_content(
@@ -510,12 +536,13 @@ class AnalysisMixin:
         client: genai.Client,
         metric: dict[str, Any],
         student_answer: str,
+        context: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         field_key = metric.get("field_key") or ""
         field_label = metric.get("field_label") or field_key
         max_score = float(metric.get("max_score") or 10)
-        scoring_prompt = (metric.get("scoring_prompt") or "").strip()
-        if not scoring_prompt:
+        raw_scoring_prompt = (metric.get("scoring_prompt") or "").strip()
+        if not raw_scoring_prompt:
             return {
                 "field_key": field_key,
                 "field_label": field_label,
@@ -525,6 +552,21 @@ class AnalysisMixin:
                 "rationale": "Scoring prompt is empty for this field.",
                 "skipped": True,
             }
+
+        values = context or {}
+        scoring_prompt = interpolate_scoring_prompt(raw_scoring_prompt, values)
+        # Solution metrics without an explicit problem placeholder still get
+        # the student's problem statement so the model can judge fit.
+        if field_key.lower() in ("solution_description", "solution"):
+            if not scoring_prompt_has_problem_context(raw_scoring_prompt):
+                problem_text = (values.get("problem_statement") or "").strip()
+                if problem_text:
+                    scoring_prompt = (
+                        "--- PROBLEM STATEMENT (student) ---\n"
+                        f"{problem_text}\n"
+                        "--- END PROBLEM STATEMENT ---\n\n"
+                        f"{scoring_prompt}"
+                    )
 
         prompt = FIELD_SCORE_PROMPT.format(
             field_label=field_label,

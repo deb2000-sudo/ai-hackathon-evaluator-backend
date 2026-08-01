@@ -109,8 +109,12 @@ Return ONLY valid JSON with this shape:
 
 VIDEO_SCORE_PROMPT = """You are a hackathon demo-video evaluator.
 
-Using the VIDEO ANALYSIS REPORT and SCORING INSTRUCTIONS below, assign a
-numeric score from 0 to {max_score} for "Video Explanation".
+The VIDEO ANALYSIS REPORT below was produced using the admin-managed
+"analyze_video" AI Prompt (shown under REFERENCE ANALYSIS PROMPT).
+
+Assign a numeric Video Explanation score from 0 to {max_score} that reflects
+how well the demo meets that analysis standard (clarity, feature coverage,
+alignment with context, overall assessment in the report).
 
 Return ONLY valid JSON:
 {{
@@ -118,9 +122,9 @@ Return ONLY valid JSON:
   "rationale": "<2-5 sentences>"
 }}
 
---- SCORING INSTRUCTIONS ---
-{scoring_prompt}
---- END SCORING INSTRUCTIONS ---
+--- REFERENCE ANALYSIS PROMPT (admin AI Prompts → analyze_video) ---
+{analyze_video_prompt}
+--- END REFERENCE ANALYSIS PROMPT ---
 
 --- VIDEO ANALYSIS REPORT ---
 {video_report}
@@ -139,8 +143,78 @@ DEFAULT_PROMPT_META = {
     "analyze_video": {
         "name": "Working Demo Video Analysis",
         "description": (
-            "Compares the submitted demo video against the checklist/context. "
-            "Placeholder: {context}."
+            "Compares the submitted demo video against the checklist/context, "
+            "and is also the standard used when scoring the Video Explanation "
+            "scorecard metric (0–max). Placeholder: {context}."
         ),
     },
 }
+
+
+# Tokens admins can embed in scorecard scoring_prompt; filled from the submission
+# at evaluation time. Prefer snake_case; Title Case aliases are also accepted.
+SCORING_PROMPT_PLACEHOLDERS: list[dict[str, str]] = [
+    {
+        "token": "{problem_statement}",
+        "aliases": "{Problem Statement}",
+        "label": "Problem Statement",
+        "description": "Student's submitted problem statement text.",
+    },
+    {
+        "token": "{solution_description}",
+        "aliases": "{Solution Description}",
+        "label": "Solution Description",
+        "description": "Student's submitted solution description text.",
+    },
+]
+
+_PROBLEM_PLACEHOLDER_TOKENS = frozenset(
+    {
+        "{problem_statement}",
+        "{Problem Statement}",
+        "{PROBLEM_STATEMENT}",
+        "{problem}",
+    }
+)
+
+_PLACEHOLDER_VALUE_KEYS: dict[str, tuple[str, ...]] = {
+    "problem_statement": (
+        "problem_statement",
+        "Problem Statement",
+        "PROBLEM_STATEMENT",
+        "problem",
+    ),
+    "solution_description": (
+        "solution_description",
+        "Solution Description",
+        "SOLUTION_DESCRIPTION",
+        "solution",
+    ),
+}
+
+
+def scoring_prompt_has_problem_context(template: str) -> bool:
+    """True if the admin prompt already references the student's problem statement."""
+    text = template or ""
+    return any(token in text for token in _PROBLEM_PLACEHOLDER_TOKENS)
+
+
+def interpolate_scoring_prompt(template: str, values: dict[str, str]) -> str:
+    """
+    Replace ``{problem_statement}`` / ``{Problem Statement}`` (and solution
+    equivalents) with the student's submitted text. Unknown ``{tokens}`` are left
+    unchanged. Does not use ``str.format`` so JSON braces in prompts are safe.
+    """
+    result = template or ""
+    for canonical, aliases in _PLACEHOLDER_VALUE_KEYS.items():
+        value = values.get(canonical) or ""
+        for alias in aliases:
+            result = result.replace("{" + alias + "}", value)
+    # Any extra submission field keys passed in values.
+    for key, value in values.items():
+        if key in _PLACEHOLDER_VALUE_KEYS:
+            continue
+        result = result.replace("{" + key + "}", value or "")
+        title = key.replace("_", " ").title()
+        result = result.replace("{" + title + "}", value or "")
+    return result

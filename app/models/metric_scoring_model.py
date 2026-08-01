@@ -6,12 +6,17 @@ Stored in ``ai_evaluation_metric_scoring``. Each metric can be scored by AI
 optional nested segments (e.g. MVP feature checklist, GitHub visibility).
 """
 
+from __future__ import annotations
+
 from datetime import datetime
-from typing import Literal, Optional
+from typing import TYPE_CHECKING, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models.string_utils import strip_optional, strip_required
+
+if TYPE_CHECKING:
+    from app.models.evaluation_requirement_model import EvaluationRequirementResponse
 
 
 ScoringMode = Literal["ai", "manual"]
@@ -34,6 +39,38 @@ DEFAULT_METRIC_COLORS: dict[str, str] = {
     "project_github_link": "#059669",
     "mvp_link": "#D97706",
 }
+
+# Interchangeable field keys (frontend/scorecard vs requirement naming).
+FIELD_KEY_ALIASES: dict[str, frozenset[str]] = {
+    "github_link": frozenset({"github_link", "project_github_link"}),
+    "project_github_link": frozenset({"github_link", "project_github_link"}),
+    "mvp_link": frozenset({"mvp_link", "mvp", "mvp_url"}),
+    "solution_description": frozenset({"solution_description", "solution"}),
+    "problem_statement": frozenset({"problem_statement", "problem"}),
+}
+
+
+def canonicalize_metric_field_key(field_key: str, requirement_keys: set[str]) -> str:
+    """
+    Map a scorecard field_key onto the requirement's actual key when they differ
+    only by alias (e.g. ``github_link`` → ``project_github_link``).
+    """
+    key = (field_key or "").strip()
+    if not key or key in requirement_keys or key in SYNTHETIC_METRIC_KEYS:
+        return key
+    aliases = FIELD_KEY_ALIASES.get(key)
+    if not aliases:
+        # Also try reverse: any alias group that contains this key.
+        for group in FIELD_KEY_ALIASES.values():
+            if key in group:
+                aliases = group
+                break
+    if not aliases:
+        return key
+    matches = sorted(aliases & requirement_keys)
+    if len(matches) == 1:
+        return matches[0]
+    return key
 
 
 class MetricSegment(BaseModel):
@@ -106,7 +143,13 @@ class FieldScoringMetric(BaseModel):
     scoring_prompt: Optional[str] = Field(
         None,
         max_length=20000,
-        description="Required for AI metrics — full rubric text for Gemini.",
+        description=(
+            "Required for AI metrics except video_explanation/video — those use "
+            "the admin AI Prompts ``analyze_video`` template instead. "
+            "May include submission placeholders filled at evaluation time: "
+            "``{problem_statement}`` / ``{Problem Statement}``, "
+            "``{solution_description}`` / ``{Solution Description}``."
+        ),
     )
     max_score: float = Field(10, gt=0, le=100)
     weight: Optional[float] = Field(
@@ -138,10 +181,15 @@ class FieldScoringMetric(BaseModel):
     @model_validator(mode="after")
     def validate_mode_and_segments(self) -> "FieldScoringMetric":
         if self.scoring_mode == "ai":
-            if not (self.scoring_prompt or "").strip():
+            key = (self.field_key or "").strip().lower()
+            # Video report + scoring instructions live under AI Prompts → analyze_video.
+            if key not in SYNTHETIC_METRIC_KEYS and not (self.scoring_prompt or "").strip():
                 raise ValueError(
                     f"scoring_prompt is required for AI metric '{self.field_key}'"
                 )
+        if self.field_key.strip().lower() in SYNTHETIC_METRIC_KEYS:
+            # Ignore accidental UI leftover; video prompt is not stored here.
+            self.scoring_prompt = None
         if self.segments:
             keys = [s.key for s in self.segments]
             if len(keys) != len(set(keys)):
@@ -203,6 +251,31 @@ class MetricScoringUpdateRequest(BaseModel):
         return value
 
 
+class MetricScoringUpsertByRequirementRequest(BaseModel):
+    """
+    Create or replace a scorecard for a requirement identified in the URL path.
+
+    Prefer this from the Set scoring page so the frontend never asks for an
+    evaluation requirement id again.
+    """
+
+    name: Optional[str] = Field(None, max_length=200)
+    metrics: list[FieldScoringMetric] = Field(..., min_length=1)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: Optional[str]) -> Optional[str]:
+        return strip_optional(value)
+
+    @field_validator("metrics")
+    @classmethod
+    def unique_field_keys(cls, value: list[FieldScoringMetric]) -> list[FieldScoringMetric]:
+        keys = [m.field_key for m in value]
+        if len(keys) != len(set(keys)):
+            raise ValueError("Each field_key may only appear once in metrics")
+        return value
+
+
 class MetricScoringResponse(BaseModel):
     """A metric-scoring config returned to clients."""
 
@@ -213,3 +286,39 @@ class MetricScoringResponse(BaseModel):
     created_by: str
     created_at: datetime
     updated_at: datetime
+
+
+class ScoringPromptPlaceholder(BaseModel):
+    """Insertable token for scorecard AI scoring prompts."""
+
+    token: str
+    aliases: Optional[str] = None
+    label: str
+    description: str = ""
+
+
+class ScoringSetupResponse(BaseModel):
+    """
+    One-shot payload for the Set scoring page.
+
+    Loaded from ``GET /evaluation-requirements/{id}/scoring-setup`` using the
+    requirement id already present in the route — no separate Load step.
+    """
+
+    requirement: EvaluationRequirementResponse
+    scoring: Optional[MetricScoringResponse] = None
+    scoring_prompt_placeholders: list[ScoringPromptPlaceholder] = Field(
+        default_factory=list,
+        description=(
+            "Tokens admins can insert into AI scoring prompts "
+            "(e.g. {Problem Statement} for solution_description rubrics)."
+        ),
+    )
+
+
+# Rebuild once EvaluationRequirementResponse is importable at runtime.
+from app.models.evaluation_requirement_model import (  # noqa: E402
+    EvaluationRequirementResponse as EvaluationRequirementResponse,
+)
+
+ScoringSetupResponse.model_rebuild()

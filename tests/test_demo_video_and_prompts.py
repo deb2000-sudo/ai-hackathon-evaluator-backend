@@ -20,6 +20,52 @@ def test_default_prompt_templates_include_required_placeholders():
         assert placeholder in ANALYZE_VIDEO_PROMPT
 
 
+def test_video_explanation_metric_does_not_require_scoring_prompt():
+    from app.models.metric_scoring_model import FieldScoringMetric
+
+    metric = FieldScoringMetric(
+        field_key="video_explanation",
+        scoring_mode="ai",
+        max_score=20,
+        weight=20,
+        # scoring_prompt intentionally omitted — uses AI Prompts analyze_video
+    )
+    assert metric.scoring_prompt is None
+
+
+def test_scoring_prompt_interpolates_problem_statement_placeholder():
+    from app.services.submission.prompts import (
+        interpolate_scoring_prompt,
+        scoring_prompt_has_problem_context,
+    )
+
+    template = (
+        "Score the solution 0-15 against this problem:\n{Problem Statement}\n"
+        "Be strict."
+    )
+    assert scoring_prompt_has_problem_context(template) is True
+    filled = interpolate_scoring_prompt(
+        template,
+        {
+            "problem_statement": "Farmers lack market prices",
+            "solution_description": "An SMS price bot",
+        },
+    )
+    assert "Farmers lack market prices" in filled
+    assert "{Problem Statement}" not in filled
+    assert "{problem_statement}" not in filled
+
+
+def test_scoring_prompt_snake_case_placeholder():
+    from app.services.submission.prompts import interpolate_scoring_prompt
+
+    filled = interpolate_scoring_prompt(
+        "Fit to: {problem_statement}",
+        {"problem_statement": "Water scarcity in cities"},
+    )
+    assert filled == "Fit to: Water scarcity in cities"
+
+
 def test_prompt_placeholder_validation_rejects_missing():
     try:
         EvaluationPromptService._validate_placeholders(

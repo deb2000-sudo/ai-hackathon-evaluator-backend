@@ -34,8 +34,9 @@ async def create_metric_scoring(
     """
     Create a metric-scoring / scorecard config for an evaluation requirement.
 
-    Admin only. Each metric may be ``scoring_mode=ai`` (needs ``scoring_prompt``)
-    or ``manual`` (evaluator segments). ``field_key`` must match a requirement
+    Admin only. Each AI metric needs ``scoring_prompt``, except
+    ``video_explanation``/``video`` which use AI Prompts ``analyze_video``.
+    Manual metrics use evaluator segments. ``field_key`` must match a requirement
     field **or** a synthetic key such as ``video_explanation``. Weights should
     sum to 100.
     """

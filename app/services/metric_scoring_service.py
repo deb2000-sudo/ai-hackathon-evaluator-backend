@@ -16,6 +16,8 @@ from app.models.metric_scoring_model import (
     FieldScoringMetric,
     MetricScoringCreateRequest,
     MetricScoringUpdateRequest,
+    MetricScoringUpsertByRequirementRequest,
+    canonicalize_metric_field_key,
 )
 from app.services.evaluation_requirement_service import EvaluationRequirementService
 from app.services.firebase import FirebaseService
@@ -104,6 +106,46 @@ class MetricScoringService:
         """Return the metric-scoring config linked to a requirement, if any."""
         return self._find_by_requirement(evaluation_requirement_id)
 
+    def get_scoring_setup(self, evaluation_requirement_id: str) -> dict[str, Any] | None:
+        """
+        Requirement + optional scoring for the Set scoring page.
+
+        Returns None when the requirement does not exist.
+        """
+        requirement = self.requirements.get_requirement(evaluation_requirement_id)
+        if not requirement:
+            return None
+        return {
+            "requirement": requirement,
+            "scoring": self.get_scoring_for_requirement(evaluation_requirement_id),
+        }
+
+    def upsert_scoring_for_requirement(
+        self,
+        evaluation_requirement_id: str,
+        request: MetricScoringUpsertByRequirementRequest,
+        *,
+        created_by: str,
+    ) -> dict[str, Any]:
+        """Create or fully replace the scorecard for a requirement (path id)."""
+        existing = self._find_by_requirement(evaluation_requirement_id)
+        if existing:
+            update = MetricScoringUpdateRequest(
+                name=request.name,
+                metrics=request.metrics,
+            )
+            updated = self.update_scoring(existing["id"], update)
+            if not updated:
+                raise ValueError("Metric-scoring config not found")
+            return updated
+
+        create = MetricScoringCreateRequest(
+            evaluation_requirement_id=evaluation_requirement_id,
+            name=request.name,
+            metrics=request.metrics,
+        )
+        return self.create_scoring(create, created_by=created_by)
+
     def update_scoring(
         self,
         scoring_id: str,
@@ -157,13 +199,17 @@ class MetricScoringService:
 
         fields = requirement.get("fields") or []
         label_by_key = {f["key"]: f.get("label") for f in fields}
-        valid_keys = set(label_by_key.keys()) | SYNTHETIC_METRIC_KEYS
+        requirement_keys = set(label_by_key.keys())
+        valid_keys = requirement_keys | SYNTHETIC_METRIC_KEYS
 
         weight_sum = 0.0
         weights_present = 0
         resolved: list[dict[str, Any]] = []
         for metric in metrics:
-            if metric.field_key not in valid_keys:
+            canonical_key = canonicalize_metric_field_key(
+                metric.field_key, requirement_keys
+            )
+            if canonical_key not in valid_keys:
                 raise ValueError(
                     f"field_key '{metric.field_key}' is not a field of the linked "
                     f"evaluation requirement and is not a known synthetic metric "
@@ -171,20 +217,35 @@ class MetricScoringService:
                     f"Valid requirement keys: {', '.join(sorted(label_by_key)) or '(none)'}"
                 )
             data = metric.model_dump()
-            if metric.field_key in SYNTHETIC_METRIC_KEYS:
+            data["field_key"] = canonical_key
+            if canonical_key in SYNTHETIC_METRIC_KEYS:
                 data["field_label"] = (
                     metric.field_label
-                    or SYNTHETIC_LABELS.get(metric.field_key)
-                    or metric.field_key
+                    or SYNTHETIC_LABELS.get(canonical_key)
+                    or canonical_key
                 )
+                # Video rubric lives in AI Prompts (analyze_video), not here.
+                data["scoring_prompt"] = None
             else:
-                data["field_label"] = label_by_key.get(metric.field_key) or metric.field_label
+                data["field_label"] = (
+                    label_by_key.get(canonical_key) or metric.field_label
+                )
             if not data.get("color"):
-                data["color"] = DEFAULT_METRIC_COLORS.get(metric.field_key)
+                data["color"] = DEFAULT_METRIC_COLORS.get(
+                    canonical_key
+                ) or DEFAULT_METRIC_COLORS.get(metric.field_key)
             if data.get("weight") is not None:
                 weights_present += 1
                 weight_sum += float(data["weight"])
             resolved.append(data)
+
+        resolved_keys = [item["field_key"] for item in resolved]
+        if len(resolved_keys) != len(set(resolved_keys)):
+            raise ValueError(
+                "Duplicate field_key after alias normalization "
+                "(e.g. both github_link and project_github_link). "
+                "Use each requirement field only once."
+            )
 
         if 0 < weights_present < len(resolved):
             raise ValueError(
