@@ -1,6 +1,6 @@
 """Admin Profile Password + DB reset helpers."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -62,9 +62,10 @@ def test_verify_and_change_profile_password():
     assert service.verify_profile_password("new-secret-99") is True
 
 
-def test_reset_database_wipes_collections_and_keeps_admins():
+def test_reset_database_wipes_collections_and_keeps_admins(monkeypatch):
     firebase = MagicMock()
-    service = AppSettingsService(firebase=firebase)
+    storage_client = MagicMock()
+    service = AppSettingsService(firebase=firebase, storage_client=storage_client)
 
     salt, digest = AppSettingsService._hash_password(DEFAULT_PROFILE_PASSWORD)
     firebase.get_document.return_value = {
@@ -94,12 +95,23 @@ def test_reset_database_wipes_collections_and_keeps_admins():
         {"uid": "orphan-auth-1", "email": "debashis.nayak@nxtwave.co.in"},
     ]
     firebase.delete_user.return_value = True
-
-    result = service.reset_database(
-        DEFAULT_PROFILE_PASSWORD,
-        preserve_user_id="admin-1",
-        confirm_phrase="RESET",
+    monkeypatch.setenv(
+        "EVALUATION_BUCKET_NAME", "nxt-acad-hackathon-hackathon-evaluations"
     )
+
+    with patch(
+        "app.services.app_settings_service.wipe_bucket_objects",
+        return_value=7,
+    ) as wipe_gcs:
+        result = service.reset_database(
+            DEFAULT_PROFILE_PASSWORD,
+            preserve_user_id="admin-1",
+            confirm_phrase="RESET",
+        )
+    wipe_gcs.assert_called_once_with(
+        storage_client, "nxt-acad-hackathon-hackathon-evaluations"
+    )
+    assert result["deleted_counts"]["gcs_evaluation_bucket"] == 7
 
     assert "hackathons" in result["deleted_counts"]
     assert "ai_evaluation_prompts" in result["deleted_counts"]

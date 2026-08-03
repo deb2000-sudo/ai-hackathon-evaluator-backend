@@ -66,6 +66,13 @@ class AppSettingsResponse(BaseModel):
         ),
     )
     wipeable_collections: list[str] = Field(default_factory=list)
+    evaluation_bucket_name: Optional[str] = Field(
+        None,
+        description=(
+            "GCS bucket whose objects are wiped on Reset Database "
+            "(bucket itself is kept)."
+        ),
+    )
     reset_confirm_phrase: str = RESET_CONFIRM_PHRASE
 
 

@@ -12,8 +12,15 @@ import secrets
 from datetime import datetime
 from typing import Any
 
+from google.cloud import storage
+
 from app.models.settings_model import RESET_CONFIRM_PHRASE
 from app.services.firebase import FirebaseService
+from app.utils.gcs_video import (
+    build_storage_client,
+    resolve_evaluation_bucket_name,
+    wipe_bucket_objects,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -44,19 +51,32 @@ SETTINGS_DOC_ID = "security"
 class AppSettingsService:
     """Manages the Profile Password and destructive admin settings actions."""
 
-    def __init__(self, firebase: FirebaseService | None = None):
+    def __init__(
+        self,
+        firebase: FirebaseService | None = None,
+        storage_client: storage.Client | None = None,
+    ):
         self.firebase = firebase or FirebaseService()
+        self.storage_client = storage_client
 
     def get_settings_public(self) -> dict[str, Any]:
         """Flags for the Application Settings UI (never returns the password)."""
         doc = self._get_security_doc()
         is_default = bool(doc.get("is_default_profile_password"))
+        bucket = resolve_evaluation_bucket_name()
+        wipeable = list(WIPEABLE_COLLECTIONS) + [
+            "users (non-admin)",
+            "firebase_auth (non-admin)",
+        ]
+        if bucket:
+            wipeable.append(f"gcs objects in gs://{bucket}")
         return {
             "profile_password_configured": bool(doc.get("profile_password_hash")),
             "default_profile_password_hint": (
                 DEFAULT_PROFILE_PASSWORD if is_default else None
             ),
-            "wipeable_collections": list(WIPEABLE_COLLECTIONS) + ["users (non-admin)"],
+            "wipeable_collections": wipeable,
+            "evaluation_bucket_name": bucket,
             "reset_confirm_phrase": RESET_CONFIRM_PHRASE,
         }
 
@@ -128,13 +148,14 @@ class AppSettingsService:
         confirm_phrase: str,
     ) -> dict[str, Any]:
         """
-        Wipe application Firestore collections and non-admin Firebase Auth
-        accounts after Profile Password check.
+        Wipe application Firestore collections, non-admin Firebase Auth
+        accounts, and all objects in the evaluation GCS bucket.
 
         Preserves:
         - ``app_settings/security`` (Profile Password)
         - Firestore ``users`` with ``role == admin`` (including the caller)
         - Matching Firebase Auth accounts for those admins
+        - The GCS bucket itself (only objects are deleted)
         """
         if confirm_phrase != RESET_CONFIRM_PHRASE:
             raise ValueError(f'confirm_phrase must be exactly "{RESET_CONFIRM_PHRASE}"')
@@ -193,6 +214,12 @@ class AppSettingsService:
                 )
         deleted_counts["firebase_auth_non_admin"] = auth_deleted
 
+        # Wipe submission videos + hackathon banners from the evaluation bucket.
+        bucket_name = resolve_evaluation_bucket_name()
+        deleted_counts["gcs_evaluation_bucket"] = self._wipe_evaluation_bucket(
+            bucket_name
+        )
+
         # Do not re-seed AI prompts here — reset should leave
         # ``ai_evaluation_prompts`` empty. Evaluation falls back to in-code
         # defaults until an admin saves prompts in the AI prompts UI.
@@ -205,20 +232,49 @@ class AppSettingsService:
             preserve_user_id,
             deleted_counts,
         )
+        preserved = [
+            "app_settings/security",
+            "users (role=admin)",
+            "firebase_auth (admin)",
+            f"users/{preserve_user_id}",
+        ]
+        if bucket_name:
+            preserved.append(f"gcs bucket gs://{bucket_name} (emptied, not deleted)")
         return {
             "message": (
-                "Database reset completed. Application collections and non-admin "
-                "Firebase Auth accounts were cleared. Admin Auth/Firestore accounts "
-                "and the Profile Password were preserved."
+                "Database reset completed. Application collections, non-admin "
+                "Firebase Auth accounts, and evaluation-bucket objects were "
+                "cleared. Admin accounts, the Profile Password, and the GCS "
+                "bucket itself were preserved."
             ),
             "deleted_counts": deleted_counts,
-            "preserved": [
-                "app_settings/security",
-                "users (role=admin)",
-                "firebase_auth (admin)",
-                f"users/{preserve_user_id}",
-            ],
+            "preserved": preserved,
         }
+
+    def _wipe_evaluation_bucket(self, bucket_name: str | None) -> int:
+        """Delete all objects in the evaluation bucket; never delete the bucket."""
+        if not bucket_name:
+            logger.warning(
+                "EVALUATION_BUCKET_NAME / VIDEO_BUCKET_NAME not set; "
+                "skipping GCS wipe during database reset"
+            )
+            return 0
+        try:
+            client = self.storage_client or build_storage_client(
+                os.getenv("GOOGLE_CLOUD_PROJECT")
+                or os.getenv("FIREBASE_PROJECT_ID")
+                or None
+            )
+            return wipe_bucket_objects(client, bucket_name)
+        except Exception as exc:
+            logger.exception(
+                "Failed to wipe evaluation bucket gs://%s during reset: %s",
+                bucket_name,
+                exc,
+            )
+            # Do not fail the whole reset if GCS wipe fails — Firestore/Auth
+            # cleanup already ran. Surface zero so admins can retry / manual wipe.
+            return 0
 
     def _get_security_doc(self) -> dict[str, Any]:
         return self.firebase.get_document(SETTINGS_COLLECTION, SETTINGS_DOC_ID) or {}

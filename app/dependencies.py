@@ -103,7 +103,10 @@ def build_app_container() -> AppContainer:
     evaluation_job_service = EvaluationJobService(
         submission_service=submission_service,
     )
-    app_settings_service = AppSettingsService(firebase=firebase)
+    app_settings_service = AppSettingsService(
+        firebase=firebase,
+        storage_client=storage_client,
+    )
 
     logger.info("App service container initialized (shared Firebase + GCS clients)")
     return AppContainer(

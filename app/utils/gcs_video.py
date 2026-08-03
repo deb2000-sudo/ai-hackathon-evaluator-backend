@@ -51,6 +51,74 @@ def build_storage_client(project: str | None) -> storage.Client:
     return storage.Client(project=project)
 
 
+def resolve_evaluation_bucket_name() -> str | None:
+    """Bucket used for submission videos + hackathon banners."""
+    name = (
+        os.getenv("EVALUATION_BUCKET_NAME") or os.getenv("VIDEO_BUCKET_NAME") or ""
+    ).strip()
+    return name or None
+
+
+def wipe_bucket_objects(
+    client: storage.Client,
+    bucket_name: str,
+    *,
+    batch_size: int = 100,
+) -> int:
+    """
+    Delete every object in ``bucket_name`` but keep the bucket itself
+    (CORS, IAM, and location stay intact).
+
+    Returns the number of objects deleted.
+    """
+    if not bucket_name:
+        return 0
+
+    bucket = client.bucket(bucket_name)
+    if not bucket.exists():
+        logger.warning(
+            "Evaluation bucket gs://%s does not exist; skipping GCS wipe",
+            bucket_name,
+        )
+        return 0
+
+    deleted = 0
+    pending: list[Blob] = []
+
+    def _flush() -> None:
+        nonlocal deleted, pending
+        if not pending:
+            return
+        # Ignore per-object NotFound so concurrent deletes do not abort the wipe.
+        errors: list[str] = []
+
+        def _on_error(blob: Blob) -> None:
+            errors.append(blob.name)
+
+        bucket.delete_blobs(pending, on_error=_on_error)
+        deleted += len(pending) - len(errors)
+        if errors:
+            logger.warning(
+                "Skipped %s missing objects while wiping gs://%s",
+                len(errors),
+                bucket_name,
+            )
+        pending = []
+
+    for blob in client.list_blobs(bucket_name):
+        pending.append(blob)
+        if len(pending) >= batch_size:
+            _flush()
+    _flush()
+
+    logger.warning(
+        "Wiped %s objects from evaluation bucket gs://%s",
+        deleted,
+        bucket_name,
+    )
+    return deleted
+
+
 def generate_signed_url(
     client: storage.Client,
     gs_uri: str,
