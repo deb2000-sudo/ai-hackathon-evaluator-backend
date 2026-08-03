@@ -27,9 +27,15 @@ WIPEABLE_COLLECTIONS: tuple[str, ...] = (
     "evaluation_requirements",
     "ai_evaluation_metric_scoring",
     "ai_evaluation_prompts",
+    # Legacy singular name (if an older deploy ever wrote here).
+    "ai_evaluation_prompt",
     "submissions",
     "analysis",
 )
+
+# Known AI prompt document ids — deleted explicitly so a listing miss cannot
+# leave custom prompts behind after reset.
+AI_PROMPT_DOCUMENT_IDS: tuple[str, ...] = ("checklist", "analyze_video")
 
 SETTINGS_COLLECTION = "app_settings"
 SETTINGS_DOC_ID = "security"
@@ -138,6 +144,9 @@ class AppSettingsService:
         for collection in WIPEABLE_COLLECTIONS:
             docs = self.firebase.get_collection(collection)
             ids = [d["id"] for d in docs if d.get("id")]
+            # Always target known AI prompt docs even if listing was incomplete.
+            if collection in ("ai_evaluation_prompts", "ai_evaluation_prompt"):
+                ids = list(dict.fromkeys([*ids, *AI_PROMPT_DOCUMENT_IDS]))
             deleted_counts[collection] = self.firebase.delete_documents(collection, ids)
 
         # Remove non-admin user profiles (keep admin accounts so login still works).
@@ -153,15 +162,9 @@ class AppSettingsService:
             "users", non_admin_ids
         )
 
-        # Re-seed default Gemini prompts so evaluation still has templates.
-        try:
-            from app.services.evaluation_prompt_service import EvaluationPromptService
-
-            EvaluationPromptService(firebase=self.firebase).ensure_defaults(
-                seeded_by="db-reset"
-            )
-        except Exception as e:
-            logger.warning("Could not re-seed evaluation prompts after reset: %s", e)
+        # Do not re-seed AI prompts here — reset should leave
+        # ``ai_evaluation_prompts`` empty. Evaluation falls back to in-code
+        # defaults until prompts are seeded again (startup seeder / AI prompts UI).
 
         # Ensure profile password doc still present.
         self.ensure_default_profile_password()
@@ -173,8 +176,9 @@ class AppSettingsService:
         )
         return {
             "message": (
-                "Database reset completed. Application collections were cleared. "
-                "Admin accounts and the Profile Password were preserved."
+                "Database reset completed. Application collections were cleared "
+                "(including ai_evaluation_prompts). Admin accounts and the "
+                "Profile Password were preserved."
             ),
             "deleted_counts": deleted_counts,
             "preserved": [

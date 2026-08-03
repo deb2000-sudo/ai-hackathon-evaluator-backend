@@ -1,6 +1,6 @@
 """Admin Profile Password + DB reset helpers."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -87,17 +87,14 @@ def test_reset_database_wipes_collections_and_keeps_admins():
     firebase.get_collection.side_effect = get_collection
     firebase.delete_documents.side_effect = lambda coll, ids: len(ids)
 
-    with patch(
-        "app.services.evaluation_prompt_service.EvaluationPromptService"
-    ) as prompt_cls:
-        prompt_cls.return_value.ensure_defaults.return_value = None
-        result = service.reset_database(
-            DEFAULT_PROFILE_PASSWORD,
-            preserve_user_id="admin-1",
-            confirm_phrase="RESET",
-        )
+    result = service.reset_database(
+        DEFAULT_PROFILE_PASSWORD,
+        preserve_user_id="admin-1",
+        confirm_phrase="RESET",
+    )
 
     assert "hackathons" in result["deleted_counts"]
+    assert "ai_evaluation_prompts" in result["deleted_counts"]
     assert result["deleted_counts"]["users_non_admin"] == 2
     # ensure delete_documents was called for users with only non-admins
     user_delete_calls = [
@@ -107,3 +104,18 @@ def test_reset_database_wipes_collections_and_keeps_admins():
     ]
     assert user_delete_calls
     assert set(user_delete_calls[0].args[1]) == {"student-1", "eval-1"}
+
+    prompt_delete_calls = [
+        c
+        for c in firebase.delete_documents.call_args_list
+        if c.args[0] == "ai_evaluation_prompts"
+    ]
+    assert prompt_delete_calls
+    deleted_prompt_ids = set(prompt_delete_calls[0].args[1])
+    assert {"checklist", "analyze_video"}.issubset(deleted_prompt_ids)
+
+    # Reset must NOT re-seed AI prompts (collection should stay cleared).
+    assert not any(
+        c.args[0] == "ai_evaluation_prompts" and c.args[1] in ("checklist", "analyze_video")
+        for c in firebase.set_document.call_args_list
+    )
