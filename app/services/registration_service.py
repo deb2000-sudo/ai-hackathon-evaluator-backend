@@ -114,8 +114,43 @@ class RegistrationService:
             logger.error("Failed to rollback Firebase Auth user %s: %s", user_id, str(e))
 
     def _ensure_email_available(self, email: str) -> None:
-        if self.firebase.get_user_by_email(email) or self.user_service.user_exists(email):
+        """
+        Block duplicate registration when a real profile exists.
+
+        Database reset clears Firestore user docs but historically left Firebase
+        Auth accounts behind. Treat Auth-only emails as orphans: remove them so
+        the person can register again with a fresh password/profile.
+        """
+        if self.user_service.user_exists(email):
             raise ValueError("An account with this email already exists")
+
+        auth_user = self.firebase.get_user_by_email(email)
+        if not auth_user:
+            return
+
+        uid = getattr(auth_user, "uid", None)
+        if not uid:
+            raise ValueError("An account with this email already exists")
+
+        # Profile missing in Firestore → safe to reclaim the Auth slot.
+        logger.warning(
+            "Removing orphan Firebase Auth user before registration email=%s uid=%s",
+            email,
+            uid,
+        )
+        try:
+            self.firebase.delete_user(uid)
+        except Exception as exc:
+            logger.error(
+                "Failed to remove orphan Firebase Auth user email=%s uid=%s: %s",
+                email,
+                uid,
+                exc,
+            )
+            raise ValueError(
+                "This email is reserved in authentication without a user profile. "
+                "Ask an administrator to remove it from Firebase Auth, then try again."
+            ) from exc
 
     def _ensure_unique_field(self, field: str, value: str, label: str) -> None:
         if self.user_service.find_by_field(field, value.strip()):

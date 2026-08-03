@@ -120,21 +120,46 @@ class FirebaseService:
 
     def delete_user(self, user_id: str) -> bool:
         """
-        Delete a Firebase user
+        Delete a Firebase Auth user.
 
-        Args:
-            user_id: User ID to delete
-
-        Returns:
-            True if successful
+        Returns True when the user is gone (including already-missing users).
         """
         try:
             self._auth.delete_user(user_id)
             logger.info(f"User deleted: {user_id}")
             return True
+        except auth.UserNotFoundError:
+            logger.info("User already absent from Auth: %s", user_id)
+            return True
         except Exception as e:
             logger.error(f"Error deleting user {user_id}: {str(e)}")
             raise Exception(f"Error deleting user: {str(e)}")
+
+    def list_auth_users(self) -> list[dict[str, Any]]:
+        """
+        List all Firebase Authentication users (paginated).
+
+        Returns a list of ``{"uid", "email"}`` dicts. Used by DB reset so Auth
+        orphans (no Firestore profile) are wiped along with non-admin accounts.
+        """
+        try:
+            results: list[dict[str, Any]] = []
+            page = self._auth.list_users()
+            while page:
+                for user in page.users:
+                    results.append(
+                        {
+                            "uid": user.uid,
+                            "email": (user.email or "").lower() or None,
+                        }
+                    )
+                page = page.get_next_page()
+            return results
+        except Exception as e:
+            logger.exception("Firebase Auth list_users failed")
+            raise InfrastructureError(
+                "Firebase Auth is temporarily unavailable"
+            ) from e
 
     def update_user_password(self, user_id: str, new_password: str) -> bool:
         """

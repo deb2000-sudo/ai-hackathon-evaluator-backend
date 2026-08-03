@@ -86,6 +86,14 @@ def test_reset_database_wipes_collections_and_keeps_admins():
 
     firebase.get_collection.side_effect = get_collection
     firebase.delete_documents.side_effect = lambda coll, ids: len(ids)
+    # Auth has Firestore users PLUS an orphan from a previous incomplete wipe.
+    firebase.list_auth_users.return_value = [
+        {"uid": "admin-1", "email": "admin@nxtwave.co.in"},
+        {"uid": "student-1", "email": "student@example.com"},
+        {"uid": "eval-1", "email": "eval@example.com"},
+        {"uid": "orphan-auth-1", "email": "debashis.nayak@nxtwave.co.in"},
+    ]
+    firebase.delete_user.return_value = True
 
     result = service.reset_database(
         DEFAULT_PROFILE_PASSWORD,
@@ -104,6 +112,14 @@ def test_reset_database_wipes_collections_and_keeps_admins():
     ]
     assert user_delete_calls
     assert set(user_delete_calls[0].args[1]) == {"student-1", "eval-1"}
+    # All non-admin Auth accounts removed, including Auth-only orphans.
+    assert result["deleted_counts"]["firebase_auth_non_admin"] == 3
+    assert {c.args[0] for c in firebase.delete_user.call_args_list} == {
+        "student-1",
+        "eval-1",
+        "orphan-auth-1",
+    }
+    assert "admin-1" not in {c.args[0] for c in firebase.delete_user.call_args_list}
 
     prompt_delete_calls = [
         c

@@ -47,7 +47,8 @@ class SeedUser(TypedDict):
     team_members: NotRequired[list[TeamMemberSeed]]
 
 
-# Sample users aligned with registration profile fields.
+# Startup seed creates only the bootstrap admin (no sample evaluators/students,
+# and no AI evaluation prompts — those are managed in the admin UI).
 DEFAULT_SEED_USERS: list[SeedUser] = [
     {
         "email": "admin@nxtwave.co.in",
@@ -59,53 +60,15 @@ DEFAULT_SEED_USERS: list[SeedUser] = [
         "employee_id": "NW-ADM-001",
         "mobile_no": "9000000001",
     },
-    {
-        "email": "evaluator@nxtwave.co.in",
-        "password": "12345678",
-        "first_name": "Priya",
-        "last_name": "Sharma",
-        "role": "evaluator",
-        "approval_status": "approved",
-        "niat_id": None,
-        "employee_id": "NW-EMP-1001",
-        "mobile_no": None,
-    },
-    {
-        "email": "evaluator.pending@nxtwave.co.in",
-        "password": "12345678",
-        "first_name": "Rahul",
-        "last_name": "Verma",
-        "role": "evaluator",
-        "approval_status": "pending",
-        "niat_id": None,
-        "employee_id": "NW-EMP-1002",
-        "mobile_no": None,
-    },
-    {
-        "email": "student@nxtwave.co.in",
-        "password": "12345678",
-        "first_name": "Aarav",
-        "last_name": "Patel",
-        "role": "student",
-        "approval_status": "approved",
-        "niat_id": "NIAT-2026-001",
-        "employee_id": None,
-        "mobile_no": "9876543210",
-        "team_name": "Code Catalysts",
-        "university": "NIAT University",
-        "team_leader_name": "Aarav Patel",
-        "team_members": [
-            {"name": "Isha Gupta", "email": "isha.gupta@example.com"},
-            {"name": "Rohan Mehta", "email": "rohan.mehta@example.com"},
-        ],
-    },
 ]
 
 
 class DatabaseSeeder:
     """
-    Seeder for initializing database with default data.
-    Creates sample admin, evaluator, and student users.
+    Seeder for initializing database with bootstrap data.
+
+    On startup this ensures only the admin account (and Profile Password) exist.
+    It does **not** seed AI prompts or sample student/evaluator users.
     """
 
     def __init__(
@@ -261,7 +224,6 @@ class DatabaseSeeder:
                 logger.info("%s", "=" * 60)
                 self.seed_user(seed_user)
 
-            self._seed_evaluation_prompts()
             self._seed_profile_password()
 
             logger.info("\nDatabase seeding completed successfully!")
@@ -269,17 +231,6 @@ class DatabaseSeeder:
         except Exception as e:
             logger.error("Error during seeding: %s", str(e))
             raise
-
-    def _seed_evaluation_prompts(self) -> None:
-        """Idempotently seed default Gemini checklist / analyze_video templates."""
-        try:
-            from app.services.evaluation_prompt_service import EvaluationPromptService
-
-            EvaluationPromptService(firebase=self.firebase).ensure_defaults(
-                seeded_by="system"
-            )
-        except Exception as e:
-            logger.warning("Could not seed AI evaluation prompts: %s", str(e))
 
     def _seed_profile_password(self) -> None:
         """Idempotently seed admin Profile Password (default ``12345678``)."""

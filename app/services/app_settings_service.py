@@ -128,11 +128,13 @@ class AppSettingsService:
         confirm_phrase: str,
     ) -> dict[str, Any]:
         """
-        Wipe application Firestore collections after Profile Password check.
+        Wipe application Firestore collections and non-admin Firebase Auth
+        accounts after Profile Password check.
 
         Preserves:
         - ``app_settings/security`` (Profile Password)
-        - All Firestore ``users`` with ``role == admin`` (including the caller)
+        - Firestore ``users`` with ``role == admin`` (including the caller)
+        - Matching Firebase Auth accounts for those admins
         """
         if confirm_phrase != RESET_CONFIRM_PHRASE:
             raise ValueError(f'confirm_phrase must be exactly "{RESET_CONFIRM_PHRASE}"')
@@ -149,22 +151,51 @@ class AppSettingsService:
                 ids = list(dict.fromkeys([*ids, *AI_PROMPT_DOCUMENT_IDS]))
             deleted_counts[collection] = self.firebase.delete_documents(collection, ids)
 
-        # Remove non-admin user profiles (keep admin accounts so login still works).
+        # Remove non-admin Firestore profiles (keep admin accounts for login).
         users = self.firebase.get_collection("users")
+        preserve_auth_uids = {
+            u["id"]
+            for u in users
+            if u.get("id") and (u.get("role") == "admin" or u["id"] == preserve_user_id)
+        }
+        preserve_auth_uids.add(preserve_user_id)
+
         non_admin_ids = [
             u["id"]
             for u in users
-            if u.get("id") and u.get("role") != "admin"
+            if u.get("id") and u["id"] not in preserve_auth_uids
         ]
-        # Never delete the calling admin even if role were mis-set.
-        non_admin_ids = [uid for uid in non_admin_ids if uid != preserve_user_id]
         deleted_counts["users_non_admin"] = self.firebase.delete_documents(
             "users", non_admin_ids
         )
 
+        # Wipe Firebase Auth for everyone except preserved admins — including
+        # Auth-only orphans left from earlier resets (no Firestore doc).
+        auth_deleted = 0
+        try:
+            auth_users = self.firebase.list_auth_users()
+        except Exception as exc:
+            logger.warning("Could not list Firebase Auth users during reset: %s", exc)
+            auth_users = [{"uid": uid} for uid in non_admin_ids]
+
+        for auth_user in auth_users:
+            uid = auth_user.get("uid")
+            if not uid or uid in preserve_auth_uids:
+                continue
+            try:
+                if self.firebase.delete_user(uid):
+                    auth_deleted += 1
+            except Exception as exc:
+                logger.warning(
+                    "Failed to delete Firebase Auth user %s during reset: %s",
+                    uid,
+                    exc,
+                )
+        deleted_counts["firebase_auth_non_admin"] = auth_deleted
+
         # Do not re-seed AI prompts here — reset should leave
         # ``ai_evaluation_prompts`` empty. Evaluation falls back to in-code
-        # defaults until prompts are seeded again (startup seeder / AI prompts UI).
+        # defaults until an admin saves prompts in the AI prompts UI.
 
         # Ensure profile password doc still present.
         self.ensure_default_profile_password()
@@ -176,14 +207,15 @@ class AppSettingsService:
         )
         return {
             "message": (
-                "Database reset completed. Application collections were cleared "
-                "(including ai_evaluation_prompts). Admin accounts and the "
-                "Profile Password were preserved."
+                "Database reset completed. Application collections and non-admin "
+                "Firebase Auth accounts were cleared. Admin Auth/Firestore accounts "
+                "and the Profile Password were preserved."
             ),
             "deleted_counts": deleted_counts,
             "preserved": [
                 "app_settings/security",
                 "users (role=admin)",
+                "firebase_auth (admin)",
                 f"users/{preserve_user_id}",
             ],
         }
