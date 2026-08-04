@@ -264,15 +264,17 @@ async def get_accepted_video_types(
 @router.post("/upload-url", response_model=PrepareUploadResponse)
 async def prepare_submission_upload(
     request: PrepareUploadRequest,
+    http_request: Request,
     student: CurrentUser = Depends(get_student_user),
     service: SubmissionService = Depends(get_submission_service),
 ) -> PrepareUploadResponse:
     """
-    Get a signed GCS PUT URL for a recorded blob or a local video file.
+    Plan a direct-to-GCS upload (resumable or parallel parts).
 
-    Same storage path either way. Use this instead of multipart when the video
-    may exceed Cloud Run's ~32 MiB limit.
+    Send ``content_length`` (File.size) for large local files so the API can
+    return parallel chunk URLs — much faster than one 200 MiB PUT.
     """
+    origin = http_request.headers.get("origin")
     try:
         payload = await run_sync(
             service.prepare_direct_upload,
@@ -280,6 +282,8 @@ async def prepare_submission_upload(
             filename=request.filename,
             content_type=request.content_type,
             video_source=request.video_source,
+            content_length=request.content_length,
+            origin=origin,
         )
     except ValueError as e:
         raise HTTPException(

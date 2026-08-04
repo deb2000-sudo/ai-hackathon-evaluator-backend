@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from app.models.analysis_model import AnalysisSummary
 from app.models.scorecard_model import ScorecardResult
 from app.models.string_utils import strip_optional, strip_required
+from app.utils.video_upload import MAX_VIDEO_UPLOAD_BYTES
 
 
 SubmissionStatus = Literal["uploaded", "processing", "completed", "failed"]
@@ -53,6 +54,11 @@ class AcceptedVideoTypesResponse(BaseModel):
     )
     sources: list[VideoSource]
     note: str
+    prefer_direct_gcs: bool = True
+    send_content_length_for_parallel: bool = Field(
+        True,
+        description="Send File.size as content_length on /upload-url for parallel chunks.",
+    )
 
 
 class SubmissionResponse(BaseModel):
@@ -361,6 +367,21 @@ class DivideEquallyResponse(BaseModel):
     submissions: list[SubmissionResponse]
 
 
+class PrepareUploadPart(BaseModel):
+    """One parallel chunk for ``upload_protocol=parallel_compose``."""
+
+    index: int = Field(..., ge=0)
+    object_name: str
+    upload_url: str
+    offset_start: int = Field(..., ge=0)
+    offset_end: int = Field(
+        ...,
+        ge=0,
+        description="Exclusive end offset in the source file (slice end).",
+    )
+    content_length: int = Field(..., gt=0)
+
+
 class PrepareUploadRequest(BaseModel):
     """Request a direct-to-GCS signed upload URL for a submission video."""
 
@@ -371,6 +392,15 @@ class PrepareUploadRequest(BaseModel):
         description=(
             "Video MIME type (e.g. video/webm, video/mp4). "
             "Optional for local file picks that omit type — resolved from filename."
+        ),
+    )
+    content_length: Optional[int] = Field(
+        None,
+        ge=1,
+        le=MAX_VIDEO_UPLOAD_BYTES,
+        description=(
+            "Exact file size in bytes (File.size). Send this for large local "
+            "files so the API can return parallel chunk URLs (much faster)."
         ),
     )
     video_source: Optional[VideoSource] = Field(
@@ -390,11 +420,20 @@ class PrepareUploadRequest(BaseModel):
 
 
 class PrepareUploadResponse(BaseModel):
-    """Signed PUT URL so the browser can upload video directly to GCS."""
+    """
+    Direct-to-GCS upload plan.
 
-    upload_url: str = Field(
-        ...,
-        description="PUT the video bytes here. Must send the same Content-Type.",
+    - ``resumable`` / ``signed_put``: PUT whole file to ``upload_url``
+    - ``parallel_compose``: PUT each ``parts[]`` slice in parallel, then finalize
+    """
+
+    upload_url: Optional[str] = Field(
+        None,
+        description="Single-file PUT URL (resumable or signed). Null for parallel.",
+    )
+    upload_protocol: str = Field(
+        "resumable",
+        description="resumable | signed_put | parallel_compose",
     )
     video_path: str = Field(..., description="gs:// URI to pass when finalizing.")
     object_name: str
@@ -405,6 +444,22 @@ class PrepareUploadResponse(BaseModel):
     max_upload_bytes: int = Field(
         ...,
         description="Suggested client-side max size before rejecting the file.",
+    )
+    required_headers: dict[str, str] = Field(
+        default_factory=dict,
+        description="Headers that must be sent on each PUT (at least Content-Type).",
+    )
+    parts: list[PrepareUploadPart] = Field(
+        default_factory=list,
+        description="Parallel chunks when upload_protocol=parallel_compose.",
+    )
+    recommended_concurrency: int = Field(
+        1,
+        description="How many part PUTs to run at once (parallel_compose).",
+    )
+    supports_progress: bool = Field(
+        True,
+        description="Use XMLHttpRequest upload.onprogress (or fetch+ReadableStream).",
     )
 
 

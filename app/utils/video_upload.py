@@ -87,11 +87,13 @@ def accepted_video_types_payload() -> dict:
         "max_multipart_upload_bytes": MAX_MULTIPART_VIDEO_BYTES,
         "sources": ["recorded", "uploaded"],
         "note": (
-            "Both browser recordings and local file uploads use the same "
-            "signed-URL → GCS → finalize flow. Prefer upload-url for files over "
-            f"~{MAX_MULTIPART_VIDEO_BYTES // (1024 * 1024)} MiB "
-            "(Cloud Run multipart limit ~32 MiB)."
+            "Use POST /submissions/upload-url with content_length=File.size, "
+            "PUT directly to GCS (parallel parts for large files), then "
+            "POST /submissions/from-upload. Never multipart large videos "
+            f"(Cloud Run limit ~{MAX_MULTIPART_VIDEO_BYTES // (1024 * 1024)} MiB)."
         ),
+        "prefer_direct_gcs": True,
+        "send_content_length_for_parallel": True,
     }
 
 

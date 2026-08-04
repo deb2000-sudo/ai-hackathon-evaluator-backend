@@ -6,7 +6,7 @@ import logging
 import os
 import re
 from datetime import timedelta
-from typing import Iterator
+from typing import Any, Iterator
 
 from google.cloud import storage
 from google.cloud.storage.blob import Blob
@@ -168,6 +168,70 @@ def generate_signed_upload_url(
         method="PUT",
         content_type=content_type,
     )
+
+
+def create_resumable_upload_url(
+    client: storage.Client,
+    bucket_name: str,
+    object_name: str,
+    content_type: str,
+    *,
+    origin: str | None = None,
+    size: int | None = None,
+) -> str:
+    """
+    Create a GCS resumable-upload session URL for browser PUT(s).
+
+    ``origin`` must match the SPA Origin header so GCS CORS allows the upload.
+    """
+    blob = client.bucket(bucket_name).blob(object_name)
+    kwargs: dict[str, Any] = {"content_type": content_type}
+    if origin:
+        kwargs["origin"] = origin
+    if size is not None and size > 0:
+        kwargs["size"] = int(size)
+    return blob.create_resumable_upload_session(**kwargs)
+
+
+def compose_object_from_parts(
+    client: storage.Client,
+    bucket_name: str,
+    final_object_name: str,
+    part_object_names: list[str],
+    *,
+    content_type: str | None = None,
+) -> int:
+    """
+    Compose parallel-uploaded part objects into ``final_object_name``.
+
+    Deletes the part objects after a successful compose. Returns final size.
+    """
+    if not part_object_names:
+        raise ValueError("No upload parts to compose")
+    if len(part_object_names) > 32:
+        raise ValueError("Too many upload parts (GCS compose limit is 32)")
+
+    bucket = client.bucket(bucket_name)
+    sources = [bucket.blob(name) for name in part_object_names]
+    for blob in sources:
+        if not blob.exists():
+            raise ValueError(
+                f"Upload part missing: {blob.name}. "
+                "Finish all parallel part PUTs before finalizing."
+            )
+
+    destination = bucket.blob(final_object_name)
+    if content_type:
+        destination.content_type = content_type
+    destination.compose(sources)
+    for blob in sources:
+        try:
+            blob.delete()
+        except Exception:
+            logger.warning("Failed to delete compose part %s", blob.name)
+
+    destination.reload()
+    return int(destination.size or 0)
 
 
 def signed_url_expiry_seconds() -> int:

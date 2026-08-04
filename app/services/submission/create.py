@@ -2,13 +2,26 @@
 
 from __future__ import annotations
 
+import logging
+import math
 import os
 import uuid
 from datetime import datetime
 from typing import Any, BinaryIO
 
+
+logger = logging.getLogger(__name__)
+
+# GCS object compose accepts at most 32 source objects per call.
+_MAX_COMPOSE_PARTS = 32
+
 from app.models.user_model import CurrentUser
-from app.utils.gcs_video import generate_signed_upload_url, parse_gs_uri
+from app.utils.gcs_video import (
+    compose_object_from_parts,
+    create_resumable_upload_url,
+    generate_signed_upload_url,
+    parse_gs_uri,
+)
 from app.utils.video_upload import (
     MAX_MULTIPART_VIDEO_BYTES,
     MAX_VIDEO_UPLOAD_BYTES,
@@ -133,12 +146,15 @@ class CreateMixin:
         filename: str,
         content_type: str | None = None,
         video_source: str | None = None,
+        content_length: int | None = None,
+        origin: str | None = None,
     ) -> dict[str, Any]:
         """
-        Mint a signed PUT URL so the browser uploads the video straight to GCS.
+        Plan a direct-to-GCS upload (never proxies bytes through the API).
 
-        Works for both in-browser recordings and local file picks. Avoids Cloud
-        Run's HTTP/1 32 MiB request-body limit (413 Content Too Large).
+        Large local files (``content_length`` ≥ threshold) get parallel part
+        URLs so the browser can upload chunks concurrently. Smaller files get
+        a resumable session URL (falls back to a signed PUT).
         """
         self._validate_configuration()
 
@@ -146,21 +162,17 @@ class CreateMixin:
             content_type,
             filename,
         )
+        if content_length is not None:
+            assert_video_size(
+                content_length, max_bytes=MAX_VIDEO_UPLOAD_BYTES, via="signed"
+            )
+
         submission_id = uuid.uuid4().hex
         object_name = self._video_object_name(student.user_id, submission_id, extension)
         video_path = f"gs://{self.bucket_name}/{object_name}"
-        expires_in = int(os.getenv("VIDEO_UPLOAD_URL_EXPIRY_SECONDS", "1800"))
-
-        upload_url = generate_signed_upload_url(
-            self._storage_client(),
-            self.bucket_name,
-            object_name,
-            resolved_type,
-            expiry_seconds=expires_in,
-        )
-
-        return {
-            "upload_url": upload_url,
+        expires_in = int(os.getenv("VIDEO_UPLOAD_URL_EXPIRY_SECONDS", "3600"))
+        required_headers = {"Content-Type": resolved_type}
+        base = {
             "video_path": video_path,
             "object_name": object_name,
             "content_type": resolved_type,
@@ -168,7 +180,146 @@ class CreateMixin:
             "video_source": self._normalize_video_source(video_source),
             "expires_in_seconds": expires_in,
             "max_upload_bytes": MAX_VIDEO_UPLOAD_BYTES,
+            "required_headers": required_headers,
+            "supports_progress": True,
+            "parts": [],
+            "recommended_concurrency": 1,
         }
+
+        part_bytes = self._parallel_part_bytes()
+        threshold = self._parallel_threshold_bytes()
+        if (
+            content_length is not None
+            and content_length >= threshold
+            and part_bytes > 0
+        ):
+            parts = self._build_parallel_parts(
+                object_name=object_name,
+                content_type=resolved_type,
+                content_length=content_length,
+                part_bytes=part_bytes,
+                expires_in=expires_in,
+            )
+            return {
+                **base,
+                "upload_url": None,
+                "upload_protocol": "parallel_compose",
+                "parts": parts,
+                "recommended_concurrency": self._parallel_concurrency(),
+            }
+
+        client = self._storage_client()
+        try:
+            upload_url = create_resumable_upload_url(
+                client,
+                self.bucket_name,
+                object_name,
+                resolved_type,
+                origin=origin,
+                size=content_length,
+            )
+            protocol = "resumable"
+        except Exception as exc:
+            logger.warning(
+                "Resumable upload session failed (%s); falling back to signed PUT",
+                exc,
+            )
+            upload_url = generate_signed_upload_url(
+                client,
+                self.bucket_name,
+                object_name,
+                resolved_type,
+                expiry_seconds=expires_in,
+            )
+            protocol = "signed_put"
+
+        return {
+            **base,
+            "upload_url": upload_url,
+            "upload_protocol": protocol,
+        }
+
+    def _build_parallel_parts(
+        self,
+        *,
+        object_name: str,
+        content_type: str,
+        content_length: int,
+        part_bytes: int,
+        expires_in: int,
+    ) -> list[dict[str, Any]]:
+        """
+        Build parallel PUT plans. Auto-grows part size so we never exceed the
+        GCS compose limit of 32 sources (avoids failing large ~200–500 MiB files).
+        """
+        min_part_for_limit = math.ceil(content_length / _MAX_COMPOSE_PARTS)
+        effective_part_bytes = max(part_bytes, min_part_for_limit)
+        if effective_part_bytes > part_bytes:
+            logger.info(
+                "Raising upload part size from %s to %s bytes for %s-byte file "
+                "(GCS compose max %s parts)",
+                part_bytes,
+                effective_part_bytes,
+                content_length,
+                _MAX_COMPOSE_PARTS,
+            )
+
+        client = self._storage_client()
+        parts: list[dict[str, Any]] = []
+        offset = 0
+        index = 0
+        while offset < content_length:
+            if index >= _MAX_COMPOSE_PARTS:
+                # Should be unreachable after auto-sizing; fail safely.
+                raise ValueError(
+                    "Unable to plan parallel upload within GCS compose limits"
+                )
+            end = min(offset + effective_part_bytes, content_length)
+            part_name = f"{object_name}.part{index:03d}"
+            upload_url = generate_signed_upload_url(
+                client,
+                self.bucket_name,
+                part_name,
+                content_type,
+                expiry_seconds=expires_in,
+            )
+            parts.append(
+                {
+                    "index": index,
+                    "object_name": part_name,
+                    "upload_url": upload_url,
+                    "offset_start": offset,
+                    "offset_end": end,
+                    "content_length": end - offset,
+                }
+            )
+            offset = end
+            index += 1
+        return parts
+
+    @staticmethod
+    def _parallel_part_bytes() -> int:
+        raw = os.getenv("VIDEO_UPLOAD_PART_BYTES", str(8 * 1024 * 1024))
+        try:
+            return max(1 * 1024 * 1024, int(raw))
+        except ValueError:
+            return 8 * 1024 * 1024
+
+    @staticmethod
+    def _parallel_threshold_bytes() -> int:
+        raw = os.getenv("VIDEO_UPLOAD_PARALLEL_THRESHOLD_BYTES", str(32 * 1024 * 1024))
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            return 32 * 1024 * 1024
+
+    @staticmethod
+    def _parallel_concurrency() -> int:
+        raw = os.getenv("VIDEO_UPLOAD_PARALLEL_CONCURRENCY", "4")
+        try:
+            return max(1, min(8, int(raw)))
+        except ValueError:
+            return 4
 
     def create_submission_from_upload(
         self,
@@ -224,14 +375,28 @@ class CreateMixin:
             if not object_name.endswith(f"/video{extension}"):
                 raise ValueError("video_path does not match the expected upload object")
 
-            blob = self._storage_client().bucket(bucket_name).blob(object_name)
+            client = self._storage_client()
+            blob = client.bucket(bucket_name).blob(object_name)
             if not blob.exists():
-                raise ValueError(
-                    "Video has not been uploaded yet. "
-                    "PUT the file to the signed upload_url first."
+                # Parallel path: compose ``*.part000`` … into the final object.
+                part_names = self._list_parallel_part_names(
+                    client, bucket_name, object_name
                 )
-            blob.reload()
-            size = int(blob.size or 0)
+                if not part_names:
+                    raise ValueError(
+                        "Video has not been uploaded yet. "
+                        "Finish the GCS PUT(s), then finalize."
+                    )
+                size = compose_object_from_parts(
+                    client,
+                    bucket_name,
+                    object_name,
+                    part_names,
+                    content_type=resolved_type,
+                )
+            else:
+                blob.reload()
+                size = int(blob.size or 0)
             assert_video_size(size, max_bytes=MAX_VIDEO_UPLOAD_BYTES, via="signed")
 
             # Prefer the path segment as the stable submission id.
@@ -272,6 +437,22 @@ class CreateMixin:
     @staticmethod
     def _video_object_name(student_id: str, submission_id: str, extension: str) -> str:
         return f"submissions/{student_id}/{submission_id}/video{extension}"
+
+    @staticmethod
+    def _list_parallel_part_names(
+        client: Any,
+        bucket_name: str,
+        final_object_name: str,
+    ) -> list[str]:
+        """Return ordered ``final.part000`` … names that exist in the bucket."""
+        names: list[str] = []
+        bucket = client.bucket(bucket_name)
+        for index in range(32):
+            part_name = f"{final_object_name}.part{index:03d}"
+            if not bucket.blob(part_name).exists():
+                break
+            names.append(part_name)
+        return names
 
     def _validate_hackathon_and_theme(
         self,
