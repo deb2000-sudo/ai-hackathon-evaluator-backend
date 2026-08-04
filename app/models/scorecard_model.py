@@ -7,7 +7,7 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 
 
-ScoreSource = Literal["ai", "evaluator", "pending"]
+ScoreSource = Literal["ai", "evaluator", "evaluator_override", "pending"]
 
 
 class SegmentScoreResult(BaseModel):

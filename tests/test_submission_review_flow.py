@@ -64,6 +64,80 @@ def test_submit_for_review_sets_pending_and_score(service: SubmissionService):
     assert result["review_status"] == "pending_review"
 
 
+def test_submit_for_review_applies_ai_overrides(service: SubmissionService):
+    from app.services.scorecard import apply_ai_field_scores, build_scorecard_skeleton
+    from tests.test_scorecard import SAMPLE_METRICS
+
+    base = make_submission_doc(status="completed", review_status="none")
+    card = apply_ai_field_scores(
+        build_scorecard_skeleton(SAMPLE_METRICS),
+        [
+            {"field_key": "problem_statement", "score": 15, "max_score": 15},
+            {"field_key": "solution_description", "score": 15, "max_score": 15},
+            {"field_key": "video_explanation", "score": 20, "max_score": 20},
+        ],
+    )
+    analysis = {
+        "status": "completed",
+        "report": "# ok",
+        "scorecard": card,
+        "field_scores": [],
+    }
+    _wire_reads(service, _doc_without_id(base), analysis)
+    service.hackathon_service.get_hackathon.return_value = {
+        "id": "hack-1",
+        "timeline": [{"evaluation_requirement_id": "req-1"}],
+    }
+    service.metric_scoring_service.get_scoring_for_requirement.return_value = {
+        "metrics": SAMPLE_METRICS,
+    }
+
+    result = service.submit_for_review(
+        submission_id="sub-1",
+        evaluator_user_id="evaluator-1",
+        override_ai_scores=True,
+        ai_overrides=[
+            {"field_key": "problem_statement", "score": 0},
+            {"field_key": "solution_description", "score": 1},
+            {"field_key": "video_explanation", "score": 16.5},
+        ],
+        manual_metrics=[
+            {
+                "field_key": "github_link",
+                "segments": [
+                    {"key": "visibility", "value": "public"},
+                    {"key": "structure_score", "score": 0},
+                ],
+            },
+            {
+                "field_key": "mvp_link",
+                "segments": [
+                    {"key": "authentication", "value": False},
+                    {"key": "data_persistence", "value": False},
+                    {"key": "realtime_data", "value": False},
+                    {"key": "ai_features", "value": False},
+                    {"key": "mobile_responsive", "value": False},
+                    {"key": "ui_quality", "value": False},
+                ],
+            },
+        ],
+    )
+
+    # First txn_update is submission; scorecard should reflect overrides.
+    sub_update = service.firebase.txn_update.call_args_list[0][0][3]
+    assert sub_update["override_ai_scores"] is True
+    assert sub_update["final_score"] == 17.5
+    assert sub_update["scorecard"]["ai_total"] == 17.5
+    ps = next(
+        m
+        for m in sub_update["scorecard"]["metrics"]
+        if m["field_key"] == "problem_statement"
+    )
+    assert ps["source"] == "evaluator_override"
+    assert ps["score"] == 0
+    assert result["evaluator_ai_overrides"][0]["original_ai_score"] == 15
+
+
 def test_submit_for_review_rejects_non_assignee(service: SubmissionService):
     base = make_submission_doc(assigned_evaluator_id="evaluator-1")
     _wire_reads(service, _doc_without_id(base), {"status": "completed"})

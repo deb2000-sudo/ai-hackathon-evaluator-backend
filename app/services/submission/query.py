@@ -177,6 +177,8 @@ class QueryMixin:
         enriched.setdefault("review_status", "none")
         enriched.setdefault("final_score", None)
         enriched.setdefault("evaluator_notes", None)
+        enriched.setdefault("override_ai_scores", False)
+        enriched.setdefault("evaluator_ai_overrides", None)
         enriched.setdefault("submitted_for_review_at", None)
         enriched.setdefault("submitted_for_review_by", None)
         enriched.setdefault("reviewed_at", None)

@@ -180,7 +180,19 @@ class SubmissionResponse(BaseModel):
         None,
         description=(
             "Weighted AI + manual scorecard. AI segments fill after evaluate; "
-            "manual segments fill when the evaluator submits for review."
+            "manual segments fill when the evaluator submits for review. "
+            "AI metrics may show evaluator_override after Override Scores."
+        ),
+    )
+    override_ai_scores: bool = Field(
+        False,
+        description="True when the evaluator overrode one or more AI metric scores.",
+    )
+    evaluator_ai_overrides: Optional[list[dict[str, Any]]] = Field(
+        None,
+        description=(
+            "Audit trail of AI score overrides: "
+            "field_key, original_ai_score, override_score, max_score."
         ),
     )
     error: Optional[str] = None
@@ -242,6 +254,23 @@ class ManualMetricInput(BaseModel):
         return strip_required(value)
 
 
+class AiOverrideInput(BaseModel):
+    """Evaluator override for one AI scorecard metric."""
+
+    field_key: str = Field(..., min_length=1, max_length=100)
+    score: float = Field(
+        ...,
+        ge=0,
+        le=100,
+        description="Replacement score; must be ≤ that metric's max_score.",
+    )
+
+    @field_validator("field_key", mode="before")
+    @classmethod
+    def normalize_key(cls, value: str) -> str:
+        return strip_required(value)
+
+
 class SubmitForReviewRequest(BaseModel):
     """Evaluator submits a completed evaluation to admin for approval."""
 
@@ -251,7 +280,7 @@ class SubmitForReviewRequest(BaseModel):
         le=100,
         description=(
             "Optional override. When omitted, the server computes the weighted "
-            "scorecard total from AI + manual_metrics."
+            "scorecard total from AI (+ overrides) + manual_metrics."
         ),
     )
     manual_metrics: Optional[list[ManualMetricInput]] = Field(
@@ -259,6 +288,17 @@ class SubmitForReviewRequest(BaseModel):
         description=(
             "Manual scorecard entries (GitHub, MVP checklist, …). Required when "
             "the scorecard has unscored manual metrics."
+        ),
+    )
+    override_ai_scores: bool = Field(
+        False,
+        description="When true, apply ai_overrides onto AI metrics before totaling.",
+    )
+    ai_overrides: Optional[list[AiOverrideInput]] = Field(
+        None,
+        description=(
+            "AI metric score replacements. Required (non-empty) when "
+            "override_ai_scores is true. Only scoring_mode=ai keys allowed."
         ),
     )
     evaluator_notes: Optional[str] = Field(
@@ -274,7 +314,20 @@ class SubmitForReviewRequest(BaseModel):
 
     @model_validator(mode="after")
     def require_score_or_manual(self) -> "SubmitForReviewRequest":
-        if self.final_score is None and not self.manual_metrics:
+        if self.override_ai_scores:
+            if not self.ai_overrides:
+                raise ValueError(
+                    "ai_overrides is required when override_ai_scores is true"
+                )
+        elif self.ai_overrides:
+            raise ValueError(
+                "ai_overrides must be omitted when override_ai_scores is false"
+            )
+        if (
+            self.final_score is None
+            and not self.manual_metrics
+            and not self.override_ai_scores
+        ):
             raise ValueError(
                 "Provide manual_metrics (preferred) and/or final_score"
             )

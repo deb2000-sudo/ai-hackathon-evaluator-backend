@@ -5,7 +5,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from app.services.scorecard import apply_manual_scores, build_scorecard_skeleton
+from app.services.scorecard import (
+    apply_ai_overrides,
+    apply_manual_scores,
+    build_scorecard_skeleton,
+)
 
 
 class ReviewMixin:
@@ -16,6 +20,8 @@ class ReviewMixin:
         final_score: float | None = None,
         evaluator_notes: str | None = None,
         manual_metrics: list[dict[str, Any]] | None = None,
+        override_ai_scores: bool = False,
+        ai_overrides: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Assigned evaluator submits completed evaluation to admin."""
         notes = evaluator_notes.strip() if evaluator_notes else None
@@ -23,6 +29,14 @@ class ReviewMixin:
         manual_payloads = [
             m if isinstance(m, dict) else m.model_dump() for m in (manual_metrics or [])
         ]
+        override_payloads = [
+            m if isinstance(m, dict) else m.model_dump()
+            for m in (ai_overrides or [])
+        ]
+        if override_ai_scores and not override_payloads:
+            raise ValueError("ai_overrides is required when override_ai_scores is true")
+        if not override_ai_scores:
+            override_payloads = []
 
         def _txn(transaction):
             submission = self.firebase.txn_get(
@@ -54,10 +68,11 @@ class ReviewMixin:
                     "Evaluation is already approved; unpublish/request changes first"
                 )
 
-            scorecard, computed = self._merge_manual_into_scorecard(
+            scorecard, computed, override_audit = self._merge_review_into_scorecard(
                 submission=submission,
                 analysis=analysis,
                 manual_payloads=manual_payloads,
+                ai_overrides=override_payloads,
             )
             if final_score is not None:
                 resolved_score = float(final_score)
@@ -76,6 +91,8 @@ class ReviewMixin:
                 "final_score": resolved_score,
                 "scorecard": scorecard,
                 "manual_scores": manual_payloads or None,
+                "override_ai_scores": bool(override_audit),
+                "evaluator_ai_overrides": override_audit or None,
                 "evaluator_notes": notes,
                 "submitted_for_review_at": now,
                 "submitted_for_review_by": evaluator_user_id,
@@ -102,16 +119,22 @@ class ReviewMixin:
 
         return self.firebase.run_transaction(_txn)
 
-    def _merge_manual_into_scorecard(
+    def _merge_review_into_scorecard(
         self,
         *,
         submission: dict[str, Any],
         analysis: dict[str, Any],
         manual_payloads: list[dict[str, Any]],
-    ) -> tuple[dict[str, Any] | None, float | None]:
-        """Merge evaluator manual scores into the AI scorecard; return (scorecard, total)."""
+        ai_overrides: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any] | None, float | None, list[dict[str, Any]]]:
+        """
+        Merge AI overrides + manual scores into the scorecard.
+
+        Returns ``(scorecard, computed_total, override_audit)``.
+        """
         scorecard = analysis.get("scorecard") or submission.get("scorecard")
         metric_defs: list[dict[str, Any]] = []
+        override_audit: list[dict[str, Any]] = []
 
         hackathon_id = (submission.get("hackathon_id") or "").strip()
         if hackathon_id:
@@ -133,12 +156,16 @@ class ReviewMixin:
                 scorecard = apply_ai_field_scores(scorecard, field_scores)
 
         if not scorecard:
-            if manual_payloads:
+            if manual_payloads or ai_overrides:
                 raise ValueError(
                     "No scorecard definition found for this hackathon. "
                     "Configure AI evaluation metric scoring first."
                 )
-            return None, None
+            return None, None, []
+
+        # Overrides first so totals include evaluator-adjusted AI scores.
+        if ai_overrides:
+            scorecard, override_audit = apply_ai_overrides(scorecard, ai_overrides)
 
         if manual_payloads:
             scorecard = apply_manual_scores(
@@ -159,7 +186,7 @@ class ReviewMixin:
                     "submitting for review"
                 )
 
-        return scorecard, scorecard.get("computed_total")
+        return scorecard, scorecard.get("computed_total"), override_audit
 
     @staticmethod
     def _resolve_evaluation_requirement_id(

@@ -75,6 +75,77 @@ def apply_ai_field_scores(
     return _finalize_scorecard(scorecard)
 
 
+def apply_ai_overrides(
+    scorecard: dict[str, Any],
+    ai_overrides: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """
+    Apply evaluator overrides onto AI metrics.
+
+    Returns ``(updated_scorecard, audit_rows)`` where each audit row is
+    ``{field_key, original_ai_score, override_score, max_score}``.
+    """
+    if not ai_overrides:
+        raise ValueError("ai_overrides must contain at least one entry")
+
+    from app.models.metric_scoring_model import canonicalize_metric_field_key
+
+    by_key = {item["field_key"]: item for item in (scorecard.get("metrics") or [])}
+    scorecard_keys = set(by_key.keys())
+
+    seen: set[str] = set()
+    audit: list[dict[str, Any]] = []
+
+    for payload in ai_overrides:
+        raw_key = (payload.get("field_key") or "").strip()
+        if not raw_key:
+            raise ValueError("ai_overrides entries require field_key")
+        key = canonicalize_metric_field_key(raw_key, scorecard_keys)
+        if key not in by_key:
+            raise ValueError(
+                f"field_key '{raw_key}' is not on this hackathon scorecard"
+            )
+        if key in seen:
+            raise ValueError(f"Duplicate ai_override for '{key}'")
+        seen.add(key)
+
+        item = by_key[key]
+        if item.get("scoring_mode") == "manual":
+            raise ValueError(
+                f"Cannot override manual metric '{key}' via ai_overrides"
+            )
+
+        max_score = float(item.get("max_score") or 10)
+        try:
+            score = float(payload["score"])
+        except (KeyError, TypeError, ValueError) as e:
+            raise ValueError(f"ai_override '{key}' requires a numeric score") from e
+        if score < 0 or score > max_score:
+            raise ValueError(
+                f"ai_override '{key}' score must be between 0 and {max_score}"
+            )
+
+        original = item.get("score")
+        try:
+            original_ai = float(original) if original is not None else None
+        except (TypeError, ValueError):
+            original_ai = None
+
+        item["score"] = score
+        item["source"] = "evaluator_override"
+        item["skipped"] = False
+        audit.append(
+            {
+                "field_key": key,
+                "original_ai_score": original_ai,
+                "override_score": score,
+                "max_score": max_score,
+            }
+        )
+
+    return _finalize_scorecard(scorecard), audit
+
+
 def apply_manual_scores(
     scorecard: dict[str, Any],
     manual_metrics: list[dict[str, Any]],

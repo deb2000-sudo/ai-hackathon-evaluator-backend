@@ -1,7 +1,10 @@
 """Unit tests for weighted AI + manual scorecards."""
 
+import pytest
+
 from app.services.scorecard import (
     apply_ai_field_scores,
+    apply_ai_overrides,
     apply_manual_scores,
     build_scorecard_skeleton,
 )
@@ -142,3 +145,50 @@ def test_private_github_scores_zero():
     )
     github = next(m for m in card["metrics"] if m["field_key"] == "github_link")
     assert github["score"] == 0.0
+
+
+def test_ai_overrides_recompute_totals_and_audit():
+    card = build_scorecard_skeleton(SAMPLE_METRICS)
+    card = apply_ai_field_scores(
+        card,
+        [
+            {"field_key": "problem_statement", "score": 15, "max_score": 15},
+            {"field_key": "solution_description", "score": 15, "max_score": 15},
+            {"field_key": "video_explanation", "score": 20, "max_score": 20},
+        ],
+    )
+    assert card["ai_total"] == 50.0
+
+    card, audit = apply_ai_overrides(
+        card,
+        [
+            {"field_key": "problem_statement", "score": 0},
+            {"field_key": "solution_description", "score": 1},
+            {"field_key": "video_explanation", "score": 16.5},
+        ],
+    )
+    ps = next(m for m in card["metrics"] if m["field_key"] == "problem_statement")
+    assert ps["score"] == 0
+    assert ps["source"] == "evaluator_override"
+    # (0/15)*15 + (1/15)*15 + (16.5/20)*20 = 0 + 1 + 16.5 = 17.5
+    assert card["ai_total"] == 17.5
+    assert {row["field_key"] for row in audit} == {
+        "problem_statement",
+        "solution_description",
+        "video_explanation",
+    }
+    assert next(r for r in audit if r["field_key"] == "problem_statement")[
+        "original_ai_score"
+    ] == 15
+
+
+def test_ai_overrides_reject_manual_metrics():
+    card = build_scorecard_skeleton(SAMPLE_METRICS)
+    with pytest.raises(ValueError, match="manual metric"):
+        apply_ai_overrides(card, [{"field_key": "github_link", "score": 10}])
+
+
+def test_ai_overrides_reject_over_max():
+    card = build_scorecard_skeleton(SAMPLE_METRICS)
+    with pytest.raises(ValueError, match="between 0 and 15"):
+        apply_ai_overrides(card, [{"field_key": "problem_statement", "score": 20}])

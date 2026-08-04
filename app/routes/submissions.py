@@ -771,6 +771,11 @@ async def submit_evaluation_for_review(
             if request.manual_metrics
             else None
         )
+        ai_overrides = (
+            [m.model_dump() for m in request.ai_overrides]
+            if request.ai_overrides
+            else None
+        )
         submission = await run_sync(
             service.submit_for_review,
             submission_id=submission_id,
@@ -778,6 +783,8 @@ async def submit_evaluation_for_review(
             final_score=request.final_score,
             evaluator_notes=request.evaluator_notes,
             manual_metrics=manual,
+            override_ai_scores=request.override_ai_scores,
+            ai_overrides=ai_overrides,
         )
     except ValueError as e:
         raise _http_from_value_error(e) from e

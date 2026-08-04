@@ -539,6 +539,8 @@ class CreateMixin:
             "review_status": "none",
             "final_score": None,
             "evaluator_notes": None,
+            "override_ai_scores": False,
+            "evaluator_ai_overrides": None,
             "submitted_for_review_at": None,
             "submitted_for_review_by": None,
             "reviewed_at": None,
