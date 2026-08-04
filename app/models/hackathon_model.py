@@ -79,7 +79,18 @@ class HackathonCreateRequest(BaseModel):
     description: str = Field(..., min_length=1, max_length=10000)
     start_date: str
     end_date: str
-    guidelines: str = Field(..., min_length=1, max_length=10000)
+    guidelines: str = Field(
+        ...,
+        min_length=1,
+        max_length=10000,
+        description="Participation guidelines shown to students.",
+    )
+    evaluator_guidelines: str = Field(
+        ...,
+        min_length=1,
+        max_length=10000,
+        description="Guidelines shown to evaluators for reviewing submissions.",
+    )
     theme_ids: list[str] = Field(
         ...,
         min_length=1,
@@ -108,7 +119,9 @@ class HackathonCreateRequest(BaseModel):
         ),
     )
 
-    @field_validator("name", "description", "guidelines", mode="before")
+    @field_validator(
+        "name", "description", "guidelines", "evaluator_guidelines", mode="before"
+    )
     @classmethod
     def normalize_required_text(cls, value: str) -> str:
         return strip_required(value)
@@ -141,7 +154,18 @@ class HackathonUpdateRequest(BaseModel):
     description: Optional[str] = Field(None, min_length=1, max_length=10000)
     start_date: Optional[str] = None
     end_date: Optional[str] = None
-    guidelines: Optional[str] = Field(None, min_length=1, max_length=10000)
+    guidelines: Optional[str] = Field(
+        None,
+        min_length=1,
+        max_length=10000,
+        description="Participation guidelines shown to students.",
+    )
+    evaluator_guidelines: Optional[str] = Field(
+        None,
+        min_length=1,
+        max_length=10000,
+        description="Guidelines shown to evaluators for reviewing submissions.",
+    )
     theme_ids: Optional[list[str]] = Field(None, min_length=1)
     hackathon_url: Optional[str] = Field(None, max_length=2000)
     timeline: Optional[list[TimelineRound]] = None
@@ -158,7 +182,9 @@ class HackathonUpdateRequest(BaseModel):
         ),
     )
 
-    @field_validator("name", "description", "guidelines", mode="before")
+    @field_validator(
+        "name", "description", "guidelines", "evaluator_guidelines", mode="before"
+    )
     @classmethod
     def normalize_optional_required_text(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
@@ -197,7 +223,17 @@ class HackathonResponse(BaseModel):
     description: str
     start_date: str
     end_date: str
-    guidelines: str
+    guidelines: str = Field(
+        ...,
+        description="Participation guidelines shown to students.",
+    )
+    evaluator_guidelines: str = Field(
+        "",
+        description=(
+            "Guidelines shown to evaluators. Empty string for older hackathons "
+            "that predate this field."
+        ),
+    )
     theme_ids: list[str] = Field(default_factory=list)
     themes: list[ThemeSummary] = Field(
         default_factory=list,

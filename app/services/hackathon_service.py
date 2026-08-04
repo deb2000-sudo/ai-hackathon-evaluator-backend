@@ -68,6 +68,7 @@ class HackathonService:
             "start_date": request.start_date,
             "end_date": request.end_date,
             "guidelines": request.guidelines.strip(),
+            "evaluator_guidelines": request.evaluator_guidelines.strip(),
             "theme_ids": theme_ids,
             "hackathon_url": request.hackathon_url,
             "timeline": [round_.model_dump() for round_ in request.timeline],
@@ -118,6 +119,8 @@ class HackathonService:
             update["end_date"] = request.end_date
         if request.guidelines is not None:
             update["guidelines"] = request.guidelines.strip()
+        if request.evaluator_guidelines is not None:
+            update["evaluator_guidelines"] = request.evaluator_guidelines.strip()
         if request.theme_ids is not None:
             update["theme_ids"] = self.theme_service.validate_theme_ids(request.theme_ids)
         if "hackathon_url" in request.model_fields_set:
@@ -162,6 +165,8 @@ class HackathonService:
         enriched = dict(hackathon)
         enriched.setdefault("theme_ids", [])
         enriched.setdefault("hackathon_url", None)
+        # Older docs omit evaluator guidelines — expose empty string to clients.
+        enriched.setdefault("evaluator_guidelines", "")
         # Older docs omit this flag — treat as required so existing flows stay safe.
         enriched.setdefault("working_demo_video_required", True)
         # Older docs omit auto AI — default off so evaluators keep the manual button.

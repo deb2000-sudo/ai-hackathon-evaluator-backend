@@ -93,7 +93,18 @@ async def create_hackathon(
     description: str = Form(..., min_length=1, max_length=10000),
     start_date: str = Form(..., description="ISO date YYYY-MM-DD"),
     end_date: str = Form(..., description="ISO date YYYY-MM-DD"),
-    guidelines: str = Form(..., min_length=1, max_length=10000),
+    guidelines: str = Form(
+        ...,
+        min_length=1,
+        max_length=10000,
+        description="Participation guidelines for students",
+    ),
+    evaluator_guidelines: str = Form(
+        ...,
+        min_length=1,
+        max_length=10000,
+        description="Guidelines for evaluators reviewing submissions",
+    ),
     prizes: str = Form(
         ...,
         description='JSON: {"winner": "...", "first_runner_up": "...", "second_runner_up": "..."}',
@@ -156,6 +167,7 @@ async def create_hackathon(
             start_date=start_date,
             end_date=end_date,
             guidelines=guidelines,
+            evaluator_guidelines=evaluator_guidelines,
             theme_ids=theme_ids_data,
             hackathon_url=hackathon_url,
             prizes=HackathonPrizes(**prizes_data),
@@ -246,7 +258,16 @@ async def update_hackathon(
     description: str | None = Form(None, max_length=10000),
     start_date: str | None = Form(None),
     end_date: str | None = Form(None),
-    guidelines: str | None = Form(None, max_length=10000),
+    guidelines: str | None = Form(
+        None,
+        max_length=10000,
+        description="Participation guidelines for students",
+    ),
+    evaluator_guidelines: str | None = Form(
+        None,
+        max_length=10000,
+        description="Guidelines for evaluators (omit to leave unchanged)",
+    ),
     prizes: str | None = Form(None),
     theme_ids: str | None = Form(None, description='JSON array of theme ids'),
     timeline: str | None = Form(None),
@@ -281,6 +302,7 @@ async def update_hackathon(
         "start_date": start_date,
         "end_date": end_date,
         "guidelines": guidelines,
+        "evaluator_guidelines": evaluator_guidelines,
         "theme_ids": theme_ids_data,
         "prizes": HackathonPrizes(**prizes_data) if prizes_data is not None else None,
         "timeline": (
