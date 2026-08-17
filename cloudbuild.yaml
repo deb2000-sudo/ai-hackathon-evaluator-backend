@@ -69,7 +69,7 @@ steps:
         cat > /tmp/cors.json <<'EOF'
         [
           {
-            "origin": ["https://hackniat.vercel.app", "http://localhost:3000", "http://localhost:5173"],
+            "origin": ["https://challzo.vercel.app", "http://localhost:3000", "http://localhost:5173","https://challzo.nxtlab.tech"],
             "method": ["GET", "PUT", "HEAD", "OPTIONS"],
             "responseHeader": ["Content-Type", "Content-Length", "x-goog-resumable"],
             "maxAgeSeconds": 3600
