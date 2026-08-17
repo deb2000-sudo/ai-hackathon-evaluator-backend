@@ -242,7 +242,7 @@ As wired in `app/main.py` + `cloudbuild.yaml`: CORS with `allow_credentials=True
 | Variable | Typical value |
 |----------|----------------|
 | `ENVIRONMENT` | `production` (disables `/docs`, `/redoc`, `/openapi.json` unless `ENABLE_API_DOCS=true`) |
-| `ALLOWED_ORIGINS` | `https://hackniat.vercel.app` |
+| `ALLOWED_ORIGINS` | `https://challazo.nxtlab.tech` |
 | `COOKIE_SAMESITE` | `none` (with Secure cookies) |
 
 CORS **methods/headers** default to the SPA allow-list (`GET/POST/PATCH/DELETE/…`, `Authorization`, `Content-Type`, `X-CSRF-Token`, `Range`, …). Set `CORS_ALLOW_METHODS=*` or `CORS_ALLOW_HEADERS=*` only if you need the old wildcards.
@@ -257,7 +257,8 @@ Applied in `cloudbuild.yaml` step 4 on `gs://$PROJECT_ID-hackathon-evaluations`:
 [
   {
     "origin": [
-      "https://hackniat.vercel.app",
+      "https://challazo.nxtlab.tech",
+      "https://challzo.vercel.app",
       "http://localhost:3000",
       "http://localhost:5173"
     ],
@@ -333,7 +334,7 @@ Dev (optional `[dev]`): pytest, pytest-asyncio, black (line-length 100), flake8,
 1. Ensure Artifact Registry repo `ai-hackathon-evaluator-backend` in **asia-south1**  
 2. Build image → `asia-south1-docker.pkg.dev/$PROJECT_ID/ai-hackathon-evaluator-backend/ai-hackathon-evaluator-backend:$SHORT_SHA` (+ `:latest`)  
 3. Push `$SHORT_SHA` tag  
-4. Ensure bucket `gs://$PROJECT_ID-hackathon-evaluations` (create in **us-central1** if missing) and apply CORS for `https://hackniat.vercel.app`, `http://localhost:3000`, `http://localhost:5173`  
+4. Ensure bucket `gs://$PROJECT_ID-hackathon-evaluations` (create in **us-central1** if missing) and apply CORS for `https://challazo.nxtlab.tech`, `https://challzo.vercel.app`, `http://localhost:3000`, `http://localhost:5173`  
 5. Ensure Cloud Tasks queue `evaluation-jobs` in **asia-south1**  
 6. Deploy Cloud Run service **`ai-hackathon-evaluator-backend`**:
    - region: **asia-south1**
