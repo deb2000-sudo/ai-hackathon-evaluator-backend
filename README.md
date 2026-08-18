@@ -58,7 +58,20 @@ Pending evaluators can call `/auth/me` but other app routes return `403` until a
 
 ### Registration
 
-**Student** — `POST /auth/register/student`  
+**Student** — verified email + mobile, then account creation (team details collected at submission time):
+
+1. `POST /auth/register/start` — `{ "email", "mobile_number" }` → `{ "session_id" }`
+2. `POST /auth/email/send-otp` — `{ "session_id", "email" }`
+3. `POST /auth/email/verify-otp` — `{ "session_id", "code" }`
+4. Firebase Phone Auth in the browser → `POST /auth/verify-phone-token` — `{ "session_id", "firebase_id_token", "mobile_number" }`
+5. `POST /auth/register/complete` — profile + password; returns same session as login (`csrf_token` + cookies)
+
+Errors use `{ "detail": { "code", "message" } }` (e.g. `EMAIL_TAKEN`, `INVALID_CODE`, `NOT_VERIFIED`).
+
+**Email OTP (ops):** set `EMAIL_PROVIDER=firestore` (Trigger Email extension on the `mail` collection) or `EMAIL_PROVIDER=smtp` in production. Local dev defaults to logging OTP in server stdout when `ENVIRONMENT=development`.
+
+**Phone Auth (ops):** enable Phone in Firebase Console; add authorized domains (`127.0.0.1`, staging/prod frontend URLs). Local dev: use `http://127.0.0.1:5173` (Firebase blocks `localhost`). Optional fictional test numbers under Authentication → Phone → testing; frontend can set `VITE_FIREBASE_PHONE_TEST_MODE=true` locally.
+
 **Evaluator** — `POST /auth/register/evaluator` (`@nxtwave.co.in`, starts as `pending`)
 
 ## End-to-end flows
@@ -136,7 +149,11 @@ disabled by default (`ENVIRONMENT=production`); set `ENABLE_API_DOCS=true` only 
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/auth/register/student` | — | Student registration |
+| POST | `/auth/register/start` | — | Create verification session |
+| POST | `/auth/email/send-otp` | — | Email 6-digit OTP |
+| POST | `/auth/email/verify-otp` | — | Confirm email OTP |
+| POST | `/auth/verify-phone-token` | — | Confirm Firebase Phone Auth token |
+| POST | `/auth/register/complete` | — | Create student + session cookies |
 | POST | `/auth/register/evaluator` | — | Evaluator registration (pending) |
 | POST | `/auth/login` | — | HttpOnly cookie session |
 | POST | `/auth/logout` | — | Clear cookie |
