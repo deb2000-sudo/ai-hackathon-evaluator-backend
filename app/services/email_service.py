@@ -23,7 +23,7 @@ from app.services.firebase import FirebaseService
 
 logger = logging.getLogger(__name__)
 
-OTP_SUBJECT = "Your Drop verification code"
+MAIL_COLLECTION = "mail"
 OTP_BODY_TEMPLATE = (
     "Your Drop verification code is: {code}\n\n"
     "This code expires in 10 minutes.\n"
@@ -44,7 +44,7 @@ class FirestoreTriggerEmailService:
     def send_verification_code(self, to_email: str, code: str) -> None:
         body = OTP_BODY_TEMPLATE.format(code=code)
         self.firebase.set_document(
-            "mail",
+            MAIL_COLLECTION,
             str(uuid.uuid4()),
             {
                 "to": [to_email],
