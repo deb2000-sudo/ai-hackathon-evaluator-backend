@@ -68,11 +68,97 @@ Pending evaluators can call `/auth/me` but other app routes return `403` until a
 
 Errors use `{ "detail": { "code", "message" } }` (e.g. `EMAIL_TAKEN`, `INVALID_CODE`, `NOT_VERIFIED`).
 
-**Email OTP (ops):** set `EMAIL_PROVIDER=firestore` (Trigger Email extension on the `mail` collection) or `EMAIL_PROVIDER=smtp` in production. Local dev defaults to logging OTP in server stdout when `ENVIRONMENT=development`.
+**Email OTP (ops):** Cloud Run uses **`EMAIL_PROVIDER=smtp`** with **Brevo** (`smtp-relay.brevo.com:587`). Store `SMTP_USERNAME` and `SMTP_PASSWORD` in Secret Manager per GCP project; set `SMTP_FROM` to a Brevo-verified sender. See [Brevo email setup](#brevo-email-otp-setup). Local dev logs OTP to stdout unless you set `EMAIL_PROVIDER=smtp` in `.env`.
 
 **Phone Auth (ops):** enable Phone in Firebase Console; add authorized domains (`127.0.0.1`, staging/prod frontend URLs). Local dev: use `http://127.0.0.1:5173` (Firebase blocks `localhost`). Optional fictional test numbers under Authentication → Phone → testing; frontend can set `VITE_FIREBASE_PHONE_TEST_MODE=true` locally.
 
 **Evaluator** — `POST /auth/register/evaluator` (`@nxtwave.co.in`, starts as `pending`)
+
+## Brevo email OTP setup
+
+Registration email codes are sent by the **backend over SMTP** (not Firebase Auth email). Mobile OTP still uses Firebase Phone Auth. You can use **one Brevo account** for both staging and production; use the same SMTP key or separate keys per environment.
+
+### 1. Brevo dashboard
+
+1. Sign in at [brevo.com](https://www.brevo.com).
+2. **Senders & IP → Senders** — add and verify the address you will use as `SMTP_FROM` (e.g. `noreply@challazo.nxtlab.tech`). Complete domain DNS (SPF/DKIM) if Brevo asks — improves deliverability.
+3. **SMTP & API → SMTP** — click **Generate SMTP key**.
+   - **Server:** `smtp-relay.brevo.com`
+   - **Port:** `587` (STARTTLS)
+   - **Login:** your Brevo account email (copy from the SMTP page)
+   - **Password:** the generated **SMTP key** (starts with `xsmtpsib-…`) — not your Brevo login password
+
+### 2. Secret Manager (each GCP project: staging + production)
+
+Create these secrets in **both** Firebase/GCP projects (same names, values can be the same Brevo key or separate keys):
+
+```bash
+# Brevo SMTP login (usually your Brevo account email)
+echo -n 'you@example.com' | gcloud secrets create SMTP_USERNAME --data-file=-
+# Or add a new version if the secret already exists:
+# echo -n 'you@example.com' | gcloud secrets versions add SMTP_USERNAME --data-file=-
+
+# Brevo SMTP key from the dashboard
+echo -n 'xsmtpsib-your-key-here' | gcloud secrets create SMTP_PASSWORD --data-file=-
+```
+
+Grant the Cloud Run service account access to read these secrets (same as your Firebase secrets).
+
+### 3. Cloud Build / Cloud Run
+
+`cloudbuild.yaml` already sets:
+
+| Variable | Source | Default (production trigger) |
+|----------|--------|------------------------------|
+| `EMAIL_PROVIDER` | env | `smtp` |
+| `SMTP_HOST` | substitution `_SMTP_HOST` | `smtp-relay.brevo.com` |
+| `SMTP_PORT` | substitution `_SMTP_PORT` | `587` |
+| `SMTP_FROM` | substitution `_SMTP_FROM` | `noreply@challazo.nxtlab.tech` |
+| `SMTP_FROM_NAME` | env | `Drop` |
+| `SMTP_USERNAME` | Secret Manager | — |
+| `SMTP_PASSWORD` | Secret Manager | — |
+
+**Staging trigger:** override `_SMTP_FROM` if you use a different verified sender for staging (optional — same sender is fine).
+
+Redeploy after creating secrets. Test registration → email Verify → inbox (check spam once).
+
+### 4. Local testing with Brevo (optional)
+
+In `.env`:
+
+```env
+ENVIRONMENT=development
+EMAIL_PROVIDER=smtp
+SMTP_HOST=smtp-relay.brevo.com
+SMTP_PORT=587
+SMTP_USERNAME=you@example.com
+SMTP_PASSWORD=xsmtpsib-your-key
+SMTP_FROM=noreply@yourdomain.com
+SMTP_FROM_NAME=Drop
+```
+
+Restart uvicorn and trigger email OTP.
+
+### 5. Alternative: Firebase Trigger Email + Brevo (optional)
+
+If you prefer the extension instead of direct SMTP, set `EMAIL_PROVIDER=firestore` on Cloud Run and install **Trigger Email** (`firestore-send-email`) in **each** Firebase project (staging + prod):
+
+| Extension setting | Value |
+|-------------------|--------|
+| Mail collection | `mail` |
+| SMTP connection URI | `smtps://you@example.com:xsmtpsib-key@smtp-relay.brevo.com:587` |
+| Default FROM | same as `SMTP_FROM` |
+
+The backend then writes to Firestore `mail` and the extension sends via Brevo. **Recommended path is direct SMTP** (section 1–3) — fewer moving parts.
+
+### Troubleshooting
+
+| Symptom | Check |
+|---------|--------|
+| API 500 on send-otp | Cloud Run logs; missing `SMTP_*` secrets or unverified `SMTP_FROM` |
+| No email, API 200 | Brevo dashboard → **Transactional → Logs**; sender not verified |
+| Email in spam | Complete Brevo domain authentication (SPF/DKIM) |
+| Works on staging, not prod | Secrets created in **both** GCP projects; `_SMTP_FROM` verified in Brevo |
 
 ## End-to-end flows
 
@@ -397,6 +483,7 @@ In the GCP Console: **Cloud Build → Triggers → (your trigger) → Edit → S
 Create the same secret **names** in each project with that environment's Firebase values:
 
 - `FIREBASE_PROJECT_ID`, `FIREBASE_PRIVATE_KEY`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_WEB_API_KEY`, `FIREBASE_DATABASE_URL`, `INTERNAL_JOB_SECRET`
+- `SMTP_USERNAME`, `SMTP_PASSWORD` (Brevo SMTP login + key — see [Brevo email OTP setup](#brevo-email-otp-setup))
 
 ### Frontend API URL
 
