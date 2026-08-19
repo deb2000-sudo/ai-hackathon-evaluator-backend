@@ -69,6 +69,18 @@ class SubmissionResponse(BaseModel):
     student_id: str
     hackathon_id: str
     hackathon_name: str
+    round_index: int = Field(
+        0,
+        description="0-based index into the hackathon timeline (submission round).",
+    )
+    round_title: str = Field(
+        "",
+        description="Title of the timeline round this submission belongs to.",
+    )
+    working_demo_video_required: bool = Field(
+        True,
+        description="Snapshot of the round flag at submit time.",
+    )
     team_name: str
     theme_id: str
     theme_name: str
@@ -528,6 +540,11 @@ class CreateSubmissionFromUploadRequest(BaseModel):
     source_filename: Optional[str] = Field(None, max_length=500)
     hackathon_id: str = Field(..., min_length=1)
     theme_id: str = Field(..., min_length=1)
+    round_index: int = Field(
+        ...,
+        ge=0,
+        description="0-based timeline round index for this submission.",
+    )
     problem_statement: str = Field(..., min_length=1, max_length=5000)
     solution_description: str = Field(..., min_length=1, max_length=5000)
     mvp_link: Optional[str] = Field(None, max_length=2000)

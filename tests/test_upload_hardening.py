@@ -116,7 +116,7 @@ def test_create_submission_from_upload_rejects_oversize_blob(service: Submission
         "theme_ids": ["theme-1"],
     }
     service.theme_service.get_theme.return_value = {"id": "theme-1", "name": "T"}
-    service._resolve_student_team_name = MagicMock(return_value="team peek")
+    service._resolve_submission_team = MagicMock(return_value=("team peek", None))
     service._validate_configuration = MagicMock()
 
     blob = MagicMock()
@@ -150,7 +150,7 @@ def test_create_submission_rejects_oversize_bytes(service: SubmissionService):
         "theme_ids": ["theme-1"],
     }
     service.theme_service.get_theme.return_value = {"id": "theme-1", "name": "T"}
-    service._resolve_student_team_name = MagicMock(return_value="team peek")
+    service._resolve_submission_team = MagicMock(return_value=("team peek", None))
     service._validate_configuration = MagicMock()
 
     student = MagicMock(user_id="student-1")

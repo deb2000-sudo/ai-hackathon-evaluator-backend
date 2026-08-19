@@ -115,8 +115,11 @@ async def create_hackathon(
     ),
     timeline: str | None = Form(
         None,
-        description='JSON array: [{"title": "Round 1", "description": "...", '
-        '"start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD"}]',
+        description=(
+            'JSON array of rounds, e.g. [{"title":"Round 1","start_date":"YYYY-MM-DD",'
+            '"end_date":"YYYY-MM-DD","evaluation_requirement_id":"…","max_team_size":2,'
+            '"working_demo_video_required":true,"auto_ai_evaluation":false}]'
+        ),
     ),
     banner: UploadFile | None = File(
         None, description="Optional hackathon banner image (jpeg/png/webp/gif)"
@@ -125,17 +128,6 @@ async def create_hackathon(
         None,
         max_length=2000,
         description="Official hackathon website URL (shown on student dashboard)",
-    ),
-    working_demo_video_required: str | None = Form(
-        "true",
-        description="Toggle: students must record/upload a working demo video (true/false).",
-    ),
-    auto_ai_evaluation: str | None = Form(
-        "false",
-        description=(
-            "Toggle: automatically run AI evaluation when submissions are assigned "
-            "to evaluators (true/false). When false, evaluators use the AI Evaluation button."
-        ),
     ),
     admin: CurrentUser = Depends(get_admin_user),
     service: HackathonService = Depends(get_hackathon_service),
@@ -149,16 +141,6 @@ async def create_hackathon(
     prizes_data = _parse_json_field(prizes, "prizes", {})
     theme_ids_data = _parse_json_field(theme_ids, "theme_ids", [])
     timeline_data = _parse_json_field(timeline, "timeline", [])
-    demo_video_required = _parse_form_bool(
-        working_demo_video_required,
-        default=True,
-        field_name="working_demo_video_required",
-    )
-    auto_ai = _parse_form_bool(
-        auto_ai_evaluation,
-        default=False,
-        field_name="auto_ai_evaluation",
-    )
 
     try:
         payload = HackathonCreateRequest(
@@ -172,8 +154,6 @@ async def create_hackathon(
             hackathon_url=hackathon_url,
             prizes=HackathonPrizes(**prizes_data),
             timeline=[TimelineRound(**item) for item in timeline_data],
-            working_demo_video_required=demo_video_required,
-            auto_ai_evaluation=auto_ai,
         )
     except (ValidationError, ValueError, TypeError) as e:
         raise HTTPException(
@@ -277,17 +257,6 @@ async def update_hackathon(
         max_length=2000,
         description="Official hackathon website URL (omit to leave unchanged)",
     ),
-    working_demo_video_required: str | None = Form(
-        None,
-        description="Toggle working demo video requirement (true/false). Omit to leave unchanged.",
-    ),
-    auto_ai_evaluation: str | None = Form(
-        None,
-        description=(
-            "Toggle automatic AI evaluation on assignment (true/false). "
-            "Omit to leave unchanged."
-        ),
-    ),
     admin: CurrentUser = Depends(get_admin_user),
     service: HackathonService = Depends(get_hackathon_service),
 ) -> HackathonResponse:
@@ -314,18 +283,6 @@ async def update_hackathon(
     # Only touch hackathon_url when the form field is present (allows clearing).
     if hackathon_url is not None:
         update_kwargs["hackathon_url"] = hackathon_url
-    if working_demo_video_required is not None and str(working_demo_video_required).strip() != "":
-        update_kwargs["working_demo_video_required"] = _parse_form_bool(
-            working_demo_video_required,
-            default=True,
-            field_name="working_demo_video_required",
-        )
-    if auto_ai_evaluation is not None and str(auto_ai_evaluation).strip() != "":
-        update_kwargs["auto_ai_evaluation"] = _parse_form_bool(
-            auto_ai_evaluation,
-            default=False,
-            field_name="auto_ai_evaluation",
-        )
 
     try:
         payload = HackathonUpdateRequest(**update_kwargs)

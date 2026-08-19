@@ -139,6 +139,11 @@ def _http_from_value_error(e: ValueError) -> HTTPException:
 async def create_submission(
     request: Request,
     hackathon_id: str = Form(..., min_length=1, description="Hackathon this submission belongs to"),
+    round_index: int = Form(
+        ...,
+        ge=0,
+        description="0-based timeline round index (e.g. 0 for Round 1, 1 for Round 2).",
+    ),
     theme_id: str = Form(
         ...,
         min_length=1,
@@ -226,6 +231,7 @@ async def create_submission(
             problem_statement=problem_statement,
             solution_description=solution_description,
             hackathon_id=hackathon_id,
+            round_index=round_index,
             theme_id=theme_id,
             video_source=video_source,
             mvp_link=mvp_link,
@@ -323,6 +329,7 @@ async def create_submission_from_upload(
             problem_statement=request.problem_statement,
             solution_description=request.solution_description,
             hackathon_id=request.hackathon_id,
+            round_index=request.round_index,
             theme_id=request.theme_id,
             video_source=request.video_source,
             mvp_link=request.mvp_link,

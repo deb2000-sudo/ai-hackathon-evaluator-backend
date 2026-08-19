@@ -25,6 +25,7 @@ from app.services.hackathon_service import HackathonService
 from app.services.metric_scoring_service import MetricScoringService
 from app.services.registration_service import RegistrationService
 from app.services.submission_service import SubmissionService
+from app.services.team_service import TeamService
 from app.services.theme_service import ThemeService
 from app.services.user_service import UserService
 from app.services.verification_service import VerificationService
@@ -57,6 +58,7 @@ class AppContainer:
     evaluation_prompt_service: EvaluationPromptService
     metric_scoring_service: MetricScoringService
     hackathon_service: HackathonService
+    team_service: TeamService
     registration_service: RegistrationService
     submission_service: SubmissionService
     evaluation_job_service: EvaluationJobService
@@ -89,6 +91,11 @@ def build_app_container() -> AppContainer:
         theme_service=theme_service,
         storage_client=storage_client,
     )
+    team_service = TeamService(
+        firebase=firebase,
+        hackathon_service=hackathon_service,
+        user_service=user_service,
+    )
     registration_service = RegistrationService(
         firebase=firebase,
         user_service=user_service,
@@ -101,6 +108,7 @@ def build_app_container() -> AppContainer:
         storage_client=storage_client,
         evaluation_prompt_service=evaluation_prompt_service,
         metric_scoring_service=metric_scoring_service,
+        team_service=team_service,
     )
     evaluation_job_service = EvaluationJobService(
         submission_service=submission_service,
@@ -124,6 +132,7 @@ def build_app_container() -> AppContainer:
         evaluation_prompt_service=evaluation_prompt_service,
         metric_scoring_service=metric_scoring_service,
         hackathon_service=hackathon_service,
+        team_service=team_service,
         registration_service=registration_service,
         submission_service=submission_service,
         evaluation_job_service=evaluation_job_service,
@@ -180,6 +189,10 @@ def get_metric_scoring_service(request: Request) -> MetricScoringService:
 
 def get_hackathon_service(request: Request) -> HackathonService:
     return get_container(request).hackathon_service
+
+
+def get_team_service(request: Request) -> TeamService:
+    return get_container(request).team_service
 
 
 def get_registration_service(request: Request) -> RegistrationService:

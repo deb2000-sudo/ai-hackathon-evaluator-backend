@@ -16,6 +16,12 @@ from app.services.evaluation_requirement_service import EvaluationRequirementSer
 from app.services.firebase import FirebaseService
 from app.services.theme_service import ThemeService
 from app.utils.gcs_video import build_storage_client, generate_signed_url
+from app.utils.hackathon_round import (
+    TEAM_MODE_LABELS,
+    enrich_timeline_round,
+    hackathon_default_auto_ai,
+    hackathon_default_video_required,
+)
 from app.utils.image_upload import resolve_image_content_type
 
 
@@ -74,8 +80,6 @@ class HackathonService:
             "hackathon_url": request.hackathon_url,
             "timeline": [round_.model_dump() for round_ in request.timeline],
             "prizes": request.prizes.model_dump(),
-            "working_demo_video_required": bool(request.working_demo_video_required),
-            "auto_ai_evaluation": bool(request.auto_ai_evaluation),
             "banner_path": banner_path,
             "created_by": created_by,
             "created_at": now,
@@ -132,12 +136,6 @@ class HackathonService:
             update["timeline"] = [round_.model_dump() for round_ in request.timeline]
         if request.prizes is not None:
             update["prizes"] = request.prizes.model_dump()
-        if request.working_demo_video_required is not None:
-            update["working_demo_video_required"] = bool(
-                request.working_demo_video_required
-            )
-        if request.auto_ai_evaluation is not None:
-            update["auto_ai_evaluation"] = bool(request.auto_ai_evaluation)
         if banner is not None:
             update["banner_path"] = self._upload_banner(hackathon_id, banner)
 
@@ -168,10 +166,18 @@ class HackathonService:
         enriched.setdefault("hackathon_url", None)
         # Older docs omit evaluator guidelines — expose empty string to clients.
         enriched.setdefault("evaluator_guidelines", "")
-        # Older docs omit this flag — treat as required so existing flows stay safe.
-        enriched.setdefault("working_demo_video_required", True)
-        # Older docs omit auto AI — default off so evaluators keep the manual button.
-        enriched.setdefault("auto_ai_evaluation", False)
+        enriched.setdefault(
+            "working_demo_video_required",
+            hackathon_default_video_required(enriched),
+        )
+        enriched.setdefault(
+            "auto_ai_evaluation",
+            hackathon_default_auto_ai(enriched),
+        )
+        enriched["timeline"] = self._enrich_timeline_rounds(
+            enriched,
+            enriched.get("timeline") or [],
+        )
 
         banner_path = enriched.get("banner_path")
         if banner_path:
@@ -256,3 +262,20 @@ class HackathonService:
         if self.storage_client is None:
             self.storage_client = build_storage_client(self.project)
         return self.storage_client
+
+    @staticmethod
+    def _normalize_max_team_size(value: Any) -> int:
+        try:
+            size = int(value)
+        except (TypeError, ValueError):
+            size = 1
+        return max(1, min(4, size))
+
+    def _enrich_timeline_rounds(
+        self, hackathon: dict[str, Any], timeline: list[Any]
+    ) -> list[dict[str, Any]]:
+        enriched: list[dict[str, Any]] = []
+        for round_ in timeline:
+            data = dict(round_) if isinstance(round_, dict) else round_.model_dump()
+            enriched.append(enrich_timeline_round(data, hackathon=hackathon))
+        return enriched

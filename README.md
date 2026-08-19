@@ -58,7 +58,7 @@ Pending evaluators can call `/auth/me` but other app routes return `403` until a
 
 ### Registration
 
-**Student** — verified email + mobile, then account creation (team details collected at submission time):
+**Student** — verified email + mobile, then account creation. **Team formation happens per hackathon** at participation time (see [Hackathon teams](#hackathon-teams-id)):
 
 1. `POST /auth/register/start` — `{ "email", "mobile_number" }` → `{ "session_id" }`
 2. `POST /auth/email/send-otp` — `{ "session_id", "email" }`
@@ -255,6 +255,182 @@ disabled by default (`ENVIRONMENT=production`); set `ENABLE_API_DOCS=true` only 
 ### Hackathons — `/hackathons`
 
 CRUD for hackathons (banner, themes, timeline, `hackathon_url`, linked evaluation requirements). Public list/detail for authenticated users; create/update/delete are admin.
+
+**Per-round settings:** each object in the `timeline` JSON array supports:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `title` | string | required | Round name (e.g. "Round 1") |
+| `description` | string | optional | Round description |
+| `start_date` / `end_date` | ISO date | optional | Round window |
+| `evaluation_requirement_id` | string | optional | Linked requirement form |
+| `max_team_size` | 1–4 | `1` | Team size including leader (`1` = Solo) |
+| `working_demo_video_required` | bool | `true` | Require demo video for this round's submission |
+| `auto_ai_evaluation` | bool | `false` | Auto-queue AI when admin assigns evaluators |
+
+Responses enrich each round with `team_mode_label`. **Legacy:** hackathon-level `working_demo_video_required` / `auto_ai_evaluation` on older docs still apply as fallbacks when a round omits these fields.
+
+**Removed from hackathon create/update form:** top-level `working_demo_video_required` and `auto_ai_evaluation` multipart fields — configure them **inside each round** in `timeline` JSON instead.
+
+### Hackathon teams — `/hackathons/{id}/rounds/{round_index}/…`
+
+`round_index` is **0-based** (matches the `timeline` array: `0` = first round, `1` = second, …).
+
+Per-round enrollment before submission. Solo rounds (`max_team_size = 1`) use the existing submit flow after one enroll call. Team rounds (`2–4`) require leader/member setup; **only the team leader can submit for that round**.
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/hackathons/{id}/rounds/{round_index}/participation` | student | Enrollment status for this round |
+| POST | `/hackathons/{id}/rounds/{round_index}/enroll/solo` | student | Solo enroll (round `max_team_size = 1`) |
+| POST | `/hackathons/{id}/rounds/{round_index}/teams/create` | student | Leader creates team → 6-digit join code (5 min) |
+| POST | `/hackathons/{id}/rounds/{round_index}/teams/join` | student | Member joins with `{ "code": "123456" }` |
+| POST | `/hackathons/{id}/rounds/{round_index}/teams/join-code` | student (leader) | Refresh join code |
+
+**Error codes:** `ROUND_NOT_FOUND`, `TEAM_REQUIRED`, `SOLO_HACKATHON`, `ALREADY_ENROLLED`, `INVALID_CODE`, `EXPIRED`, `TEAM_FULL`, `LEADER_ONLY`, `NOT_ENROLLED`.
+
+**Submission guard:** include `round_index` on `POST /submissions` (form) and `POST /submissions/from-upload` (JSON). Backend checks enrollment for that round; members get `403 LEADER_ONLY`. Submission docs include `round_index`, `round_title`, and `hackathon_team_id` when applicable.
+
+#### Frontend UI flow (student)
+
+1. **Hackathon detail** — list each `timeline` round with its `team_mode_label`, dates, and a **Submit for Round N** (or **Participate**) action per round.
+2. **On round action** — `GET /hackathons/{id}/rounds/{round_index}/participation`:
+   - `pending_action === "solo_enroll"` → **Enroll & Submit** → `POST …/enroll/solo` → open submit wizard with `round_index`.
+   - `pending_action === "choose_role"` → modal: **Team Leader** | **Team Member**.
+   - Leader → `POST …/teams/create` → show 6-digit code + 5-minute countdown; roster; submit when `can_submit`.
+   - Member → join code input → `POST …/teams/join` → roster only; no submit button.
+3. **Multi-round hackathons** — enrollment is **independent per round** (Round 1 team ≠ Round 2 team; a student can be leader in one round and solo in another).
+4. **Submit wizard** — always send `round_index` matching the round being submitted.
+
+Example timeline JSON (admin):
+
+```json
+[
+  {
+    "title": "Round 1",
+    "description": "Idea submission",
+    "start_date": "2026-09-01",
+    "end_date": "2026-09-15",
+    "evaluation_requirement_id": "req-round1",
+    "max_team_size": 4,
+    "working_demo_video_required": true,
+    "auto_ai_evaluation": false
+  },
+  {
+    "title": "Round 2",
+    "description": "Final demo",
+    "start_date": "2026-09-16",
+    "end_date": "2026-09-30",
+    "evaluation_requirement_id": "req-round2",
+    "max_team_size": 1,
+    "working_demo_video_required": false,
+    "auto_ai_evaluation": true
+  }
+]
+```
+
+#### Frontend UI flow (admin) — round editor
+
+Remove hackathon-level **Working demo video required** and **Auto AI evaluation on assign** toggles from the main form. Add them **per round row** in the timeline editor, together with team size:
+
+| Control | Maps to | Default |
+|---------|---------|---------|
+| Team size dropdown | `max_team_size` | `1` (Solo) |
+| ☑ Working demo video required | `working_demo_video_required` | checked (`true`) |
+| ☐ Auto AI evaluation on assign | `auto_ai_evaluation` | unchecked (`false`) |
+
+When saving, serialize the full `timeline` array (including all round fields) into the multipart `timeline` form field as JSON. On edit, hydrate checkboxes from `GET /hackathons/{id}` → `hackathon.timeline[i]`.
+
+---
+
+## Frontend handoff — hackathon rounds (copy to frontend repo)
+
+Use this section as the implementation spec for the **hackniat** admin + student UI.
+
+### Admin: create / edit hackathon
+
+**API:** `POST /hackathons` and `PATCH /hackathons/{id}` (multipart). Unchanged fields: `name`, `description`, dates, `guidelines`, `evaluator_guidelines`, `prizes`, `theme_ids`, `hackathon_url`, `banner`.
+
+**`timeline` form field** — JSON string. Each round object:
+
+```ts
+type TimelineRound = {
+  title: string;
+  description?: string;
+  start_date?: string; // YYYY-MM-DD
+  end_date?: string;
+  evaluation_requirement_id?: string;
+  max_team_size: 1 | 2 | 3 | 4;
+  working_demo_video_required: boolean;
+  auto_ai_evaluation: boolean;
+};
+```
+
+**Round row UI (match existing checkbox style):**
+
+1. **Team size** — select: Solo / 2 Members / 3 Members / 4 Members
+2. **Working demo video required** — checkbox, default ON. Subtext: *When enabled, students must record or upload a demo. Turn off to allow text-only submissions.*
+3. **Auto AI evaluation on assign** — checkbox, default OFF. Subtext: *When enabled, AI analysis starts automatically after assignment. When off, evaluators trigger AI Evaluation manually.*
+
+**Do not send** hackathon-level `working_demo_video_required` or `auto_ai_evaluation` form fields anymore.
+
+### Student: hackathon detail
+
+Load `GET /hackathons/{id}`. For each `timeline[i]` render a card:
+
+- Title, dates, `team_mode_label` badge
+- Optional badges: "Video required" if `working_demo_video_required`, "Solo" / "Team"
+- Button: **Submit for {title}** → starts flow with `roundIndex = i`
+
+### Student: participation gate (per round)
+
+```ts
+const roundIndex = 0; // 0-based
+const p = await api.get(`/hackathons/${hackathonId}/rounds/${roundIndex}/participation`);
+```
+
+`participation` includes: `round_index`, `round_title`, `max_team_size`, `team_mode_label`, `working_demo_video_required`, `auto_ai_evaluation`, `enrolled`, `role`, `team`, `can_submit`, `pending_action`.
+
+| `pending_action` | Action |
+|------------------|--------|
+| `solo_enroll` | `POST …/enroll/solo` then open wizard |
+| `choose_role` | Show Team Leader / Team Member modal |
+| `ready` | Open submit wizard (leader or solo) |
+| enrolled + `!can_submit` | Member view — roster only, no submit |
+
+**Team leader:** `POST …/teams/create` → display 6-digit code + 5 min timer; `POST …/teams/join-code` to refresh.
+
+**Team member:** `POST …/teams/join` with `{ code: "123456" }`.
+
+### Student: submit wizard
+
+Only open when `participation.can_submit === true`.
+
+Use `participation.working_demo_video_required` (or `hackathon.timeline[roundIndex].working_demo_video_required`) to show/hide video record/upload steps.
+
+**Required on submit:**
+
+```ts
+// multipart POST /submissions
+formData.append("round_index", String(roundIndex));
+formData.append("hackathon_id", hackathonId);
+// … theme, problem_statement, video (if required), etc.
+
+// or POST /submissions/from-upload JSON
+{ hackathon_id, round_index: roundIndex, theme_id, …, video_path? }
+```
+
+### Evaluator / admin: submission detail
+
+`GET /submissions/{id}` returns `auto_ai_evaluation` resolved for **that submission's round** (stored snapshot at submit time, else resolved from hackathon timeline).
+
+- `show_ai_evaluation_button === true` → show manual **AI Evaluation** button (round had auto AI off)
+- `auto_ai_evaluation === true` → AI queues automatically on assign; hide or disable manual button while processing
+
+### Backward compatibility
+
+- Old hackathons with only hackathon-level flags: rounds without explicit fields inherit those defaults.
+- Old submissions without `round_index`: treated as `0`.
+- Top-level `hackathon.working_demo_video_required` / `auto_ai_evaluation` still returned on `GET /hackathons/{id}` for legacy UI; **prefer `timeline[i]` for new code**.
 
 ### Themes — `/themes`
 

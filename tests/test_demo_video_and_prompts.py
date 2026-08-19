@@ -13,6 +13,26 @@ def test_demo_video_required_defaults_true_for_legacy_docs():
     assert demo_video_required({"working_demo_video_required": False}) is False
 
 
+def test_demo_video_required_uses_round_flag():
+    hackathon = {
+        "working_demo_video_required": True,
+        "timeline": [
+            {"title": "Round 1", "working_demo_video_required": False},
+            {"title": "Round 2", "working_demo_video_required": True},
+        ],
+    }
+    assert demo_video_required(hackathon, 0) is False
+    assert demo_video_required(hackathon, 1) is True
+
+
+def test_demo_video_required_round_falls_back_to_hackathon_default():
+    hackathon = {
+        "working_demo_video_required": False,
+        "timeline": [{"title": "Round 1"}],
+    }
+    assert demo_video_required(hackathon, 0) is False
+
+
 def test_default_prompt_templates_include_required_placeholders():
     for placeholder in REQUIRED_PLACEHOLDERS["checklist"]:
         assert placeholder in CHECKLIST_PROMPT

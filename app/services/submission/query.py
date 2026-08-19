@@ -10,6 +10,7 @@ from app.utils.gcs_video import (
     generate_signed_video_url,
     parse_gs_uri,
 )
+from app.utils.hackathon_round import submission_auto_ai_enabled
 
 
 class QueryMixin:
@@ -205,8 +206,11 @@ class QueryMixin:
             if hackathon:
                 enriched["hackathon_name"] = hackathon.get("name", "Unknown hackathon")
 
-        auto_ai = bool((hackathon or {}).get("auto_ai_evaluation", False))
+        auto_ai = submission_auto_ai_enabled(hackathon or {}, enriched)
         enriched["auto_ai_evaluation"] = auto_ai
+        enriched.setdefault("round_index", 0)
+        enriched.setdefault("round_title", "")
+        enriched.setdefault("working_demo_video_required", True)
 
         # Migrate legacy theme_chosen → theme_name for older submissions.
         if not enriched.get("theme_id"):
