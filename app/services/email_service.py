@@ -46,7 +46,9 @@ def resolve_smtp_config() -> dict[str, str | int | bool]:
     port = int(os.getenv("SMTP_PORT", str(BREVO_SMTP_PORT)))
     username = os.getenv("SMTP_USERNAME", "").strip()
     password = os.getenv("SMTP_PASSWORD", "")
-    from_addr = os.getenv("SMTP_FROM", username).strip()
+    from_addr = (
+        os.getenv("SMTP_FROM") or os.getenv("MAIL_FROM") or username
+    ).strip()
     from_name = os.getenv("SMTP_FROM_NAME", "Drop").strip()
     use_ssl = os.getenv("SMTP_USE_SSL", "").strip().lower() in ("1", "true", "yes")
     return {

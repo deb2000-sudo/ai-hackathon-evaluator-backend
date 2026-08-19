@@ -6,10 +6,10 @@ substitutions:
   _GCS_CORS_ORIGINS: 'https://challazo.nxtlab.tech,http://localhost:3000,http://localhost:5173'
   _ENVIRONMENT: 'production'
   _SEED_ON_STARTUP: 'false'
-  # Brevo SMTP (non-secret). Override _SMTP_FROM per staging trigger if needed.
+  # Brevo SMTP (non-secret). SMTP_USERNAME + SMTP_PASSWORD come from Secret Manager.
   _SMTP_HOST: 'smtp-relay.brevo.com'
   _SMTP_PORT: '587'
-  _SMTP_FROM: 'noreply@challazo.nxtlab.tech'
+  _SMTP_FROM: 'noreply@mail.nxtlab.tech'
 
 steps:
   # Step 1: Ensure Artifact Registry repository exists (required before first push)
@@ -106,7 +106,8 @@ steps:
 
   # Step 6: Deploy to Cloud Run, then set Cloud Tasks target URL to this revision's URL
   # Prerequisite: Secret Manager secrets must exist (see README):
-  #   FIREBASE_*, INTERNAL_JOB_SECRET, SMTP_USERNAME, SMTP_PASSWORD (Brevo SMTP key).
+  #   FIREBASE_*, INTERNAL_JOB_SECRET, SMTP_USERNAME, SMTP_PASSWORD (Brevo).
+  #   Set SMTP_USERNAME secret to noreply@mail.nxtlab.tech; SMTP_FROM via _SMTP_FROM below.
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: bash
     args:

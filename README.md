@@ -81,24 +81,20 @@ Registration email codes are sent by the **backend over SMTP** (not Firebase Aut
 ### 1. Brevo dashboard
 
 1. Sign in at [brevo.com](https://www.brevo.com).
-2. **Senders & IP → Senders** — add and verify the address you will use as `SMTP_FROM` (e.g. `noreply@challazo.nxtlab.tech`). Complete domain DNS (SPF/DKIM) if Brevo asks — improves deliverability.
-3. **SMTP & API → SMTP** — click **Generate SMTP key**.
-   - **Server:** `smtp-relay.brevo.com`
-   - **Port:** `587` (STARTTLS)
-   - **Login:** your Brevo account email (copy from the SMTP page)
-   - **Password:** the generated **SMTP key** (starts with `xsmtpsib-…`) — not your Brevo login password
+2. **Senders & IP → Senders** — add and verify **`noreply@mail.nxtlab.tech`**. Complete domain DNS (SPF/DKIM) for `mail.nxtlab.tech` if Brevo asks — improves deliverability.
+3. **SMTP & API → SMTP** — click **Generate SMTP key** (login for SMTP is **`noreply@mail.nxtlab.tech`** when using a sender-based key).
 
 ### 2. Secret Manager (each GCP project: staging + production)
 
-Create these secrets in **both** Firebase/GCP projects (same names, values can be the same Brevo key or separate keys):
+Create **`SMTP_USERNAME`** and **`SMTP_PASSWORD`** in **both** GCP projects (staging + production):
 
 ```bash
-# Brevo SMTP login (usually your Brevo account email)
-echo -n 'you@example.com' | gcloud secrets create SMTP_USERNAME --data-file=-
+# Brevo SMTP login (noreply@mail.nxtlab.tech)
+echo -n 'noreply@mail.nxtlab.tech' | gcloud secrets create SMTP_USERNAME --data-file=-
 # Or add a new version if the secret already exists:
-# echo -n 'you@example.com' | gcloud secrets versions add SMTP_USERNAME --data-file=-
+# echo -n 'noreply@mail.nxtlab.tech' | gcloud secrets versions add SMTP_USERNAME --data-file=-
 
-# Brevo SMTP key from the dashboard
+# Brevo SMTP key (starts with xsmtpsib-…)
 echo -n 'xsmtpsib-your-key-here' | gcloud secrets create SMTP_PASSWORD --data-file=-
 ```
 
@@ -113,10 +109,10 @@ Grant the Cloud Run service account access to read these secrets (same as your F
 | `EMAIL_PROVIDER` | env | `smtp` |
 | `SMTP_HOST` | substitution `_SMTP_HOST` | `smtp-relay.brevo.com` |
 | `SMTP_PORT` | substitution `_SMTP_PORT` | `587` |
-| `SMTP_FROM` | substitution `_SMTP_FROM` | `noreply@challazo.nxtlab.tech` |
+| `SMTP_FROM` | substitution `_SMTP_FROM` | `noreply@mail.nxtlab.tech` |
 | `SMTP_FROM_NAME` | env | `Drop` |
-| `SMTP_USERNAME` | Secret Manager | — |
-| `SMTP_PASSWORD` | Secret Manager | — |
+| `SMTP_USERNAME` | Secret Manager | `noreply@mail.nxtlab.tech` |
+| `SMTP_PASSWORD` | Secret Manager | Brevo SMTP key |
 
 **Staging trigger:** override `_SMTP_FROM` if you use a different verified sender for staging (optional — same sender is fine).
 
@@ -131,9 +127,9 @@ ENVIRONMENT=development
 EMAIL_PROVIDER=smtp
 SMTP_HOST=smtp-relay.brevo.com
 SMTP_PORT=587
-SMTP_USERNAME=you@example.com
+SMTP_USERNAME=noreply@mail.nxtlab.tech
 SMTP_PASSWORD=xsmtpsib-your-key
-SMTP_FROM=noreply@yourdomain.com
+SMTP_FROM=noreply@mail.nxtlab.tech
 SMTP_FROM_NAME=Drop
 ```
 
@@ -146,8 +142,8 @@ If you prefer the extension instead of direct SMTP, set `EMAIL_PROVIDER=firestor
 | Extension setting | Value |
 |-------------------|--------|
 | Mail collection | `mail` |
-| SMTP connection URI | `smtps://you@example.com:xsmtpsib-key@smtp-relay.brevo.com:587` |
-| Default FROM | same as `SMTP_FROM` |
+| SMTP connection URI | `smtps://noreply@mail.nxtlab.tech:xsmtpsib-key@smtp-relay.brevo.com:587` |
+| Default FROM | `noreply@mail.nxtlab.tech` |
 
 The backend then writes to Firestore `mail` and the extension sends via Brevo. **Recommended path is direct SMTP** (section 1–3) — fewer moving parts.
 
@@ -483,7 +479,7 @@ In the GCP Console: **Cloud Build → Triggers → (your trigger) → Edit → S
 Create the same secret **names** in each project with that environment's Firebase values:
 
 - `FIREBASE_PROJECT_ID`, `FIREBASE_PRIVATE_KEY`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_WEB_API_KEY`, `FIREBASE_DATABASE_URL`, `INTERNAL_JOB_SECRET`
-- `SMTP_USERNAME`, `SMTP_PASSWORD` (Brevo SMTP login + key — see [Brevo email OTP setup](#brevo-email-otp-setup))
+- `SMTP_USERNAME`, `SMTP_PASSWORD` (Brevo — see [Brevo email OTP setup](#brevo-email-otp-setup))
 
 ### Frontend API URL
 
