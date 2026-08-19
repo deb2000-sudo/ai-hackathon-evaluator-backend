@@ -23,6 +23,7 @@ from fastapi import (
 from pydantic import ValidationError
 
 from app.middleware.auth_middleware import get_admin_user, get_current_user
+from app.exceptions import AppError
 from app.models.hackathon_model import (
     HackathonCreateRequest,
     HackathonPrizes,
@@ -30,6 +31,7 @@ from app.models.hackathon_model import (
     HackathonUpdateRequest,
     TimelineRound,
 )
+from app.models.round_model import PublishRoundResponse
 from app.models.theme_model import ThemeResponse
 from app.models.user_model import CurrentUser
 from app.dependencies import get_hackathon_service
@@ -41,8 +43,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/hackathons", tags=["hackathons"])
 
 
-async def _to_response(service: HackathonService, hackathon: dict) -> HackathonResponse:
-    enriched = await run_sync(service.enrich_hackathon_for_response, hackathon)
+async def _to_response(
+    service: HackathonService,
+    hackathon: dict,
+    *,
+    current_user: CurrentUser | None = None,
+) -> HackathonResponse:
+    if current_user and current_user.role == "student":
+        enriched = await run_sync(service.filter_timeline_for_student, hackathon)
+    else:
+        enriched = await run_sync(service.enrich_hackathon_for_response, hackathon)
     return HackathonResponse(**enriched)
 
 
@@ -192,7 +202,7 @@ async def list_hackathons(
 ) -> list[HackathonResponse]:
     """List all hackathons. Available to any authenticated user."""
     hackathons = await run_sync(service.list_hackathons)
-    return [await _to_response(service, item) for item in hackathons]
+    return [await _to_response(service, item, current_user=current_user) for item in hackathons]
 
 
 @router.get("/{hackathon_id}/themes", response_model=list[ThemeResponse])
@@ -228,7 +238,42 @@ async def get_hackathon(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Hackathon not found",
         )
-    return await _to_response(service, hackathon)
+    return await _to_response(service, hackathon, current_user=current_user)
+
+
+@router.post(
+    "/{hackathon_id}/rounds/{round_index}/publish",
+    response_model=PublishRoundResponse,
+    status_code=200,
+)
+async def publish_hackathon_round(
+    hackathon_id: str,
+    round_index: int,
+    admin: CurrentUser = Depends(get_admin_user),
+    service: HackathonService = Depends(get_hackathon_service),
+) -> PublishRoundResponse:
+    """
+    Publish a timeline round for students (admin only).
+
+    Validates IST calendar dates: cannot publish after the round ``end_date``.
+    Students only see published rounds; submission opens when IST today is within
+    ``start_date``–``end_date`` (inclusive).
+    """
+    try:
+        result = await run_sync(
+            service.publish_round,
+            hackathon_id,
+            round_index,
+            admin.user_id,
+        )
+    except AppError:
+        raise
+    round_payload = TimelineRound(**result["round"])
+    return PublishRoundResponse(
+        hackathon_id=result["hackathon_id"],
+        round_index=result["round_index"],
+        round=round_payload,
+    )
 
 
 @router.patch("/{hackathon_id}", response_model=HackathonResponse)

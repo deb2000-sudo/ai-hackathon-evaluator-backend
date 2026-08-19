@@ -16,6 +16,7 @@ from app.dependencies import get_team_service
 from app.exceptions import AppError
 from app.middleware.auth_middleware import get_current_user
 from app.models.team_model import (
+    CreateTeamRequest,
     CreateTeamResponse,
     HackathonParticipationResponse,
     JoinTeamRequest,
@@ -78,17 +79,22 @@ async def enroll_solo(
 async def create_team(
     hackathon_id: str,
     round_index: int,
+    payload: CreateTeamRequest,
     current_user: CurrentUser = Depends(get_current_user),
     team_service: TeamService = Depends(get_team_service),
 ) -> CreateTeamResponse:
     """
     Create a team as leader for this round (or refresh join code if already leader).
 
-    Returns a 6-digit join code valid for 5 minutes.
+    Requires ``team_name`` on first create. Returns a 6-digit join code valid for 5 minutes.
     """
     try:
         return await run_sync(
-            team_service.create_team, hackathon_id, round_index, current_user
+            team_service.create_team,
+            hackathon_id,
+            round_index,
+            current_user,
+            payload.team_name,
         )
     except AppError:
         raise

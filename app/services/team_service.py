@@ -28,9 +28,15 @@ from app.services.firebase import FirebaseService
 from app.services.hackathon_service import HackathonService
 from app.services.user_service import UserService
 from app.utils.hackathon_round import (
+    TEAM_INCOMPLETE_MESSAGE,
     TEAM_MODE_LABELS,
+    get_timeline_round,
     normalize_max_team_size,
+    parse_iso_date,
     round_auto_ai_evaluation,
+    round_is_published,
+    round_open_for_submission,
+    round_student_status,
     round_working_demo_video_required,
 )
 from app.utils.team_code import (
@@ -69,11 +75,17 @@ class TeamService:
     ) -> HackathonParticipationResponse:
         hackathon = self._require_hackathon(hackathon_id)
         round_, round_title, max_size = self._resolve_round(hackathon, round_index)
+        self._assert_round_visible_to_student(hackathon, round_index, round_)
+
         enrollment = self._get_enrollment_doc(hackathon_id, round_index, user.user_id)
         team = None
         role = None
         enrolled = enrollment is not None
+        round_status = round_student_status(round_, now=self._now())
+        round_open = round_open_for_submission(hackathon, round_index, now=self._now())
         can_submit = False
+        can_continue_to_demo = False
+        block_reason = None
         pending = None
 
         if enrolled:
@@ -87,8 +99,31 @@ class TeamService:
                         round_index=round_index,
                         round_title=round_title,
                     )
-            can_submit = role in ("solo", "leader")
-            pending = "ready" if can_submit else None
+            if role == "member":
+                pending = None
+            elif (
+                role == "leader"
+                and max_size > 1
+                and team
+                and not team.is_full
+            ):
+                pending = "complete_team"
+                block_reason = TEAM_INCOMPLETE_MESSAGE
+            elif not round_open:
+                pending = "round_not_open"
+                start = parse_iso_date(round_.get("start_date"))
+                if round_status == "scheduled" and start:
+                    block_reason = f"This round opens on {start.isoformat()} (IST)."
+                elif round_status == "closed":
+                    block_reason = "This round has closed."
+            elif role == "solo":
+                can_submit = True
+                can_continue_to_demo = True
+                pending = "ready"
+            elif role == "leader":
+                can_submit = True
+                can_continue_to_demo = True
+                pending = "ready"
         elif max_size == 1:
             pending = "solo_enroll"
         else:
@@ -104,18 +139,65 @@ class TeamService:
                 hackathon, round_index
             ),
             auto_ai_evaluation=round_auto_ai_evaluation(hackathon, round_index),
+            round_published=round_is_published(round_),
+            round_status=round_status,
+            round_open=round_open,
             enrolled=enrolled,
             role=role,
             team=team,
             can_submit=can_submit,
+            can_continue_to_demo=can_continue_to_demo,
+            block_reason=block_reason,
             pending_action=pending,
         )
+
+    def _assert_round_visible_to_student(
+        self,
+        hackathon: dict[str, Any],
+        round_index: int,
+        round_: dict[str, Any],
+    ) -> None:
+        if not round_is_published(round_):
+            raise ForbiddenError(
+                "This round is not published yet",
+                code="ROUND_NOT_PUBLISHED",
+            )
+
+    def _assert_round_accepts_enrollment(
+        self, hackathon: dict[str, Any], round_index: int
+    ) -> None:
+        round_ = get_timeline_round(hackathon, round_index)
+        if not round_:
+            raise NotFoundError("Round not found", code="ROUND_NOT_FOUND")
+        self._assert_round_visible_to_student(hackathon, round_index, round_)
+        if round_student_status(round_, now=self._now()) == "closed":
+            raise ForbiddenError("This round has closed", code="ROUND_CLOSED")
+
+    def _assert_round_open_for_submission(
+        self, hackathon: dict[str, Any], round_index: int
+    ) -> None:
+        round_ = get_timeline_round(hackathon, round_index)
+        if not round_:
+            raise NotFoundError("Round not found", code="ROUND_NOT_FOUND")
+        self._assert_round_visible_to_student(hackathon, round_index, round_)
+        if not round_open_for_submission(hackathon, round_index, now=self._now()):
+            status = round_student_status(round_, now=self._now())
+            if status == "scheduled":
+                start = parse_iso_date(round_.get("start_date"))
+                detail = (
+                    f"This round opens on {start.isoformat()} (IST)."
+                    if start
+                    else "This round is not open yet."
+                )
+                raise ForbiddenError(detail, code="ROUND_NOT_OPEN")
+            raise ForbiddenError("This round has closed", code="ROUND_CLOSED")
 
     def enroll_solo(
         self, hackathon_id: str, round_index: int, user: CurrentUser
     ) -> HackathonParticipationResponse:
         hackathon = self._require_hackathon(hackathon_id)
         _, _, max_size = self._resolve_round(hackathon, round_index)
+        self._assert_round_accepts_enrollment(hackathon, round_index)
         if max_size != 1:
             raise BadRequestError(
                 "This round requires a team. Choose team leader or team member.",
@@ -143,10 +225,15 @@ class TeamService:
         return self.get_participation(hackathon_id, round_index, user)
 
     def create_team(
-        self, hackathon_id: str, round_index: int, user: CurrentUser
+        self,
+        hackathon_id: str,
+        round_index: int,
+        user: CurrentUser,
+        team_name: str,
     ) -> CreateTeamResponse:
         hackathon = self._require_hackathon(hackathon_id)
         _, round_title, max_size = self._resolve_round(hackathon, round_index)
+        self._assert_round_accepts_enrollment(hackathon, round_index)
         if max_size < 2:
             raise BadRequestError(
                 "This round is solo-only. Enroll directly to submit.",
@@ -185,13 +272,18 @@ class TeamService:
         team_id = str(uuid.uuid4())
         now = now_ist_iso()
         leader_member = self._member_record(user, profile, role="leader", joined_at=now)
-        team_name = f"{profile.get('name') or user.email}'s Team"
+        normalized_name = team_name.strip()
+        if not normalized_name:
+            raise BadRequestError(
+                "Team name is required",
+                code="TEAM_NAME_REQUIRED",
+            )
         team_doc = {
             "hackathon_id": hackathon_id,
             "round_index": round_index,
             "round_title": round_title,
             "leader_id": user.user_id,
-            "team_name": team_name,
+            "team_name": normalized_name,
             "max_members": max_size,
             "members": [leader_member],
             "created_at": now,
@@ -232,6 +324,7 @@ class TeamService:
     ) -> JoinTeamResponse:
         hackathon = self._require_hackathon(hackathon_id)
         _, round_title, max_size = self._resolve_round(hackathon, round_index)
+        self._assert_round_accepts_enrollment(hackathon, round_index)
         if max_size < 2:
             raise BadRequestError(
                 "This round is solo-only.",
@@ -340,6 +433,7 @@ class TeamService:
         """
         hackathon = self._require_hackathon(hackathon_id)
         _, _, max_size = self._resolve_round(hackathon, round_index)
+        self._assert_round_open_for_submission(hackathon, round_index)
         enrollment = self._get_enrollment_doc(hackathon_id, round_index, student_id)
         if not enrollment:
             raise ForbiddenError(
@@ -372,6 +466,10 @@ class TeamService:
         team_doc = self.firebase.get_document(TEAMS, team_id)
         if not team_doc:
             raise NotFoundError("Team not found", code="TEAM_NOT_FOUND")
+        members = list(team_doc.get("members") or [])
+        max_members = int(team_doc.get("max_members") or max_size)
+        if len(members) < max_members:
+            raise ForbiddenError(TEAM_INCOMPLETE_MESSAGE, code="TEAM_INCOMPLETE")
         return str(team_doc.get("team_name") or "Team"), team_id
 
     def _issue_join_code(

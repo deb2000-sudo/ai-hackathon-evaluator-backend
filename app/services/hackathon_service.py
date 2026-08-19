@@ -7,10 +7,11 @@ import os
 import uuid
 from typing import Any
 
-from app.utils.time import now_ist_iso
+from app.utils.time import now_ist, now_ist_iso
 
 from google.cloud import storage
 
+from app.exceptions import ConflictError, NotFoundError
 from app.models.hackathon_model import HackathonCreateRequest, HackathonUpdateRequest
 from app.services.evaluation_requirement_service import EvaluationRequirementService
 from app.services.firebase import FirebaseService
@@ -21,6 +22,8 @@ from app.utils.hackathon_round import (
     enrich_timeline_round,
     hackathon_default_auto_ai,
     hackathon_default_video_required,
+    round_is_published,
+    validate_round_publishable,
 )
 from app.utils.image_upload import resolve_image_content_type
 
@@ -78,7 +81,10 @@ class HackathonService:
             "evaluator_guidelines": request.evaluator_guidelines.strip(),
             "theme_ids": theme_ids,
             "hackathon_url": request.hackathon_url,
-            "timeline": [round_.model_dump() for round_ in request.timeline],
+            "timeline": [
+                self._normalize_round_for_storage(round_.model_dump(), published=False)
+                for round_ in request.timeline
+            ],
             "prizes": request.prizes.model_dump(),
             "banner_path": banner_path,
             "created_by": created_by,
@@ -133,7 +139,19 @@ class HackathonService:
             update["hackathon_url"] = request.hackathon_url
         if request.timeline is not None:
             self._validate_round_requirement_links(request.timeline)
-            update["timeline"] = [round_.model_dump() for round_ in request.timeline]
+            existing_timeline = existing.get("timeline") or []
+            merged: list[dict[str, Any]] = []
+            for index, round_ in enumerate(request.timeline):
+                incoming = round_.model_dump()
+                prior = existing_timeline[index] if index < len(existing_timeline) else {}
+                if isinstance(prior, dict) and round_is_published(prior):
+                    incoming["published"] = True
+                    incoming["published_at"] = prior.get("published_at")
+                    incoming["published_by"] = prior.get("published_by")
+                else:
+                    incoming = self._normalize_round_for_storage(incoming, published=False)
+                merged.append(incoming)
+            update["timeline"] = merged
         if request.prizes is not None:
             update["prizes"] = request.prizes.model_dump()
         if banner is not None:
@@ -150,6 +168,51 @@ class HackathonService:
             self.firebase.update_document(self.collection, hackathon_id, update)
 
         return self.get_hackathon(hackathon_id)
+
+    def publish_round(
+        self, hackathon_id: str, round_index: int, admin_user_id: str
+    ) -> dict[str, Any]:
+        """Publish a timeline round for student participation (IST date checks)."""
+        existing = self.firebase.get_document(self.collection, hackathon_id)
+        if not existing:
+            raise NotFoundError("Hackathon not found", code="HACKATHON_NOT_FOUND")
+
+        timeline = list(existing.get("timeline") or [])
+        if round_index < 0 or round_index >= len(timeline):
+            raise NotFoundError("Round not found", code="ROUND_NOT_FOUND")
+
+        round_ = dict(timeline[round_index])
+        if round_is_published(round_):
+            raise ConflictError("This round is already published", code="ALREADY_PUBLISHED")
+
+        validate_round_publishable(round_, now=now_ist())
+        round_["published"] = True
+        round_["published_at"] = now_ist_iso()
+        round_["published_by"] = admin_user_id
+        timeline[round_index] = round_
+        self.firebase.update_document(
+            self.collection,
+            hackathon_id,
+            {"timeline": timeline, "updated_at": now_ist_iso()},
+        )
+        hackathon = self.get_hackathon(hackathon_id)
+        enriched = self.enrich_hackathon_for_response(hackathon or {})
+        published_round = enriched["timeline"][round_index]
+        return {
+            "hackathon_id": hackathon_id,
+            "round_index": round_index,
+            "round": published_round,
+        }
+
+    def filter_timeline_for_student(self, hackathon: dict[str, Any]) -> dict[str, Any]:
+        """Return hackathon payload with only published timeline rounds."""
+        enriched = self.enrich_hackathon_for_response(hackathon)
+        enriched["timeline"] = [
+            round_
+            for round_ in enriched.get("timeline") or []
+            if round_.get("published")
+        ]
+        return enriched
 
     def delete_hackathon(self, hackathon_id: str) -> bool:
         """Delete a hackathon document. Returns False if it does not exist."""
@@ -270,6 +333,17 @@ class HackathonService:
         except (TypeError, ValueError):
             size = 1
         return max(1, min(4, size))
+
+    @staticmethod
+    def _normalize_round_for_storage(
+        round_: dict[str, Any], *, published: bool
+    ) -> dict[str, Any]:
+        data = dict(round_)
+        data["published"] = published
+        if not published:
+            data["published_at"] = None
+            data["published_by"] = None
+        return data
 
     def _enrich_timeline_rounds(
         self, hackathon: dict[str, Any], timeline: list[Any]

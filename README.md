@@ -268,9 +268,33 @@ CRUD for hackathons (banner, themes, timeline, `hackathon_url`, linked evaluatio
 | `working_demo_video_required` | bool | `true` | Require demo video for this round's submission |
 | `auto_ai_evaluation` | bool | `false` | Auto-queue AI when admin assigns evaluators |
 
-Responses enrich each round with `team_mode_label`. **Legacy:** hackathon-level `working_demo_video_required` / `auto_ai_evaluation` on older docs still apply as fallbacks when a round omits these fields.
+| `published` | bool | `false` | Admin must publish before students see the round |
+| `published_at` | string | — | Set by publish API (IST) |
+| `published_by` | string | — | Admin uid who published |
+| `round_status` | string | computed | `draft` \| `scheduled` \| `open` \| `closed` (IST dates) |
 
-**Removed from hackathon create/update form:** top-level `working_demo_video_required` and `auto_ai_evaluation` multipart fields — configure them **inside each round** in `timeline` JSON instead.
+Responses enrich each round with `team_mode_label`. **Legacy:** hackathon-level flags on older docs still apply as fallbacks when a round omits per-round fields.
+
+**Removed from hackathon create/update form:** top-level demo-video / auto-AI multipart fields — configure them **inside each round** in `timeline` JSON instead.
+
+### Admin round publish — `POST /hackathons/{id}/rounds/{round_index}/publish`
+
+Admin publishes rounds one at a time after hackathon creation. **Students only see published rounds** (`GET /hackathons/{id}` filters `timeline` for `role=student`).
+
+**IST date checks on publish:**
+- Rejects if `end_date` is already in the past (`ROUND_ENDED`)
+- Allows publish before `start_date` (round shows as `scheduled` until the start date)
+
+**Round window for submissions (IST calendar days):**
+- `scheduled` — published, before `start_date` (students may form teams; cannot submit yet)
+- `open` — published, within `start_date`–`end_date` inclusive
+- `closed` — after `end_date`
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/hackathons/{id}/rounds/{round_index}/publish` | admin | Publish round for students |
+
+Publish error codes: `ROUND_NOT_FOUND`, `ROUND_ENDED`, `ALREADY_PUBLISHED`, `INVALID_ROUND_DATES`.
 
 ### Hackathon teams — `/hackathons/{id}/rounds/{round_index}/…`
 
@@ -282,13 +306,15 @@ Per-round enrollment before submission. Solo rounds (`max_team_size = 1`) use th
 |--------|------|------|-------------|
 | GET | `/hackathons/{id}/rounds/{round_index}/participation` | student | Enrollment status for this round |
 | POST | `/hackathons/{id}/rounds/{round_index}/enroll/solo` | student | Solo enroll (round `max_team_size = 1`) |
-| POST | `/hackathons/{id}/rounds/{round_index}/teams/create` | student | Leader creates team → 6-digit join code (5 min) |
+| POST | `/hackathons/{id}/rounds/{round_index}/teams/create` | student | Leader creates team with `{ "team_name": "..." }` → 6-digit join code (5 min) |
 | POST | `/hackathons/{id}/rounds/{round_index}/teams/join` | student | Member joins with `{ "code": "123456" }` |
 | POST | `/hackathons/{id}/rounds/{round_index}/teams/join-code` | student (leader) | Refresh join code |
 
-**Error codes:** `ROUND_NOT_FOUND`, `TEAM_REQUIRED`, `SOLO_HACKATHON`, `ALREADY_ENROLLED`, `INVALID_CODE`, `EXPIRED`, `TEAM_FULL`, `LEADER_ONLY`, `NOT_ENROLLED`.
+**Error codes:** `ROUND_NOT_PUBLISHED`, `ROUND_NOT_OPEN`, `ROUND_CLOSED`, `ROUND_NOT_FOUND`, `TEAM_INCOMPLETE`, `TEAM_NAME_REQUIRED`, `TEAM_REQUIRED`, `SOLO_HACKATHON`, `ALREADY_ENROLLED`, `INVALID_CODE`, `EXPIRED`, `TEAM_FULL`, `LEADER_ONLY`, `NOT_ENROLLED`.
 
-**Submission guard:** include `round_index` on `POST /submissions` (form) and `POST /submissions/from-upload` (JSON). Backend checks enrollment for that round; members get `403 LEADER_ONLY`. Submission docs include `round_index`, `round_title`, and `hackathon_team_id` when applicable.
+**Team complete gate:** for team rounds, the **leader cannot submit** until `team.member_count === team.max_members`. Participation returns `can_continue_to_demo: false`, `pending_action: "complete_team"`, `block_reason: "Please complete your team to move to demo video"`. Frontend should toast that message when the leader clicks **Continue to Demo**.
+
+**Submission guard:** include `round_index` on submit; backend also requires round `open` + full team (leader) or solo enroll.
 
 #### Frontend UI flow (student)
 
@@ -296,7 +322,7 @@ Per-round enrollment before submission. Solo rounds (`max_team_size = 1`) use th
 2. **On round action** — `GET /hackathons/{id}/rounds/{round_index}/participation`:
    - `pending_action === "solo_enroll"` → **Enroll & Submit** → `POST …/enroll/solo` → open submit wizard with `round_index`.
    - `pending_action === "choose_role"` → modal: **Team Leader** | **Team Member**.
-   - Leader → `POST …/teams/create` → show 6-digit code + 5-minute countdown; roster; submit when `can_submit`.
+   - Leader → **Team name** input (required) → `POST …/teams/create` with `{ "team_name": "Alpha Squad" }` → show team name, 6-digit code + 5-minute countdown; roster; submit when `can_submit`.
    - Member → join code input → `POST …/teams/join` → roster only; no submit button.
 3. **Multi-round hackathons** — enrollment is **independent per round** (Round 1 team ≠ Round 2 team; a student can be leader in one round and solo in another).
 4. **Submit wizard** — always send `round_index` matching the round being submitted.
@@ -356,14 +382,26 @@ Use this section as the implementation spec for the **hackniat** admin + student
 type TimelineRound = {
   title: string;
   description?: string;
-  start_date?: string; // YYYY-MM-DD
+  start_date?: string; // YYYY-MM-DD (IST calendar)
   end_date?: string;
   evaluation_requirement_id?: string;
   max_team_size: 1 | 2 | 3 | 4;
   working_demo_video_required: boolean;
   auto_ai_evaluation: boolean;
+  published?: boolean;       // read-only for admin list; set via publish API
+  published_at?: string | null;
+  published_by?: string | null;
+  round_status?: "draft" | "scheduled" | "open" | "closed";
 };
 ```
+
+**Admin round list (after save):** show each round with `round_status` badge and a **Publish** button when `published === false`. Call:
+
+```http
+POST /hackathons/{hackathonId}/rounds/{roundIndex}/publish
+```
+
+On success, refresh hackathon. Show error toast if `ROUND_ENDED` (end date passed in IST).
 
 **Round row UI (match existing checkbox style):**
 
@@ -375,31 +413,72 @@ type TimelineRound = {
 
 ### Student: hackathon detail
 
-Load `GET /hackathons/{id}`. For each `timeline[i]` render a card:
+Load `GET /hackathons/{id}` — backend returns **only published rounds** in `timeline` for students.
 
-- Title, dates, `team_mode_label` badge
-- Optional badges: "Video required" if `working_demo_video_required`, "Solo" / "Team"
-- Button: **Submit for {title}** → starts flow with `roundIndex = i`
+For each round card show:
+- Title, dates, `team_mode_label`, `round_status` (`scheduled` → “Opens {start_date}”, `open` → “Open now”, `closed` → hidden from list)
+- Badges: video required, solo/team
+- **Participate / Submit for {title}** when `round_status === "open"` OR (`scheduled` and you allow early team formation — backend allows enroll before start date)
 
 ### Student: participation gate (per round)
 
 ```ts
-const roundIndex = 0; // 0-based
 const p = await api.get(`/hackathons/${hackathonId}/rounds/${roundIndex}/participation`);
 ```
 
-`participation` includes: `round_index`, `round_title`, `max_team_size`, `team_mode_label`, `working_demo_video_required`, `auto_ai_evaluation`, `enrolled`, `role`, `team`, `can_submit`, `pending_action`.
+Key fields:
 
-| `pending_action` | Action |
-|------------------|--------|
-| `solo_enroll` | `POST …/enroll/solo` then open wizard |
-| `choose_role` | Show Team Leader / Team Member modal |
-| `ready` | Open submit wizard (leader or solo) |
-| enrolled + `!can_submit` | Member view — roster only, no submit |
+| Field | Use |
+|-------|-----|
+| `round_published` | always `true` if call succeeds |
+| `round_status` | `scheduled` \| `open` \| `closed` |
+| `round_open` | `true` when submissions/demo allowed |
+| `can_continue_to_demo` | enable **Continue to Demo** button |
+| `can_submit` | same as `can_continue_to_demo` for leaders/solo |
+| `block_reason` | toast text when demo button clicked while blocked |
+| `pending_action` | UI state machine |
 
-**Team leader:** `POST …/teams/create` → display 6-digit code + 5 min timer; `POST …/teams/join-code` to refresh.
+**Continue to Demo button logic:**
 
-**Team member:** `POST …/teams/join` with `{ code: "123456" }`.
+```ts
+function onContinueToDemo(p: Participation) {
+  if (!p.can_continue_to_demo) {
+    toast.error(p.block_reason ?? "You cannot submit for this round yet.");
+    return;
+  }
+  openSubmitWizard({ roundIndex: p.round_index, videoRequired: p.working_demo_video_required });
+}
+```
+
+When `pending_action === "complete_team"` → show roster + join code UI; disable demo button; on click show: **“Please complete your team to move to demo video”**.
+
+When `pending_action === "round_not_open"` → show `block_reason` (e.g. “This round opens on 2026-09-16 (IST).”).
+
+When `pending_action === "ready"` and `can_continue_to_demo` → open wizard.
+
+**Team leader — create team (step 1: name, step 2: invite):**
+
+1. After choosing **Team Leader**, show a form:
+   - **Team name** (required, 1–100 chars, trimmed; reject whitespace-only)
+   - Primary button: **Create team**
+2. On submit:
+
+```http
+POST /hackathons/{hackathonId}/rounds/{roundIndex}/teams/create
+Content-Type: application/json
+
+{ "team_name": "Alpha Squad" }
+```
+
+3. On `201`, show:
+   - **Team name** from `response.team.team_name`
+   - 6-digit join code + 5 min countdown (`response.join_code`)
+   - Member roster (`response.team.members`)
+4. To refresh code (leader only): `POST …/teams/join-code` (no body).
+
+**Validation errors:** `422` if `team_name` missing/blank; `400 TEAM_NAME_REQUIRED` from service if stripped name is empty.
+
+**Team member:** `POST …/teams/join` with `{ "code": "123456" }`. After join, show `team.team_name` in the roster header so members know which team they joined.
 
 ### Student: submit wizard
 

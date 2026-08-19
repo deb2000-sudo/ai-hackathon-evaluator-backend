@@ -29,6 +29,15 @@ class JoinTeamRequest(BaseModel):
         return code
 
 
+class CreateTeamRequest(BaseModel):
+    team_name: str = Field(..., min_length=1, max_length=100)
+
+    @field_validator("team_name", mode="before")
+    @classmethod
+    def normalize_team_name(cls, value: str) -> str:
+        return strip_required(value)
+
+
 class TeamJoinCodeResponse(BaseModel):
     code: str = Field(..., description="Plaintext 6-digit code (shown once to the leader)")
     expires_at: str
@@ -66,8 +75,23 @@ class HackathonParticipationResponse(BaseModel):
     team_mode_label: str
     working_demo_video_required: bool = True
     auto_ai_evaluation: bool = False
+    round_published: bool = False
+    round_status: Literal["draft", "scheduled", "open", "closed"] = "draft"
+    round_open: bool = False
     enrolled: bool
     role: Literal["solo", "leader", "member"] | None = None
     team: HackathonTeamResponse | None = None
     can_submit: bool
-    pending_action: Literal["solo_enroll", "choose_role", "create_or_join", "ready"] | None = None
+    can_continue_to_demo: bool = False
+    block_reason: str | None = None
+    pending_action: (
+        Literal[
+            "solo_enroll",
+            "choose_role",
+            "create_or_join",
+            "complete_team",
+            "round_not_open",
+            "ready",
+        ]
+        | None
+    ) = None

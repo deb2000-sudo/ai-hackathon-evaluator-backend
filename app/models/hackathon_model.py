@@ -65,6 +65,22 @@ class TimelineRound(BaseModel):
             "for this round are assigned to evaluators."
         ),
     )
+    published: bool = Field(
+        False,
+        description="When true, students can see and participate in this round.",
+    )
+    published_at: Optional[str] = Field(
+        None,
+        description="IST timestamp when the admin published this round.",
+    )
+    published_by: Optional[str] = Field(
+        None,
+        description="Admin user id who published this round.",
+    )
+    round_status: Optional[str] = Field(
+        None,
+        description="Computed: draft | scheduled | open | closed (IST dates).",
+    )
 
     @field_validator("title", mode="before")
     @classmethod

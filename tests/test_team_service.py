@@ -123,8 +123,9 @@ def test_team_round_requires_role_choice():
 def test_leader_creates_team_and_member_joins_for_round():
     svc = _service()
     leader = _student("leader-1")
-    created = svc.create_team("hack-1", 0, leader)
+    created = svc.create_team("hack-1", 0, leader, "Alpha Squad")
     assert created.team.leader_id == "leader-1"
+    assert created.team.team_name == "Alpha Squad"
     assert created.team.round_index == 0
     assert len(created.join_code.code) == 6
 
@@ -144,7 +145,7 @@ def test_join_code_scoped_to_round():
             {"title": "Round 2", "max_team_size": 3},
         ]
     )
-    round0 = svc.create_team("hack-1", 0, _student("leader-1"))
+    round0 = svc.create_team("hack-1", 0, _student("leader-1"), "Round One Team")
     with pytest.raises(BadRequestError) as exc:
         svc.join_team("hack-1", 1, _student("member-1"), round0.join_code.code)
     assert exc.value.code == "INVALID_CODE"
@@ -152,7 +153,7 @@ def test_join_code_scoped_to_round():
 
 def test_expired_join_code_rejected():
     svc = _service(now=datetime(2026, 8, 19, 12, 0, tzinfo=IST))
-    created = svc.create_team("hack-1", 0, _student("leader-1"))
+    created = svc.create_team("hack-1", 0, _student("leader-1"), "My Team")
     code = created.join_code.code
 
     svc._now = lambda: datetime(2026, 8, 19, 12, 6, tzinfo=IST)
@@ -163,7 +164,7 @@ def test_expired_join_code_rejected():
 
 def test_only_leader_can_submit_for_team_round():
     svc = _service()
-    created = svc.create_team("hack-1", 0, _student("leader-1"))
+    created = svc.create_team("hack-1", 0, _student("leader-1"), "My Team")
     svc.join_team("hack-1", 0, _student("member-1"), created.join_code.code)
 
     team_name, team_id = svc.assert_submission_allowed("hack-1", 0, "leader-1")
@@ -176,7 +177,7 @@ def test_only_leader_can_submit_for_team_round():
 
 def test_enrollment_isolated_per_round():
     svc = _service()
-    svc.create_team("hack-1", 0, _student("leader-1"))
+    svc.create_team("hack-1", 0, _student("leader-1"), "Leaders Team")
     # Same leader can enroll solo for round 2 (different round)
     solo = svc.enroll_solo("hack-1", 1, _student("leader-1"))
     assert solo.role == "solo"
@@ -193,9 +194,15 @@ def test_invalid_round_index():
     assert exc.value.code == "ROUND_NOT_FOUND"
 
 
-def test_refresh_join_code_invalidates_old_code():
+def test_create_team_requires_non_empty_name():
     svc = _service()
-    first = svc.create_team("hack-1", 0, _student("leader-1"))
+    with pytest.raises(BadRequestError) as exc:
+        svc.create_team("hack-1", 0, _student("leader-1"), "   ")
+    assert exc.value.code == "TEAM_NAME_REQUIRED"
+
+
+    svc = _service()
+    first = svc.create_team("hack-1", 0, _student("leader-1"), "Code Team")
     refreshed = svc.refresh_join_code("hack-1", 0, _student("leader-1"))
     assert refreshed.code != first.join_code.code
 

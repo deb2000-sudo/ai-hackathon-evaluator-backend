@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+from datetime import date, datetime
+from typing import Any, Literal
+
+from app.exceptions import BadRequestError
+from app.utils.time import now_ist
 
 
 TEAM_MODE_LABELS = {
@@ -11,6 +15,10 @@ TEAM_MODE_LABELS = {
     3: "3 Members",
     4: "4 Members",
 }
+
+RoundStatus = Literal["draft", "scheduled", "open", "closed"]
+
+TEAM_INCOMPLETE_MESSAGE = "Please complete your team to move to demo video"
 
 
 def normalize_max_team_size(value: Any) -> int:
@@ -85,6 +93,76 @@ def submission_auto_ai_enabled(
     return round_auto_ai_evaluation(hackathon, submission_round_index(submission))
 
 
+def parse_iso_date(value: str | None) -> date | None:
+    if not value or not str(value).strip():
+        return None
+    return date.fromisoformat(str(value).strip())
+
+
+def round_is_published(round_: dict[str, Any]) -> bool:
+    return bool(round_.get("published"))
+
+
+def round_window_status(
+    round_: dict[str, Any],
+    *,
+    now: datetime,
+) -> RoundStatus:
+    """IST calendar-day window for a round (independent of publish flag)."""
+    today = now.astimezone(now.tzinfo).date()
+    start = parse_iso_date(round_.get("start_date"))
+    end = parse_iso_date(round_.get("end_date"))
+    if end and today > end:
+        return "closed"
+    if start and today < start:
+        return "scheduled"
+    return "open"
+
+
+def round_student_status(
+    round_: dict[str, Any],
+    *,
+    now: datetime,
+) -> RoundStatus:
+    """Effective status for students: unpublished rounds are ``draft``."""
+    if not round_is_published(round_):
+        return "draft"
+    return round_window_status(round_, now=now)
+
+
+def validate_round_publishable(round_: dict[str, Any], *, now: datetime) -> None:
+    """
+    Validate admin can publish this round (IST calendar dates).
+
+    Blocks when the round end date has already passed.
+    """
+    today = now.date()
+    start = parse_iso_date(round_.get("start_date"))
+    end = parse_iso_date(round_.get("end_date"))
+    if start and end and end < start:
+        raise BadRequestError(
+            "Round end_date cannot be earlier than start_date",
+            code="INVALID_ROUND_DATES",
+        )
+    if end and today > end:
+        raise BadRequestError(
+            "Cannot publish this round: the end date has already passed (IST).",
+            code="ROUND_ENDED",
+        )
+
+
+def round_open_for_submission(
+    hackathon: dict[str, Any],
+    round_index: int,
+    *,
+    now: datetime,
+) -> bool:
+    round_ = get_timeline_round(hackathon, round_index)
+    if not round_ or not round_is_published(round_):
+        return False
+    return round_window_status(round_, now=now) == "open"
+
+
 def enrich_timeline_round(
     round_: dict[str, Any],
     *,
@@ -103,4 +181,11 @@ def enrich_timeline_round(
         data["auto_ai_evaluation"] = hackathon_default_auto_ai(hackathon)
     else:
         data["auto_ai_evaluation"] = bool(data["auto_ai_evaluation"])
+    data.setdefault("published", False)
+    data["published"] = bool(data.get("published"))
+    status = round_student_status(data, now=now_ist())
+    data["round_status"] = status
+    if not data["published"]:
+        data["published_at"] = None
+        data["published_by"] = None
     return data
