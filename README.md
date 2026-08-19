@@ -110,7 +110,7 @@ Grant the Cloud Run service account access to read these secrets (same as your F
 | `SMTP_HOST` | substitution `_SMTP_HOST` | `smtp-relay.brevo.com` |
 | `SMTP_PORT` | substitution `_SMTP_PORT` | `587` |
 | `SMTP_FROM` | substitution `_SMTP_FROM` | `noreply@mail.nxtlab.tech` |
-| `SMTP_FROM_NAME` | env | `Drop` |
+| `SMTP_FROM_NAME` | env | `Challazo` |
 | `SMTP_USERNAME` | Secret Manager | `noreply@mail.nxtlab.tech` |
 | `SMTP_PASSWORD` | Secret Manager | Brevo SMTP key |
 

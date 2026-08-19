@@ -49,7 +49,7 @@ def resolve_smtp_config() -> dict[str, str | int | bool]:
     from_addr = (
         os.getenv("SMTP_FROM") or os.getenv("MAIL_FROM") or username
     ).strip()
-    from_name = os.getenv("SMTP_FROM_NAME", "Drop").strip()
+    from_name = os.getenv("SMTP_FROM_NAME", "Challazo").strip()
     use_ssl = os.getenv("SMTP_USE_SSL", "").strip().lower() in ("1", "true", "yes")
     return {
         "host": host,
