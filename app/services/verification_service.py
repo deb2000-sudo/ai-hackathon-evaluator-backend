@@ -68,32 +68,88 @@ class VerificationService:
     def start(self, request: RegisterStartRequest, client_ip: str = "") -> str:
         email = request.email
         phone = request.mobile_number
-        self._assert_identifiers_available(email, phone)
 
+        if request.session_id:
+            return self._merge_session(request.session_id, email, phone)
+
+        self._assert_identifiers_available(email, phone)
         session_id = str(uuid.uuid4())
         now = self._now()
         self.firebase.set_document(
             SESSIONS,
             session_id,
-            {
-                "email": email,
-                "email_code_hash": None,
-                "email_code_expires_at": None,
-                "email_attempts": 0,
-                "email_verified": False,
-                "email_last_sent_at": None,
-                "phone": phone,
-                "phone_verified": False,
-                "phone_last_sent_at": None,
-                "created_at": now.isoformat(),
-                "expires_at": (now + SESSION_TTL).isoformat(),
-            },
+            self._new_session_doc(email, phone, now),
         )
         return session_id
 
+    def _new_session_doc(
+        self,
+        email: str | None,
+        phone: str | None,
+        now: datetime,
+    ) -> dict[str, Any]:
+        return {
+            "email": email or "",
+            "email_code_hash": None,
+            "email_code_expires_at": None,
+            "email_attempts": 0,
+            "email_verified": False,
+            "email_last_sent_at": None,
+            "phone": phone or "",
+            "phone_verified": False,
+            "phone_last_sent_at": None,
+            "created_at": now.isoformat(),
+            "expires_at": (now + SESSION_TTL).isoformat(),
+        }
+
+    def _merge_session(
+        self,
+        session_id: str,
+        email: str | None,
+        phone: str | None,
+    ) -> str:
+        session = self._load_session(session_id)
+        current_email = str(session.get("email") or "").strip()
+        current_phone = str(session.get("phone") or "").strip()
+        updates: dict[str, Any] = {}
+
+        if email and email != current_email:
+            self._assert_identifiers_available(email, None)
+            updates["email"] = email
+            if current_email or session.get("email_verified"):
+                updates.update(self._email_verification_reset_fields())
+        elif email and not current_email:
+            self._assert_identifiers_available(email, None)
+            updates["email"] = email
+
+        if phone and phone != current_phone:
+            self._assert_identifiers_available(None, phone)
+            updates["phone"] = phone
+            if current_phone or session.get("phone_verified"):
+                updates["phone_verified"] = False
+                updates["phone_last_sent_at"] = None
+        elif phone and not current_phone:
+            self._assert_identifiers_available(None, phone)
+            updates["phone"] = phone
+
+        if updates:
+            self.firebase.update_document(SESSIONS, session_id, updates)
+        return session_id
+
+    @staticmethod
+    def _email_verification_reset_fields() -> dict[str, Any]:
+        return {
+            "email_verified": False,
+            "email_code_hash": None,
+            "email_code_expires_at": None,
+            "email_attempts": 0,
+            "email_last_sent_at": None,
+        }
+
     def send_email_otp(self, request: EmailSendOtpRequest, client_ip: str = "") -> None:
         session = self._load_session(request.session_id)
-        if session["email"] != request.email:
+        session_email = str(session.get("email") or "").strip()
+        if not session_email or session_email != request.email:
             raise BadRequestError(
                 "Email does not match this verification session",
                 code="EMAIL_MISMATCH",
@@ -184,7 +240,8 @@ class VerificationService:
 
     def verify_phone_token(self, request: VerifyPhoneTokenRequest) -> None:
         session = self._load_session(request.session_id)
-        if session["phone"] != request.mobile_number:
+        session_phone = str(session.get("phone") or "").strip()
+        if not session_phone or session_phone != request.mobile_number:
             raise BadRequestError(
                 "Mobile number does not match this verification session",
                 code="PHONE_MISMATCH",
@@ -246,7 +303,14 @@ class VerificationService:
                 "Email and mobile number must both be verified",
                 code="NOT_VERIFIED",
             )
-        if session["email"] != request.email or session["phone"] != request.mobile_number:
+        session_email = str(session.get("email") or "").strip()
+        session_phone = str(session.get("phone") or "").strip()
+        if not session_email or not session_phone:
+            raise ForbiddenError(
+                "Email and mobile number must both be verified",
+                code="NOT_VERIFIED",
+            )
+        if session_email != request.email or session_phone != request.mobile_number:
             raise ForbiddenError(
                 "Submitted email or mobile does not match verified values",
                 code="IDENTIFIER_MISMATCH",
@@ -301,23 +365,26 @@ class VerificationService:
             "password": request.password,
         }
 
-    def _assert_identifiers_available(self, email: str, phone: str) -> None:
-        if self.user_service.user_exists(email):
+    def _assert_identifiers_available(
+        self, email: str | None, phone: str | None
+    ) -> None:
+        if email and self.user_service.user_exists(email):
             raise ConflictError(
                 "An account with this email already exists",
                 code="EMAIL_TAKEN",
             )
-        if self.user_service.find_by_field("mobile_no", phone):
+        if phone and self.user_service.find_by_field("mobile_no", phone):
             raise ConflictError(
                 "An account with this mobile number already exists",
                 code="PHONE_TAKEN",
             )
-        national = phone[3:] if phone.startswith("+91") and len(phone) == 13 else ""
-        if national and self.user_service.find_by_field("mobile_no", national):
-            raise ConflictError(
-                "An account with this mobile number already exists",
-                code="PHONE_TAKEN",
-            )
+        if phone:
+            national = phone[3:] if phone.startswith("+91") and len(phone) == 13 else ""
+            if national and self.user_service.find_by_field("mobile_no", national):
+                raise ConflictError(
+                    "An account with this mobile number already exists",
+                    code="PHONE_TAKEN",
+                )
 
     def _load_session(self, session_id: str) -> dict[str, Any]:
         doc = self.firebase.get_document(SESSIONS, session_id)

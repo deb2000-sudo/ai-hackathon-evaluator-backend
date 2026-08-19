@@ -62,7 +62,7 @@ async def register_start(
     request: Request,
     verification: VerificationService = Depends(get_verification_service),
 ) -> RegisterStartResponse:
-    """Create a 30-minute verification session. No user account is created yet."""
+    """Create or extend a 30-minute verification session (email and/or mobile)."""
     session_id = await run_sync(verification.start, payload, _client_ip(request))
     return RegisterStartResponse(session_id=session_id)
 

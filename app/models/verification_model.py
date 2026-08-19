@@ -23,18 +23,36 @@ def validate_password_strength(password: str) -> str:
 
 
 class RegisterStartRequest(BaseModel):
-    email: EmailStr
-    mobile_number: str = Field(..., min_length=8, max_length=20)
+    session_id: str | None = Field(None, min_length=8, max_length=80)
+    email: EmailStr | None = None
+    mobile_number: str | None = Field(None, min_length=8, max_length=20)
+
+    @field_validator("session_id", mode="before")
+    @classmethod
+    def normalize_session_id(cls, value: str | None) -> str | None:
+        if value is None or not str(value).strip():
+            return None
+        return strip_required(value)
 
     @field_validator("email", mode="before")
     @classmethod
-    def normalize_email(cls, value: str) -> str:
+    def normalize_email(cls, value: str | None) -> str | None:
+        if value is None or not str(value).strip():
+            return None
         return strip_required(value).lower()
 
-    @field_validator("mobile_number")
+    @field_validator("mobile_number", mode="before")
     @classmethod
-    def normalize_mobile(cls, value: str) -> str:
-        return normalize_e164(value)
+    def normalize_mobile(cls, value: str | None) -> str | None:
+        if value is None or not str(value).strip():
+            return None
+        return normalize_e164(str(value).strip())
+
+    @model_validator(mode="after")
+    def require_identifier(self) -> "RegisterStartRequest":
+        if not self.email and not self.mobile_number:
+            raise ValueError("At least one of email or mobile_number is required")
+        return self
 
 
 class RegisterStartResponse(BaseModel):

@@ -127,6 +127,46 @@ def test_start_rejects_existing_email():
     assert exc.value.code == "EMAIL_TAKEN"
 
 
+def test_start_accepts_email_or_mobile_independently():
+    now = datetime(2026, 8, 18, 12, 0, tzinfo=IST)
+    service, firebase, _ = _service(now)
+
+    email_session = service.start(RegisterStartRequest(email="ada@example.com"))
+    email_doc = firebase.get_document("verification_sessions", email_session)
+    assert email_doc["email"] == "ada@example.com"
+    assert email_doc["phone"] == ""
+
+    phone_session = service.start(RegisterStartRequest(mobile_number="+919876543210"))
+    phone_doc = firebase.get_document("verification_sessions", phone_session)
+    assert phone_doc["phone"] == "+919876543210"
+    assert phone_doc["email"] == ""
+
+
+def test_merge_session_adds_second_identifier_without_resetting_other():
+    now = datetime(2026, 8, 18, 12, 0, tzinfo=IST)
+    service, firebase, email = _service(now)
+    session_id = service.start(RegisterStartRequest(email="ada@example.com"))
+    service.send_email_otp(
+        EmailSendOtpRequest(session_id=session_id, email="ada@example.com")
+    )
+    service.verify_email_otp(
+        EmailVerifyOtpRequest(session_id=session_id, code="123456")
+    )
+
+    merged = service.start(
+        RegisterStartRequest(
+            session_id=session_id,
+            email="ada@example.com",
+            mobile_number="+919876543210",
+        )
+    )
+    assert merged == session_id
+    doc = firebase.get_document("verification_sessions", session_id)
+    assert doc["email_verified"] is True
+    assert doc["phone"] == "+919876543210"
+    assert doc["phone_verified"] is False
+
+
 def test_email_otp_expiry_and_invalid_code():
     now = datetime(2026, 8, 18, 12, 0, tzinfo=IST)
     service, _, email = _service(now)
