@@ -72,7 +72,129 @@ Errors use `{ "detail": { "code", "message" } }` (e.g. `EMAIL_TAKEN`, `INVALID_C
 
 **Phone Auth (ops):** enable Phone in Firebase Console; add authorized domains (`127.0.0.1`, staging/prod frontend URLs). Local dev: use `http://127.0.0.1:5173` (Firebase blocks `localhost`). Optional fictional test numbers under Authentication → Phone → testing; frontend can set `VITE_FIREBASE_PHONE_TEST_MODE=true` locally.
 
-**Evaluator** — `POST /auth/register/evaluator` (`@nxtwave.co.in`, starts as `pending`)
+**Evaluator** — same verified email + mobile flow as students, then profile completion. Account starts as `pending` until admin approval:
+
+1. `POST /auth/register/start` — `{ "role": "evaluator", "email", "mobile_number" }` → `{ "session_id" }` (email must be `@nxtwave.co.in`; both identifiers required)
+2. `POST /auth/email/send-otp` — `{ "session_id", "email" }`
+3. `POST /auth/email/verify-otp` — `{ "session_id", "code" }`
+4. Firebase Phone Auth in the browser → `POST /auth/verify-phone-token` — `{ "session_id", "firebase_id_token", "mobile_number" }`
+5. `POST /auth/register/evaluator/complete` — `{ session_id, first_name, last_name, employee_id, email, mobile_number, password }`; returns session cookies + `approval_status: "pending"`
+
+`POST /auth/register/evaluator` (legacy direct register) returns **410 Gone** — use the verified flow above.
+
+Errors use `{ "detail": { "code", "message" } }` (e.g. `EMAIL_TAKEN`, `INVALID_CODE`, `NOT_VERIFIED`, `EMPLOYEE_ID_TAKEN`, `ROLE_MISMATCH`).
+
+## Frontend handoff — evaluator registration (copy to frontend repo)
+
+Reuse the **same single-page verification UX** as student registration (email OTP + Firebase Phone Auth). Differences are called out below.
+
+### Flow overview
+
+```mermaid
+flowchart TD
+  A[Evaluator register page] --> B[Collect email + mobile + profile fields]
+  B --> C["POST /auth/register/start role=evaluator"]
+  C --> D[Email OTP step]
+  D --> E[Phone OTP via Firebase]
+  E --> F["POST /auth/register/evaluator/complete"]
+  F --> G[Pending approval screen]
+```
+
+### Step 1 — Collect identifiers (both required upfront)
+
+Unlike students (who can add email or phone incrementally), evaluators must submit **both** on first `register/start`:
+
+```ts
+const { session_id } = await api.post("/auth/register/start", {
+  role: "evaluator",
+  email: "name@nxtwave.co.in",   // must end with @nxtwave.co.in
+  mobile_number: "+919876543210", // E.164; backend normalizes 10-digit IN numbers
+});
+```
+
+Store `session_id` in component state (30-minute TTL).
+
+### Steps 2–4 — Same as student
+
+| Step | Endpoint | Body |
+|------|----------|------|
+| Send email OTP | `POST /auth/email/send-otp` | `{ session_id, email }` |
+| Verify email | `POST /auth/email/verify-otp` | `{ session_id, code }` |
+| Verify phone | `POST /auth/verify-phone-token` | `{ session_id, firebase_id_token, mobile_number }` |
+
+Use the **same Firebase Phone Auth widget** as student registration (`RecaptchaVerifier` + `signInWithPhoneNumber`). After success, send the Firebase ID token to the backend (temporary Phone Auth user is deleted server-side).
+
+**UI gates:** disable **Complete registration** until both `email_verified` and `phone_verified` (track locally after each step succeeds).
+
+### Step 5 — Complete profile
+
+```ts
+await api.post("/auth/register/evaluator/complete", {
+  session_id,
+  first_name,
+  last_name,
+  employee_id,
+  email,           // must match verified session email
+  mobile_number,   // must match verified session phone
+  password,
+  confirm_password,
+});
+```
+
+**Password rules:** min 8 chars, at least 1 letter and 1 number (same as student verified flow).
+
+**Success response:** same shape as login — `user_id`, `email`, `name`, `role: "evaluator"`, `approval_status: "pending"`, `csrf_token` + HttpOnly session cookies.
+
+Show a **pending approval** screen:
+
+> Your evaluator account has been submitted. An administrator will review and approve your account before you can access submissions.
+
+User can still call `GET /auth/me` but most app routes return `403` until `approval_status === "approved"`.
+
+### Error codes to handle
+
+| Code | When | UI |
+|------|------|-----|
+| `EMAIL_TAKEN` / `PHONE_TAKEN` | start or complete | Inline field error |
+| `EMPLOYEE_ID_TAKEN` | complete | Inline field error |
+| `INVALID_CODE` / `EXPIRED` | email verify | Toast + resend |
+| `RESEND_COOLDOWN` | send OTP | Show countdown |
+| `NOT_VERIFIED` | complete early | Block submit |
+| `ROLE_MISMATCH` | wrong complete endpoint | Should not happen if UI is role-scoped |
+| `DEPRECATED` | old `POST /auth/register/evaluator` | Migrate to verified flow |
+
+### Suggested page layout
+
+Single page with sections (mirror student register):
+
+1. **Account** — first name, last name, employee ID, Nxtwave email, mobile, password, confirm password
+2. **Verify email** — Send code / 6-digit input / verified badge
+3. **Verify mobile** — Firebase phone widget / verified badge
+4. **Submit** — enabled only when both verifications succeed
+
+Optional: call `register/start` when email + mobile are both valid (debounced) to obtain `session_id` early, then run OTP steps.
+
+### TypeScript types
+
+```ts
+type RegisterStartEvaluator = {
+  role: "evaluator";
+  email: string;
+  mobile_number: string;
+  session_id?: string; // include when updating session
+};
+
+type EvaluatorRegisterComplete = {
+  session_id: string;
+  first_name: string;
+  last_name: string;
+  employee_id: string;
+  email: string;
+  mobile_number: string;
+  password: string;
+  confirm_password?: string;
+};
+```
 
 ## Brevo email OTP setup
 
@@ -236,7 +358,8 @@ disabled by default (`ENVIRONMENT=production`); set `ENABLE_API_DOCS=true` only 
 | POST | `/auth/email/verify-otp` | — | Confirm email OTP |
 | POST | `/auth/verify-phone-token` | — | Confirm Firebase Phone Auth token |
 | POST | `/auth/register/complete` | — | Create student + session cookies |
-| POST | `/auth/register/evaluator` | — | Evaluator registration (pending) |
+| POST | `/auth/register/evaluator/complete` | — | Create evaluator (verified) + session cookies (`pending`) |
+| POST | `/auth/register/evaluator` | — | **Deprecated** (410) — use verified flow |
 | POST | `/auth/login` | — | HttpOnly cookie session |
 | POST | `/auth/logout` | — | Clear cookie |
 | POST | `/auth/change-password` | user | Change password |

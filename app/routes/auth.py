@@ -14,23 +14,21 @@ from app.middleware.auth_middleware import get_current_user
 from app.exceptions import AppError
 from app.dependencies import (
     get_firebase,
-    get_registration_service,
     get_user_service,
     get_verification_service,
 )
 from app.models.user_model import (
     ChangePasswordRequest,
     CurrentUser,
-    EvaluatorRegisterRequest,
     LoginRequest,
     CsrfTokenResponse,
     LoginResponse,
-    RegisterResponse,
     UserResponse,
 )
 from app.models.verification_model import (
     EmailSendOtpRequest,
     EmailVerifyOtpRequest,
+    EvaluatorRegisterCompleteRequest,
     RegisterCompleteRequest,
     RegisterStartRequest,
     RegisterStartResponse,
@@ -62,7 +60,12 @@ async def register_start(
     request: Request,
     verification: VerificationService = Depends(get_verification_service),
 ) -> RegisterStartResponse:
-    """Create or extend a 30-minute verification session (email and/or mobile)."""
+    """
+    Create or extend a 30-minute verification session (email and/or mobile).
+
+    Pass ``role: "evaluator"`` for evaluator sign-up (requires both email and
+    mobile_number upfront). Defaults to ``student``.
+    """
     session_id = await run_sync(verification.start, payload, _client_ip(request))
     return RegisterStartResponse(session_id=session_id)
 
@@ -137,32 +140,65 @@ async def register_complete(
     return response
 
 
-@router.post("/register/evaluator", response_model=RegisterResponse, status_code=201)
-async def register_evaluator(
-    request: EvaluatorRegisterRequest,
-    registration_service: RegistrationService = Depends(get_registration_service),
-) -> RegisterResponse:
+@router.post("/register/evaluator/complete", status_code=200)
+async def register_evaluator_complete(
+    payload: EvaluatorRegisterCompleteRequest,
+    firebase: FirebaseService = Depends(get_firebase),
+    verification: VerificationService = Depends(get_verification_service),
+) -> JSONResponse:
     """
-    Register a new evaluator account.
-
-    Required fields: first name, last name, employee ID, Nxtwave email,
-    password, and confirm password. Account remains pending until admin approval.
+    Create the evaluator account after email and phone are verified.
+    Issues session cookies; ``approval_status`` is ``pending`` until admin approves.
     """
-    try:
-        return await run_sync(registration_service.register_evaluator, request)
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        ) from e
-    except AppError:
-        raise
-    except Exception as e:
-        logger.exception("Evaluator registration error")
+    created = await run_sync(verification.complete_evaluator, payload)
+    id_token = await run_sync(
+        firebase.sign_in_get_id_token,
+        created["email"],
+        created["password"],
+    )
+    if not id_token:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Registration failed",
-        ) from e
+            detail="Account created but sign-in failed. Please log in.",
+        )
+    csrf_token = new_csrf_token()
+    body = LoginResponse(
+        user_id=created["user_id"],
+        email=created["email"],
+        name=created["name"],
+        role=created["role"],
+        approval_status=created.get("approval_status"),
+        message=(
+            "Evaluator registration submitted. Your account is pending admin approval."
+        ),
+        csrf_token=csrf_token,
+    ).model_dump()
+    response = JSONResponse(content=body)
+    set_auth_cookie(response, id_token)
+    set_csrf_cookie(response, token=csrf_token)
+    return response
+
+
+@router.post("/register/evaluator", status_code=410)
+async def register_evaluator_deprecated() -> None:
+    """
+    Deprecated — use verified registration:
+
+    1. POST /auth/register/start with role=evaluator
+    2. Email OTP + Firebase Phone Auth (same as student)
+    3. POST /auth/register/evaluator/complete
+    """
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            "code": "DEPRECATED",
+            "message": (
+                "Direct evaluator registration is disabled. "
+                "Use POST /auth/register/start (role=evaluator), verify email and "
+                "mobile, then POST /auth/register/evaluator/complete."
+            ),
+        },
+    )
 
 
 @router.post("/login", status_code=200)

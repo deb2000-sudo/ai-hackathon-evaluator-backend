@@ -25,6 +25,7 @@ from app.exceptions import (
 from app.models.verification_model import (
     EmailSendOtpRequest,
     EmailVerifyOtpRequest,
+    EvaluatorRegisterCompleteRequest,
     RegisterCompleteRequest,
     RegisterStartRequest,
     VerifyPhoneTokenRequest,
@@ -68,9 +69,10 @@ class VerificationService:
     def start(self, request: RegisterStartRequest, client_ip: str = "") -> str:
         email = request.email
         phone = request.mobile_number
+        role = request.role
 
         if request.session_id:
-            return self._merge_session(request.session_id, email, phone)
+            return self._merge_session(request.session_id, email, phone, role)
 
         self._assert_identifiers_available(email, phone)
         session_id = str(uuid.uuid4())
@@ -78,7 +80,7 @@ class VerificationService:
         self.firebase.set_document(
             SESSIONS,
             session_id,
-            self._new_session_doc(email, phone, now),
+            self._new_session_doc(email, phone, now, role=role),
         )
         return session_id
 
@@ -87,8 +89,11 @@ class VerificationService:
         email: str | None,
         phone: str | None,
         now: datetime,
+        *,
+        role: str = "student",
     ) -> dict[str, Any]:
         return {
+            "role": role,
             "email": email or "",
             "email_code_hash": None,
             "email_code_expires_at": None,
@@ -107,8 +112,15 @@ class VerificationService:
         session_id: str,
         email: str | None,
         phone: str | None,
+        role: str | None = None,
     ) -> str:
         session = self._load_session(session_id)
+        current_role = str(session.get("role") or "student")
+        if role and role != current_role:
+            raise BadRequestError(
+                "Registration role does not match this verification session",
+                code="ROLE_MISMATCH",
+            )
         current_email = str(session.get("email") or "").strip()
         current_phone = str(session.get("phone") or "").strip()
         updates: dict[str, Any] = {}
@@ -298,18 +310,8 @@ class VerificationService:
 
     def complete(self, request: RegisterCompleteRequest) -> dict[str, Any]:
         session = self._load_session(request.session_id)
-        if not session.get("email_verified") or not session.get("phone_verified"):
-            raise ForbiddenError(
-                "Email and mobile number must both be verified",
-                code="NOT_VERIFIED",
-            )
-        session_email = str(session.get("email") or "").strip()
-        session_phone = str(session.get("phone") or "").strip()
-        if not session_email or not session_phone:
-            raise ForbiddenError(
-                "Email and mobile number must both be verified",
-                code="NOT_VERIFIED",
-            )
+        self._assert_session_role(session, "student")
+        session_email, session_phone = self._require_verified_identifiers(session)
         if session_email != request.email or session_phone != request.mobile_number:
             raise ForbiddenError(
                 "Submitted email or mobile does not match verified values",
@@ -364,6 +366,86 @@ class VerificationService:
             "approval_status": "approved",
             "password": request.password,
         }
+
+    def complete_evaluator(self, request: EvaluatorRegisterCompleteRequest) -> dict[str, Any]:
+        session = self._load_session(request.session_id)
+        self._assert_session_role(session, "evaluator")
+        session_email, session_phone = self._require_verified_identifiers(session)
+        if session_email != request.email or session_phone != request.mobile_number:
+            raise ForbiddenError(
+                "Submitted email or mobile does not match verified values",
+                code="IDENTIFIER_MISMATCH",
+            )
+
+        self._assert_identifiers_available(request.email, request.mobile_number)
+        if self.user_service.find_by_field("employee_id", request.employee_id.strip()):
+            raise ConflictError("Employee ID is already registered", code="EMPLOYEE_ID_TAKEN")
+
+        display_name = f"{request.first_name} {request.last_name}".strip()
+        registration = RegistrationService(
+            firebase=self.firebase, user_service=self.user_service
+        )
+        registration._ensure_email_available(request.email)
+        user_id = registration._create_auth_user(
+            request.email, request.password, display_name
+        )
+        now = now_ist_iso()
+        try:
+            self.firebase.set_document(
+                "users",
+                user_id,
+                {
+                    "first_name": request.first_name,
+                    "last_name": request.last_name,
+                    "name": display_name,
+                    "email": request.email,
+                    "employee_id": request.employee_id.strip(),
+                    "mobile_no": request.mobile_number,
+                    "role": "evaluator",
+                    "approval_status": "pending",
+                    "email_verified": True,
+                    "phone_verified": True,
+                    "created_at": now,
+                    "updated_at": now,
+                },
+            )
+        except Exception:
+            registration._rollback_auth_user(user_id)
+            raise
+
+        self.firebase.delete_document(SESSIONS, request.session_id)
+        return {
+            "user_id": user_id,
+            "email": request.email,
+            "name": display_name,
+            "role": "evaluator",
+            "approval_status": "pending",
+            "password": request.password,
+        }
+
+    @staticmethod
+    def _assert_session_role(session: dict[str, Any], expected: str) -> None:
+        role = str(session.get("role") or "student")
+        if role != expected:
+            raise BadRequestError(
+                f"This verification session is for {role} registration, not {expected}",
+                code="ROLE_MISMATCH",
+            )
+
+    def _require_verified_identifiers(self, session: dict[str, Any]) -> tuple[str, str]:
+        if not session.get("email_verified") or not session.get("phone_verified"):
+            raise ForbiddenError(
+                "Email and mobile number must both be verified",
+                code="NOT_VERIFIED",
+            )
+        session_email = str(session.get("email") or "").strip()
+        session_phone = str(session.get("phone") or "").strip()
+        if not session_email or not session_phone:
+            raise ForbiddenError(
+                "Email and mobile number must both be verified",
+                code="NOT_VERIFIED",
+            )
+        return session_email, session_phone
 
     def _assert_identifiers_available(
         self, email: str | None, phone: str | None
