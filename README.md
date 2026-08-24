@@ -74,7 +74,7 @@ Errors use `{ "detail": { "code", "message" } }` (e.g. `EMAIL_TAKEN`, `INVALID_C
 
 **Evaluator** — same verified email + mobile flow as students, then profile completion. Account starts as `pending` until admin approval:
 
-1. `POST /auth/register/start` — `{ "role": "evaluator", "email", "mobile_number" }` → `{ "session_id" }` (email must be `@nxtwave.co.in`; both identifiers required)
+1. `POST /auth/register/start` — `{ "role": "evaluator", "email" }` **or** `{ "role": "evaluator", "mobile_number" }` → `{ "session_id" }`; call again with `session_id` to attach the other identifier (same as student). When email is included it must be `@nxtwave.co.in`.
 2. `POST /auth/email/send-otp` — `{ "session_id", "email" }`
 3. `POST /auth/email/verify-otp` — `{ "session_id", "code" }`
 4. Firebase Phone Auth in the browser → `POST /auth/verify-phone-token` — `{ "session_id", "firebase_id_token", "mobile_number" }`
@@ -100,19 +100,31 @@ flowchart TD
   F --> G[Pending approval screen]
 ```
 
-### Step 1 — Collect identifiers (both required upfront)
+### Step 1 — Start session (email or mobile first, same as student)
 
-Unlike students (who can add email or phone incrementally), evaluators must submit **both** on first `register/start`:
+Evaluators verify email and mobile **independently**. Start with whichever field the user completes first, then merge the other:
 
 ```ts
-const { session_id } = await api.post("/auth/register/start", {
-  role: "evaluator",
-  email: "name@nxtwave.co.in",   // must end with @nxtwave.co.in
-  mobile_number: "+919876543210", // E.164; backend normalizes 10-digit IN numbers
-});
+// First identifier (email OR mobile)
+let sessionId = (
+  await api.post("/auth/register/start", {
+    role: "evaluator",
+    email: "name@nxtwave.co.in", // OR mobile_number only on first call
+  })
+).session_id;
+
+// When the second field is ready, merge into the same session
+sessionId = (
+  await api.post("/auth/register/start", {
+    role: "evaluator",
+    session_id: sessionId,
+    email: "name@nxtwave.co.in",
+    mobile_number: "+919876543210",
+  })
+).session_id;
 ```
 
-Store `session_id` in component state (30-minute TTL).
+When `email` is present it must end with `@nxtwave.co.in`. Store `session_id` (30-minute TTL).
 
 ### Steps 2–4 — Same as student
 

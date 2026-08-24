@@ -63,8 +63,9 @@ async def register_start(
     """
     Create or extend a 30-minute verification session (email and/or mobile).
 
-    Pass ``role: "evaluator"`` for evaluator sign-up (requires both email and
-    mobile_number upfront). Defaults to ``student``.
+    Pass ``role: "evaluator"`` for evaluator sign-up. Email and mobile are added
+    independently (same as student); include ``session_id`` to merge the second
+    identifier. Defaults to ``student``.
     """
     session_id = await run_sync(verification.start, payload, _client_ip(request))
     return RegisterStartResponse(session_id=session_id)

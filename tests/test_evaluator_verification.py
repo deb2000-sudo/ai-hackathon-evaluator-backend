@@ -84,22 +84,42 @@ def _service(now: datetime, otp: str = "123456"):
     return service, firebase, email
 
 
-def test_evaluator_start_requires_both_identifiers_and_nxtwave_email():
+def test_evaluator_start_accepts_email_or_mobile_independently():
     with pytest.raises(ValidationError):
         RegisterStartRequest(
             role="evaluator",
             email="ada@example.com",
             mobile_number="+919876543210",
         )
-    with pytest.raises(ValidationError):
-        RegisterStartRequest(role="evaluator", email="ada@nxtwave.co.in")
 
-    req = RegisterStartRequest(
-        role="evaluator",
-        email="ada@nxtwave.co.in",
-        mobile_number="+919876543210",
+    email_only = RegisterStartRequest(role="evaluator", email="ada@nxtwave.co.in")
+    assert email_only.email == "ada@nxtwave.co.in"
+
+    phone_only = RegisterStartRequest(
+        role="evaluator", mobile_number="+919876543210"
     )
-    assert req.role == "evaluator"
+    assert phone_only.mobile_number == "+919876543210"
+
+
+def test_evaluator_merge_session_adds_second_identifier():
+    now = datetime(2026, 8, 18, 12, 0, tzinfo=IST)
+    service, firebase, _ = _service(now)
+    session_id = service.start(
+        RegisterStartRequest(role="evaluator", email="ada@nxtwave.co.in")
+    )
+    merged = service.start(
+        RegisterStartRequest(
+            session_id=session_id,
+            role="evaluator",
+            email="ada@nxtwave.co.in",
+            mobile_number="+919876543210",
+        )
+    )
+    assert merged == session_id
+    doc = firebase.get_document("verification_sessions", session_id)
+    assert doc["email"] == "ada@nxtwave.co.in"
+    assert doc["phone"] == "+919876543210"
+    assert doc["role"] == "evaluator"
 
 
 def test_evaluator_complete_happy_path():

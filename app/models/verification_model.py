@@ -66,11 +66,7 @@ class RegisterStartRequest(BaseModel):
     def require_identifier(self) -> "RegisterStartRequest":
         if not self.email and not self.mobile_number:
             raise ValueError("At least one of email or mobile_number is required")
-        if self.role == "evaluator":
-            if not self.email or not self.mobile_number:
-                raise ValueError(
-                    "Evaluator registration requires both email and mobile_number"
-                )
+        if self.role == "evaluator" and self.email:
             validate_nxtwave_email(str(self.email))
         return self
 
