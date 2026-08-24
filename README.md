@@ -412,6 +412,26 @@ Responses enrich each round with `team_mode_label`. **Legacy:** hackathon-level 
 
 **Removed from hackathon create/update form:** top-level demo-video / auto-AI multipart fields — configure them **inside each round** in `timeline` JSON instead.
 
+#### Hackathon creation drafts (admin wizard cart)
+
+Save-and-continue while creating a hackathon. Each wizard section persists to Firestore (`hackathon_drafts`); on final publish the draft becomes a real hackathon and the draft is deleted.
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/hackathons/drafts` | admin | Create empty draft |
+| GET | `/hackathons/drafts` | admin | List drafts (inbox) |
+| GET | `/hackathons/drafts/{id}` | admin | Load draft to resume |
+| PATCH | `/hackathons/drafts/{id}` | admin | Save section (partial JSON) |
+| POST | `/hackathons/drafts/{id}/banner` | admin | Upload/replace banner |
+| POST | `/hackathons/drafts/{id}/publish` | admin | Validate all fields → create hackathon |
+| DELETE | `/hackathons/drafts/{id}` | admin | Discard draft |
+
+Draft sections (`current_step` / `completed_steps`): `basics` → `guidelines` → `themes` → `timeline` → `prizes` → `banner` → `review`.
+
+Errors: `DRAFT_NOT_FOUND`, `DRAFT_INCOMPLETE`, `DRAFT_INVALID`.
+
+See [Frontend handoff — hackathon drafts](#frontend-handoff--hackathon-drafts-copy-to-frontend-repo) below.
+
 ### Admin round publish — `POST /hackathons/{id}/rounds/{round_index}/publish`
 
 Admin publishes rounds one at a time after hackathon creation. **Students only see published rounds** (`GET /hackathons/{id}` filters `timeline` for `role=student`).
@@ -500,6 +520,159 @@ Remove hackathon-level **Working demo video required** and **Auto AI evaluation 
 | ☐ Auto AI evaluation on assign | `auto_ai_evaluation` | unchecked (`false`) |
 
 When saving, serialize the full `timeline` array (including all round fields) into the multipart `timeline` form field as JSON. On edit, hydrate checkboxes from `GET /hackathons/{id}` → `hackathon.timeline[i]`.
+
+---
+
+## Frontend handoff — hackathon drafts (copy to frontend repo)
+
+Admin **Create Hackathon** should use a multi-step wizard with **Save & continue** per section. Data persists server-side so admins can leave and resume later.
+
+### Wizard sections
+
+| Step | `current_step` | Fields saved via PATCH |
+|------|----------------|------------------------|
+| 1 Basics | `basics` | `name`, `description`, `start_date`, `end_date`, `hackathon_url` |
+| 2 Guidelines | `guidelines` | `guidelines`, `evaluator_guidelines` |
+| 3 Themes | `themes` | `theme_ids` |
+| 4 Timeline | `timeline` | `timeline` (full round array JSON) |
+| 5 Prizes | `prizes` | `prizes` `{ winner, first_runner_up, second_runner_up }` |
+| 6 Banner | `banner` | `POST …/banner` multipart (optional image) |
+| 7 Review | `review` | read-only summary → publish |
+
+### Flow
+
+```mermaid
+flowchart TD
+  A[Admin clicks Create Hackathon] --> B[POST /hackathons/drafts]
+  B --> C[Wizard step N]
+  C --> D[PATCH /hackathons/drafts/id on Save and continue]
+  D --> E{More steps?}
+  E -->|yes| C
+  E -->|review| F[POST /hackathons/drafts/id/publish]
+  F --> G[Redirect to hackathon detail]
+```
+
+### On first visit (new hackathon)
+
+```ts
+const draft = await api.post("/hackathons/drafts"); // optional initial payload
+const draftId = draft.id;
+// store draftId in URL: /admin/hackathons/create?draftId=...
+```
+
+### On Save & continue (each section)
+
+```ts
+await api.patch(`/hackathons/drafts/${draftId}`, {
+  current_step: "basics",           // next step to show
+  completed_steps: ["basics"],      // all finished steps so far
+  name,
+  description,
+  start_date,
+  end_date,
+  hackathon_url,
+});
+```
+
+Send **only the fields for the current section** plus `current_step` / `completed_steps`. Partial empty fields are allowed in drafts.
+
+### Banner step
+
+```ts
+const form = new FormData();
+form.append("banner", file);
+await api.post(`/hackathons/drafts/${draftId}/banner`, form);
+await api.patch(`/hackathons/drafts/${draftId}`, {
+  current_step: "review",
+  completed_steps: [..., "banner"],
+});
+```
+
+### Final publish
+
+```ts
+const hackathon = await api.post(`/hackathons/drafts/${draftId}/publish`);
+// draft deleted server-side; navigate to /admin/hackathons/{hackathon.id}
+```
+
+On `DRAFT_INCOMPLETE` / `DRAFT_INVALID`, show which sections are missing and jump the wizard back.
+
+### Drafts inbox (admin dashboard)
+
+On admin home or hackathons list, fetch drafts:
+
+```ts
+const drafts = await api.get("/hackathons/drafts");
+// [{ id, title, current_step, completed_steps, updated_at, ... }]
+```
+
+Show a **Drafts** tab/card list:
+- Title: `title` (falls back to "Untitled hackathon draft")
+- Subtitle: `Last edited {updated_at}` · `Step: {current_step}`
+- **Continue editing** → `/admin/hackathons/create?draftId={id}`
+
+On mount with `?draftId=`:
+
+```ts
+const draft = await api.get(`/hackathons/drafts/${draftId}`);
+// hydrate form state; open wizard at draft.current_step
+```
+
+### TypeScript types
+
+```ts
+type DraftStep =
+  | "basics"
+  | "guidelines"
+  | "themes"
+  | "timeline"
+  | "prizes"
+  | "banner"
+  | "review";
+
+type HackathonDraftUpdate = {
+  current_step?: DraftStep;
+  completed_steps?: DraftStep[];
+  name?: string;
+  description?: string;
+  start_date?: string;
+  end_date?: string;
+  guidelines?: string;
+  evaluator_guidelines?: string;
+  hackathon_url?: string;
+  theme_ids?: string[];
+  timeline?: TimelineRound[];
+  prizes?: Partial<{
+    winner: string;
+    first_runner_up: string;
+    second_runner_up: string;
+  }>;
+};
+
+type HackathonDraft = HackathonDraftUpdate & {
+  id: string;
+  status: "draft";
+  banner_url?: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type HackathonDraftSummary = {
+  id: string;
+  title: string;
+  current_step: DraftStep;
+  completed_steps: DraftStep[];
+  updated_at: string;
+};
+```
+
+### UX notes
+
+- Auto-save optional: debounce PATCH on field blur within a section, but always PATCH on explicit **Save & continue**.
+- Show step checklist with ✓ for each item in `completed_steps`.
+- **Discard draft** → `DELETE /hackathons/drafts/{id}` with confirm dialog.
+- Direct `POST /hackathons` (multipart) still works for one-shot create without drafts.
 
 ---
 

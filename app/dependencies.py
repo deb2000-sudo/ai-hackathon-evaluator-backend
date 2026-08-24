@@ -21,6 +21,7 @@ from app.services.evaluation_job_service import EvaluationJobService
 from app.services.evaluation_prompt_service import EvaluationPromptService
 from app.services.evaluation_requirement_service import EvaluationRequirementService
 from app.services.firebase import FirebaseService
+from app.services.hackathon_draft_service import HackathonDraftService
 from app.services.hackathon_service import HackathonService
 from app.services.metric_scoring_service import MetricScoringService
 from app.services.registration_service import RegistrationService
@@ -58,6 +59,7 @@ class AppContainer:
     evaluation_prompt_service: EvaluationPromptService
     metric_scoring_service: MetricScoringService
     hackathon_service: HackathonService
+    hackathon_draft_service: HackathonDraftService
     team_service: TeamService
     registration_service: RegistrationService
     submission_service: SubmissionService
@@ -90,6 +92,10 @@ def build_app_container() -> AppContainer:
         evaluation_requirements=evaluation_requirement_service,
         theme_service=theme_service,
         storage_client=storage_client,
+    )
+    hackathon_draft_service = HackathonDraftService(
+        firebase=firebase,
+        hackathon_service=hackathon_service,
     )
     team_service = TeamService(
         firebase=firebase,
@@ -132,6 +138,7 @@ def build_app_container() -> AppContainer:
         evaluation_prompt_service=evaluation_prompt_service,
         metric_scoring_service=metric_scoring_service,
         hackathon_service=hackathon_service,
+        hackathon_draft_service=hackathon_draft_service,
         team_service=team_service,
         registration_service=registration_service,
         submission_service=submission_service,
@@ -189,6 +196,10 @@ def get_metric_scoring_service(request: Request) -> MetricScoringService:
 
 def get_hackathon_service(request: Request) -> HackathonService:
     return get_container(request).hackathon_service
+
+
+def get_hackathon_draft_service(request: Request) -> HackathonDraftService:
+    return get_container(request).hackathon_draft_service
 
 
 def get_team_service(request: Request) -> TeamService:

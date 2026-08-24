@@ -13,6 +13,7 @@ import logging
 
 from fastapi import (
     APIRouter,
+    Body,
     Depends,
     File,
     Form,
@@ -34,8 +35,14 @@ from app.models.hackathon_model import (
 from app.models.round_model import PublishRoundResponse
 from app.models.theme_model import ThemeResponse
 from app.models.user_model import CurrentUser
-from app.dependencies import get_hackathon_service
+from app.dependencies import get_hackathon_draft_service, get_hackathon_service
+from app.services.hackathon_draft_service import HackathonDraftService
 from app.services.hackathon_service import HackathonService
+from app.models.hackathon_draft_model import (
+    HackathonDraftResponse,
+    HackathonDraftSummary,
+    HackathonDraftUpdateRequest,
+)
 from app.utils.async_io import run_sync
 
 
@@ -95,6 +102,152 @@ async def _read_banner(banner: UploadFile | None) -> tuple[str, bytes, str] | No
     if not payload:
         return None
     return (banner.filename or "banner", payload, banner.content_type or "")
+
+
+# --- Draft routes (must be registered before /{hackathon_id} paths) ---
+
+
+@router.post("/drafts", response_model=HackathonDraftResponse, status_code=201)
+async def create_hackathon_draft(
+    payload: HackathonDraftUpdateRequest | None = Body(None),
+    admin: CurrentUser = Depends(get_admin_user),
+    draft_service: HackathonDraftService = Depends(get_hackathon_draft_service),
+) -> HackathonDraftResponse:
+    """Create an empty hackathon draft (admin wizard cart)."""
+    draft = await run_sync(
+        draft_service.create_draft,
+        admin.user_id,
+        payload,
+    )
+    return HackathonDraftResponse(**draft)
+
+
+@router.get("/drafts", response_model=list[HackathonDraftSummary])
+async def list_hackathon_drafts(
+    admin: CurrentUser = Depends(get_admin_user),
+    draft_service: HackathonDraftService = Depends(get_hackathon_draft_service),
+) -> list[HackathonDraftSummary]:
+    """List in-progress hackathon drafts for the admin portal."""
+    _ = admin
+    drafts = await run_sync(draft_service.list_drafts)
+    return [HackathonDraftSummary(**item) for item in drafts]
+
+
+@router.get("/drafts/{draft_id}", response_model=HackathonDraftResponse)
+async def get_hackathon_draft(
+    draft_id: str,
+    admin: CurrentUser = Depends(get_admin_user),
+    draft_service: HackathonDraftService = Depends(get_hackathon_draft_service),
+) -> HackathonDraftResponse:
+    """Load a single draft to resume the create-hackathon wizard."""
+    _ = admin
+    draft = await run_sync(draft_service.get_draft, draft_id)
+    if not draft:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Draft not found",
+        )
+    return HackathonDraftResponse(**draft)
+
+
+@router.patch("/drafts/{draft_id}", response_model=HackathonDraftResponse)
+async def update_hackathon_draft(
+    draft_id: str,
+    payload: HackathonDraftUpdateRequest,
+    admin: CurrentUser = Depends(get_admin_user),
+    draft_service: HackathonDraftService = Depends(get_hackathon_draft_service),
+) -> HackathonDraftResponse:
+    """
+    Save-and-continue for one wizard section (partial fields allowed).
+
+    Send ``current_step`` and append to ``completed_steps`` when the admin
+    clicks **Save & continue** on a section.
+    """
+    _ = admin
+    try:
+        draft = await run_sync(draft_service.update_draft, draft_id, payload)
+    except AppError:
+        raise
+    return HackathonDraftResponse(**draft)
+
+
+@router.post("/drafts/{draft_id}/banner", response_model=HackathonDraftResponse)
+async def upload_hackathon_draft_banner(
+    draft_id: str,
+    banner: UploadFile = File(..., description="Hackathon banner image"),
+    admin: CurrentUser = Depends(get_admin_user),
+    draft_service: HackathonDraftService = Depends(get_hackathon_draft_service),
+) -> HackathonDraftResponse:
+    """Upload or replace the banner on a draft."""
+    _ = admin
+    banner_payload = await _read_banner(banner)
+    if not banner_payload:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Banner file is required",
+        )
+    try:
+        draft = await run_sync(
+            draft_service.update_draft,
+            draft_id,
+            HackathonDraftUpdateRequest(current_step="banner"),
+            banner=banner_payload,
+        )
+    except AppError:
+        raise
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
+    return HackathonDraftResponse(**draft)
+
+
+@router.post(
+    "/drafts/{draft_id}/publish",
+    response_model=HackathonResponse,
+    status_code=201,
+)
+async def publish_hackathon_draft(
+    draft_id: str,
+    admin: CurrentUser = Depends(get_admin_user),
+    draft_service: HackathonDraftService = Depends(get_hackathon_draft_service),
+    service: HackathonService = Depends(get_hackathon_service),
+) -> HackathonResponse:
+    """
+    Validate the draft, create the real hackathon, and delete the draft.
+    """
+    try:
+        hackathon = await run_sync(
+            draft_service.publish_draft,
+            draft_id,
+            admin.user_id,
+        )
+    except AppError:
+        raise
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
+    return await _to_response(service, hackathon)
+
+
+@router.delete("/drafts/{draft_id}", status_code=200)
+async def delete_hackathon_draft(
+    draft_id: str,
+    admin: CurrentUser = Depends(get_admin_user),
+    draft_service: HackathonDraftService = Depends(get_hackathon_draft_service),
+) -> dict:
+    """Discard a draft."""
+    _ = admin
+    deleted = await run_sync(draft_service.delete_draft, draft_id)
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Draft not found",
+        )
+    return {"message": "Draft deleted successfully"}
 
 
 @router.post("", response_model=HackathonResponse, status_code=201)

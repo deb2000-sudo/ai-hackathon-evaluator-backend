@@ -33,6 +33,7 @@ DEFAULT_PROFILE_PASSWORD = "12345678"
 # Application data wiped on reset. Admin users + app_settings are preserved.
 WIPEABLE_COLLECTIONS: tuple[str, ...] = (
     "hackathons",
+    "hackathon_drafts",
     "themes",
     "evaluation_requirements",
     "ai_evaluation_metric_scoring",
