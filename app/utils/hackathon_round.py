@@ -90,6 +90,14 @@ def round_github_ai_evaluation(hackathon: dict[str, Any], round_index: int) -> b
     return hackathon_default_github_ai(hackathon)
 
 
+def round_leaderboard_published(hackathon: dict[str, Any], round_index: int) -> bool:
+    """True when students may view this round's ranked results."""
+    round_ = get_timeline_round(hackathon, round_index)
+    if round_ is None:
+        return False
+    return bool(round_.get("leaderboard_published"))
+
+
 def submission_round_index(submission: dict[str, Any]) -> int:
     try:
         return max(0, int(submission.get("round_index", 0)))
@@ -211,9 +219,14 @@ def enrich_timeline_round(
         data["github_ai_evaluation"] = bool(data["github_ai_evaluation"])
     data.setdefault("published", False)
     data["published"] = bool(data.get("published"))
+    data.setdefault("leaderboard_published", False)
+    data["leaderboard_published"] = bool(data.get("leaderboard_published"))
     status = round_student_status(data, now=now_ist())
     data["round_status"] = status
     if not data["published"]:
         data["published_at"] = None
         data["published_by"] = None
+    if not data["leaderboard_published"]:
+        data["leaderboard_published_at"] = None
+        data["leaderboard_published_by"] = None
     return data

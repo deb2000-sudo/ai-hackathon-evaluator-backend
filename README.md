@@ -449,6 +449,8 @@ Admin publishes rounds one at a time after hackathon creation. **Students only s
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | POST | `/hackathons/{id}/rounds/{round_index}/publish` | admin | Publish round for students |
+| GET | `/hackathons/{id}/rounds/{round_index}/leaderboard` | any authenticated | Ranked results (students only after leaderboard publish) |
+| POST | `/hackathons/{id}/rounds/{round_index}/leaderboard/publish` | admin | Publish/unpublish ranks and email candidates |
 
 Publish error codes: `ROUND_NOT_FOUND`, `ROUND_ENDED`, `ALREADY_PUBLISHED`, `INVALID_ROUND_DATES`.
 
@@ -798,6 +800,9 @@ type TimelineRound = {
   published?: boolean;       // read-only for admin list; set via publish API
   published_at?: string | null;
   published_by?: string | null;
+  leaderboard_published?: boolean; // read-only; set via leaderboard publish API
+  leaderboard_published_at?: string | null;
+  leaderboard_published_by?: string | null;
   round_status?: "draft" | "scheduled" | "open" | "closed";
 };
 ```
@@ -1052,6 +1057,130 @@ async function evaluateGithubWithAi(submissionId: string) {
 | 403 | Not assigned evaluator |
 | 409 | Already processing — keep polling |
 | 503 | Analyzer URL missing / external service down |
+
+---
+
+## Frontend handoff — round leaderboard (copy to frontend repo)
+
+After evaluators submit scores and an admin **approves** them, the admin can publish a **per-round leaderboard**. Students then see ranks (1st = highest `final_score`) and are emailed.
+
+This is **separate** from:
+
+- Round **Publish** (lets students participate in a round)
+- Per-submission **Approve evaluation** (shows that student their report / `final_score`)
+
+Existing evaluation, GitHub AI, and Google Sheets export are unchanged.
+
+### Ranking rules
+
+- Only submissions with `review_status === "approved"` and a `final_score` are ranked
+- Sort: highest score first
+- Ties share a rank; the next rank skips (100, 90, 90, 80 → **1st, 2nd, 2nd, 4th**)
+- Display name: `team_name` plus submitter `candidate_name`
+- Team rounds include `members[]` names
+
+### Admin UI
+
+On **Hackathon → Round** (or Submissions → that round):
+
+1. Show counts from GET preview (`stats.approved_count` / `stats.total_submissions`). Warn if `all_approved === false`.
+2. **Preview leaderboard** table (admin always allowed, even before publish).
+3. Button **Publish leaderboard** when there is at least one approved submission.
+4. After publish: **Unpublish** + **View leaderboard**. Optional **Notify again**.
+
+```ts
+type LeaderboardEntry = {
+  rank: number;
+  rank_label: string; // "1st", "2nd", "3rd"
+  score: number;
+  team_name: string;
+  candidate_name: string;
+  members: { name: string; role?: string }[];
+  submission_id?: string | null; // staff only
+  is_current_user: boolean;
+};
+
+type LeaderboardResponse = {
+  hackathon_id: string;
+  hackathon_name: string;
+  round_index: number;
+  round_title: string;
+  published: boolean;
+  published_at?: string | null;
+  published_by?: string | null;
+  entries: LeaderboardEntry[];
+  stats: {
+    total_submissions: number;
+    approved_count: number;
+    pending_review_count: number;
+    not_ready_count: number;
+    ranked_count: number;
+    all_approved: boolean;
+  };
+  notified_count: number;
+  message: string;
+};
+
+async function getLeaderboard(hackathonId: string, roundIndex: number) {
+  const res = await apiFetch(
+    `/hackathons/${hackathonId}/rounds/${roundIndex}/leaderboard`,
+  );
+  if (res.status === 403) throw new Error("Leaderboard not published yet");
+  if (!res.ok) throw new Error("Could not load leaderboard");
+  return res.json() as Promise<LeaderboardResponse>;
+}
+
+async function publishLeaderboard(
+  hackathonId: string,
+  roundIndex: number,
+  opts?: { publish?: boolean; notify?: boolean },
+) {
+  const res = await apiFetch(
+    `/hackathons/${hackathonId}/rounds/${roundIndex}/leaderboard/publish`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        publish: opts?.publish ?? true,
+        notify: opts?.notify,
+      }),
+    },
+  );
+  if (!res.ok) throw new Error("Could not publish leaderboard");
+  return res.json() as Promise<LeaderboardResponse>;
+}
+```
+
+**Publish body**
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `publish` | `true` | `false` hides the board from students again |
+| `notify` | `true` on first publish, `false` on re-publish | Email ranked candidates |
+
+Toast: “Leaderboard published — emailed N candidates”. Open the public board.
+
+Hackathon GET already returns `timeline[i].leaderboard_published`. Use that to show **View leaderboard** vs **Publish leaderboard**.
+
+### Student UI
+
+- Show **Leaderboard** on a published round when `timeline[i].leaderboard_published === true`
+- `GET /hackathons/{id}/rounds/{index}/leaderboard` — 403 `LEADERBOARD_NOT_PUBLISHED` until admin publishes
+- Highlight the row where `is_current_user === true`
+- On submission detail, after publish: show `leaderboard_rank_label` (e.g. “2nd”) next to score. `leaderboard_rank` is `null` until publish (and for unapproved submissions)
+
+Do **not** show other teams’ ranks from submission list endpoints — use the leaderboard API.
+
+### Emails
+
+On first publish, each ranked candidate (all team members when `hackathon_team_id` is set, otherwise the submitter) receives an email with rank, score, team name, and round title. Uses the existing SMTP / Brevo setup. Publish still succeeds if an individual email fails.
+
+### Errors
+
+| Status | Code | UI |
+|--------|------|-----|
+| 400 | `NO_APPROVED_SUBMISSIONS` | “Approve at least one evaluation before publishing ranks” |
+| 403 | `LEADERBOARD_NOT_PUBLISHED` | Hide board / show “Results coming soon” |
+| 404 | `HACKATHON_NOT_FOUND` / `ROUND_NOT_FOUND` | Not found |
 
 ### Themes — `/themes`
 

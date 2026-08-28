@@ -239,6 +239,21 @@ class SubmissionResponse(BaseModel):
             "(round flag on, GitHub link present, not processing)."
         ),
     )
+    leaderboard_published: bool = Field(
+        False,
+        description="True when this submission's round leaderboard is visible to students.",
+    )
+    leaderboard_rank: Optional[int] = Field(
+        None,
+        description=(
+            "1-based competition rank on the round leaderboard. Students only "
+            "receive this after the admin publishes the leaderboard."
+        ),
+    )
+    leaderboard_rank_label: Optional[str] = Field(
+        None,
+        description='Ordinal label such as "1st" or "2nd".',
+    )
     scorecard: Optional[ScorecardResult] = Field(
         None,
         description=(

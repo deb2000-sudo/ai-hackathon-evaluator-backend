@@ -25,6 +25,7 @@ from app.services.hackathon_export_service import HackathonExportService
 from app.services.google_sheets_export_service import GoogleSheetsExportService
 from app.services.hackathon_draft_service import HackathonDraftService
 from app.services.hackathon_service import HackathonService
+from app.services.leaderboard_service import LeaderboardService
 from app.services.metric_scoring_service import MetricScoringService
 from app.services.registration_service import RegistrationService
 from app.services.submission_service import SubmissionService
@@ -62,6 +63,7 @@ class AppContainer:
     metric_scoring_service: MetricScoringService
     hackathon_service: HackathonService
     hackathon_draft_service: HackathonDraftService
+    leaderboard_service: LeaderboardService
     team_service: TeamService
     registration_service: RegistrationService
     submission_service: SubmissionService
@@ -98,6 +100,11 @@ def build_app_container() -> AppContainer:
     hackathon_draft_service = HackathonDraftService(
         firebase=firebase,
         hackathon_service=hackathon_service,
+    )
+    leaderboard_service = LeaderboardService(
+        firebase=firebase,
+        hackathon_service=hackathon_service,
+        user_service=user_service,
     )
     team_service = TeamService(
         firebase=firebase,
@@ -141,6 +148,7 @@ def build_app_container() -> AppContainer:
         metric_scoring_service=metric_scoring_service,
         hackathon_service=hackathon_service,
         hackathon_draft_service=hackathon_draft_service,
+        leaderboard_service=leaderboard_service,
         team_service=team_service,
         registration_service=registration_service,
         submission_service=submission_service,
@@ -202,6 +210,10 @@ def get_hackathon_service(request: Request) -> HackathonService:
 
 def get_hackathon_draft_service(request: Request) -> HackathonDraftService:
     return get_container(request).hackathon_draft_service
+
+
+def get_leaderboard_service(request: Request) -> LeaderboardService:
+    return get_container(request).leaderboard_service
 
 
 def get_team_service(request: Request) -> TeamService:

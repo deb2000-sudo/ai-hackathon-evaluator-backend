@@ -78,6 +78,7 @@ from app.dependencies import (
 )
 from app.services.google_sheets_export_service import GoogleSheetsExportService
 from app.services.submission_service import SubmissionService
+from app.utils.async_io import run_sync
 from app.utils.hackathon_round import submission_github_ai_enabled
 from app.services.submission.analysis import AnalysisMixin
 from app.utils.video_upload import (
@@ -102,6 +103,11 @@ async def _to_submission_response(
         service.enrich_submission_for_response,
         submission,
         current_user=current_user,
+    )
+    enriched = await run_sync(
+        service.attach_leaderboard_rank,
+        enriched,
+        current_user,
     )
     return SubmissionResponse(**enriched)
 

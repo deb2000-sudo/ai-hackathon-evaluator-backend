@@ -6,6 +6,9 @@ Hackathon routes.
     GET    /hackathons/{id}       -> get a single hackathon
     PATCH  /hackathons/{id}       -> admin updates a hackathon (multipart, banner optional)
     DELETE /hackathons/{id}       -> admin deletes a hackathon
+    POST   /hackathons/{id}/rounds/{index}/publish -> admin publishes a round
+    GET    /hackathons/{id}/rounds/{index}/leaderboard -> ranked results
+    POST   /hackathons/{id}/rounds/{index}/leaderboard/publish -> admin publishes ranks
 """
 
 import json
@@ -33,11 +36,21 @@ from app.models.hackathon_model import (
     TimelineRound,
 )
 from app.models.round_model import PublishRoundResponse
+from app.models.leaderboard_model import (
+    LeaderboardResponse,
+    PublishLeaderboardRequest,
+    PublishLeaderboardResponse,
+)
 from app.models.theme_model import ThemeResponse
 from app.models.user_model import CurrentUser
-from app.dependencies import get_hackathon_draft_service, get_hackathon_service
+from app.dependencies import (
+    get_hackathon_draft_service,
+    get_hackathon_service,
+    get_leaderboard_service,
+)
 from app.services.hackathon_draft_service import HackathonDraftService
 from app.services.hackathon_service import HackathonService
+from app.services.leaderboard_service import LeaderboardService
 from app.models.hackathon_draft_model import (
     HackathonDraftResponse,
     HackathonDraftSummary,
@@ -427,6 +440,61 @@ async def publish_hackathon_round(
         round_index=result["round_index"],
         round=round_payload,
     )
+
+
+@router.get(
+    "/{hackathon_id}/rounds/{round_index}/leaderboard",
+    response_model=LeaderboardResponse,
+)
+async def get_round_leaderboard(
+    hackathon_id: str,
+    round_index: int,
+    current_user: CurrentUser = Depends(get_current_user),
+    service: LeaderboardService = Depends(get_leaderboard_service),
+) -> LeaderboardResponse:
+    """
+    Ranked results for one round (highest ``final_score`` first).
+
+    Admin and evaluators always get a preview. Students only after the admin
+    publishes the leaderboard.
+    """
+    result = await run_sync(
+        service.get_leaderboard,
+        hackathon_id,
+        round_index,
+        current_user,
+    )
+    return LeaderboardResponse(**result)
+
+
+@router.post(
+    "/{hackathon_id}/rounds/{round_index}/leaderboard/publish",
+    response_model=PublishLeaderboardResponse,
+)
+async def publish_round_leaderboard(
+    hackathon_id: str,
+    round_index: int,
+    request: PublishLeaderboardRequest | None = Body(None),
+    admin: CurrentUser = Depends(get_admin_user),
+    service: LeaderboardService = Depends(get_leaderboard_service),
+) -> PublishLeaderboardResponse:
+    """
+    Publish (or unpublish) the round leaderboard.
+
+    Ranking includes only submissions with ``review_status=approved``.
+    On first publish, ranked candidates are emailed unless ``notify`` is false.
+    """
+    payload = request or PublishLeaderboardRequest()
+    result = await run_sync(
+        service.publish_leaderboard,
+        hackathon_id,
+        round_index,
+        admin.user_id,
+        publish=payload.publish,
+        notify=payload.notify,
+        current_user=admin,
+    )
+    return PublishLeaderboardResponse(**result)
 
 
 @router.patch("/{hackathon_id}", response_model=HackathonResponse)

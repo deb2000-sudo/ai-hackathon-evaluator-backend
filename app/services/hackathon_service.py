@@ -151,6 +151,18 @@ class HackathonService:
                     incoming["published_by"] = prior.get("published_by")
                 else:
                     incoming = self._normalize_round_for_storage(incoming, published=False)
+                if isinstance(prior, dict) and prior.get("leaderboard_published"):
+                    incoming["leaderboard_published"] = True
+                    incoming["leaderboard_published_at"] = prior.get(
+                        "leaderboard_published_at"
+                    )
+                    incoming["leaderboard_published_by"] = prior.get(
+                        "leaderboard_published_by"
+                    )
+                else:
+                    incoming["leaderboard_published"] = False
+                    incoming["leaderboard_published_at"] = None
+                    incoming["leaderboard_published_by"] = None
                 merged.append(incoming)
             update["timeline"] = merged
         if request.prizes is not None:
@@ -351,6 +363,11 @@ class HackathonService:
         if not published:
             data["published_at"] = None
             data["published_by"] = None
+        data.setdefault("leaderboard_published", False)
+        if not data.get("leaderboard_published"):
+            data["leaderboard_published"] = False
+            data["leaderboard_published_at"] = None
+            data["leaderboard_published_by"] = None
         return data
 
     def _enrich_timeline_rounds(

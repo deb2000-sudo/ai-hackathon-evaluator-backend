@@ -12,8 +12,10 @@ from app.utils.gcs_video import (
 )
 from app.services.submission.analysis import AnalysisMixin
 from app.utils.hackathon_round import (
+    round_leaderboard_published,
     submission_auto_ai_enabled,
     submission_github_ai_enabled,
+    submission_round_index,
 )
 
 
@@ -320,6 +322,31 @@ class QueryMixin:
             enriched["github_ai_result"] = None
             enriched["github_ai_error"] = None
 
+        round_index = submission_round_index(enriched)
+        published_board = round_leaderboard_published(hackathon or {}, round_index)
+        enriched["leaderboard_published"] = published_board
+        enriched.setdefault("leaderboard_rank", None)
+        enriched.setdefault("leaderboard_rank_label", None)
+
+        return enriched
+
+    def attach_leaderboard_rank(
+        self,
+        enriched: dict[str, Any],
+        current_user: CurrentUser | None = None,
+    ) -> dict[str, Any]:
+        """Attach competition rank for a single submission detail view."""
+        from app.services.leaderboard_service import LeaderboardService
+
+        is_staff = bool(
+            current_user and current_user.role in ("admin", "evaluator")
+        )
+        rank_info = LeaderboardService(
+            firebase=self.firebase,
+            hackathon_service=self.hackathon_service,
+            user_service=self.user_service,
+        ).rank_for_submission(enriched, is_staff=is_staff)
+        enriched.update(rank_info)
         return enriched
 
     def enrich_submissions_for_response(

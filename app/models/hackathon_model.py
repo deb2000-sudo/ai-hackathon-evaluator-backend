@@ -84,6 +84,21 @@ class TimelineRound(BaseModel):
         None,
         description="Admin user id who published this round.",
     )
+    leaderboard_published: bool = Field(
+        False,
+        description=(
+            "When true, students can see this round's ranked leaderboard. "
+            "Set via POST /hackathons/{id}/rounds/{index}/leaderboard/publish."
+        ),
+    )
+    leaderboard_published_at: Optional[str] = Field(
+        None,
+        description="IST timestamp when the admin published the leaderboard.",
+    )
+    leaderboard_published_by: Optional[str] = Field(
+        None,
+        description="Admin user id who published the leaderboard.",
+    )
     round_status: Optional[str] = Field(
         None,
         description="Computed: draft | scheduled | open | closed (IST dates).",
