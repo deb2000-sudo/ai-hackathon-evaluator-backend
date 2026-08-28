@@ -20,6 +20,7 @@ Student submission routes.
     GET    /submissions/{id}/video      -> stream/download the submission video
     GET    /submissions/{id}/analysis   -> analysis (students only if published)
     GET    /submissions/{id}/report     -> report (students only if published)
+    POST   /submissions/{id}/evaluate-github-ai -> GitHub AI evaluation (evaluator/admin)
     POST   /submissions/{id}/evaluate   -> admin or assigned evaluator starts AI analysis
     POST   /submissions/{id}/submit-for-review -> evaluator submits evaluation to admin
     POST   /submissions/{id}/approve-evaluation -> admin approves → final score to student
@@ -77,7 +78,8 @@ from app.dependencies import (
 )
 from app.services.google_sheets_export_service import GoogleSheetsExportService
 from app.services.submission_service import SubmissionService
-from app.utils.async_io import run_sync
+from app.utils.hackathon_round import submission_github_ai_enabled
+from app.services.submission.analysis import AnalysisMixin
 from app.utils.video_upload import (
     MAX_MULTIPART_VIDEO_BYTES,
     accepted_video_types_payload,
@@ -797,6 +799,85 @@ async def evaluate_submission(
             detail="Submission not found",
         )
 
+    return await _to_submission_response(service, refreshed, current_user=current_user)
+
+
+@router.post(
+    "/{submission_id}/evaluate-github-ai",
+    response_model=SubmissionResponse,
+    status_code=202,
+)
+async def evaluate_github_ai(
+    submission_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: CurrentUser = Depends(get_active_user),
+    service: SubmissionService = Depends(get_submission_service),
+) -> SubmissionResponse:
+    """
+    Run AI GitHub repository analysis for one submission.
+
+    Generates evaluation context with Gemini from the student's problem and
+    solution, then POSTs ``github_url`` + ``context`` to ``GITHUB_AI_EVALUATION_URL``.
+    Updates the GitHub scorecard metric; manual GitHub evaluation remains available.
+    """
+    if current_user.role not in ("admin", "evaluator"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins or assigned evaluators can run GitHub AI evaluation",
+        )
+
+    submission = await run_sync(service.get_submission, submission_id, current_user)
+    if not submission:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Submission not found",
+        )
+
+    try:
+        service.assert_can_evaluate(submission, current_user)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e),
+        ) from e
+
+    hackathon = None
+    hackathon_id = (submission.get("hackathon_id") or "").strip()
+    if hackathon_id:
+        hackathon = await run_sync(service.hackathon_service.get_hackathon, hackathon_id)
+
+    if not submission_github_ai_enabled(hackathon, submission):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="GitHub AI evaluation is not enabled for this hackathon round",
+        )
+
+    github_url = AnalysisMixin._resolve_field_answer(submission, "github_link")
+    if not github_url:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Submission does not include a GitHub link",
+        )
+
+    if submission.get("github_ai_status") == "processing":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="GitHub AI evaluation is already in progress",
+        )
+
+    await run_sync(
+        service.mark_github_ai_processing,
+        submission_id,
+        analyzed_by=current_user.user_id,
+    )
+    background_tasks.add_task(service.evaluate_github_ai, submission_id)
+
+    refreshed = await run_sync(service.get_submission, submission_id, current_user)
+    if not refreshed:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Submission not found",
+        )
     return await _to_submission_response(service, refreshed, current_user=current_user)
 
 

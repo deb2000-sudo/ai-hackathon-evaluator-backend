@@ -21,6 +21,7 @@ from app.utils.hackathon_round import (
     TEAM_MODE_LABELS,
     enrich_timeline_round,
     hackathon_default_auto_ai,
+    hackathon_default_github_ai,
     hackathon_default_video_required,
     round_is_published,
     validate_round_publishable,
@@ -236,6 +237,10 @@ class HackathonService:
         enriched.setdefault(
             "auto_ai_evaluation",
             hackathon_default_auto_ai(enriched),
+        )
+        enriched.setdefault(
+            "github_ai_evaluation",
+            hackathon_default_github_ai(enriched),
         )
         enriched.setdefault("export_spreadsheet_id", None)
         enriched.setdefault("export_spreadsheet_url", None)

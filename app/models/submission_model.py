@@ -17,6 +17,22 @@ from app.utils.video_upload import MAX_VIDEO_UPLOAD_BYTES
 SubmissionStatus = Literal["uploaded", "processing", "completed", "failed"]
 ReviewStatus = Literal["none", "pending_review", "approved", "changes_requested"]
 VideoSource = Literal["recorded", "uploaded"]
+GithubAiStatus = Literal["none", "processing", "completed", "failed"]
+
+
+class GithubAiEvaluationResult(BaseModel):
+    """Stored result from the external GitHub AI analyzer."""
+
+    github_url: str
+    context: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Analyzer SubmissionContext: provided_context + rubrics.",
+    )
+    score: Optional[float] = None
+    max_score: Optional[float] = None
+    rationale: Optional[str] = None
+    segments: Optional[list[dict[str, Any]]] = None
+    analyzed_at: OptionalISTDateTime = None
 
 
 class HackathonSubmissionSummary(BaseModel):
@@ -195,6 +211,32 @@ class SubmissionResponse(BaseModel):
             "True when the current user may start AI evaluation and the "
             "hackathon is in manual mode (auto_ai_evaluation=false) and the "
             "submission is not already processing."
+        ),
+    )
+    github_ai_evaluation: bool = Field(
+        False,
+        description=(
+            "When true, evaluators may run AI GitHub repository analysis for "
+            "this submission's round."
+        ),
+    )
+    github_ai_status: GithubAiStatus = Field(
+        "none",
+        description="GitHub AI evaluation job status.",
+    )
+    github_ai_result: Optional[GithubAiEvaluationResult] = Field(
+        None,
+        description="Latest GitHub AI evaluation output (staff only).",
+    )
+    github_ai_error: Optional[str] = Field(
+        None,
+        description="Error message when github_ai_status=failed (staff only).",
+    )
+    show_github_ai_evaluation_button: bool = Field(
+        False,
+        description=(
+            "True when evaluator may trigger GitHub AI analysis "
+            "(round flag on, GitHub link present, not processing)."
         ),
     )
     scorecard: Optional[ScorecardResult] = Field(

@@ -65,6 +65,13 @@ class TimelineRound(BaseModel):
             "for this round are assigned to evaluators."
         ),
     )
+    github_ai_evaluation: bool = Field(
+        False,
+        description=(
+            "When true, evaluators can run AI-based GitHub repository analysis "
+            "for submissions that include a GitHub link."
+        ),
+    )
     published: bool = Field(
         False,
         description="When true, students can see and participate in this round.",
@@ -276,6 +283,12 @@ class HackathonResponse(BaseModel):
         description=(
             "Legacy hackathon-level default for rounds that omit this flag. "
             "Prefer each timeline round's auto_ai_evaluation."
+        ),
+    )
+    github_ai_evaluation: bool = Field(
+        False,
+        description=(
+            "Legacy hackathon-level default for rounds that omit github_ai_evaluation."
         ),
     )
     banner_path: Optional[str] = Field(

@@ -132,6 +132,31 @@ Return ONLY valid JSON:
 """
 
 
+GITHUB_EVAL_CONTEXT_PROMPT = """You are a hackathon technical evaluator preparing input for an
+automated GitHub repository analyzer.
+
+Read the student's problem statement and solution description, then produce:
+1. ``provided_context`` — one plain-text paragraph (150–400 words) describing what
+   the project is, what it should do, and what the analyzer should verify in the repo.
+2. ``rubrics`` — 3–6 short must-have checks as strings (e.g. "Uses an LLM",
+   "Has full-stack demo", "Matches stated problem").
+
+Return ONLY valid JSON:
+{{
+  "provided_context": "<paragraph>",
+  "rubrics": ["<check 1>", "<check 2>"]
+}}
+
+--- PROBLEM STATEMENT ---
+{problem_statement}
+--- END PROBLEM STATEMENT ---
+
+--- SOLUTION DESCRIPTION ---
+{solution_description}
+--- END SOLUTION DESCRIPTION ---
+"""
+
+
 DEFAULT_PROMPT_META = {
     "checklist": {
         "name": "Product & Feature Validation Checklist",

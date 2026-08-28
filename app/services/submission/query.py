@@ -10,7 +10,11 @@ from app.utils.gcs_video import (
     generate_signed_video_url,
     parse_gs_uri,
 )
-from app.utils.hackathon_round import submission_auto_ai_enabled
+from app.services.submission.analysis import AnalysisMixin
+from app.utils.hackathon_round import (
+    submission_auto_ai_enabled,
+    submission_github_ai_enabled,
+)
 
 
 class QueryMixin:
@@ -215,6 +219,11 @@ class QueryMixin:
 
         auto_ai = submission_auto_ai_enabled(hackathon or {}, enriched)
         enriched["auto_ai_evaluation"] = auto_ai
+        github_ai = submission_github_ai_enabled(hackathon or {}, enriched)
+        enriched["github_ai_evaluation"] = github_ai
+        enriched.setdefault("github_ai_status", "none")
+        enriched.setdefault("github_ai_result", None)
+        enriched.setdefault("github_ai_error", None)
         enriched.setdefault("round_index", 0)
         enriched.setdefault("round_title", "")
         enriched.setdefault("working_demo_video_required", True)
@@ -300,6 +309,16 @@ class QueryMixin:
         enriched["show_ai_evaluation_button"] = (
             can_start and not auto_ai and enriched.get("status") != "processing"
         )
+        github_url = AnalysisMixin._resolve_field_answer(enriched, "github_link")
+        enriched["show_github_ai_evaluation_button"] = (
+            can_start
+            and github_ai
+            and bool(github_url)
+            and enriched.get("github_ai_status") != "processing"
+        )
+        if not is_staff:
+            enriched["github_ai_result"] = None
+            enriched["github_ai_error"] = None
 
         return enriched
 

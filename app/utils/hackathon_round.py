@@ -39,6 +39,11 @@ def hackathon_default_auto_ai(hackathon: dict[str, Any]) -> bool:
     return bool(hackathon.get("auto_ai_evaluation", False))
 
 
+def hackathon_default_github_ai(hackathon: dict[str, Any]) -> bool:
+    """Legacy hackathon-level default (false when unset)."""
+    return bool(hackathon.get("github_ai_evaluation", False))
+
+
 def get_timeline_round(
     hackathon: dict[str, Any], round_index: int
 ) -> dict[str, Any] | None:
@@ -76,6 +81,15 @@ def round_auto_ai_evaluation(hackathon: dict[str, Any], round_index: int) -> boo
     return hackathon_default_auto_ai(hackathon)
 
 
+def round_github_ai_evaluation(hackathon: dict[str, Any], round_index: int) -> bool:
+    round_ = get_timeline_round(hackathon, round_index)
+    if round_ is None:
+        return hackathon_default_github_ai(hackathon)
+    if "github_ai_evaluation" in round_:
+        return bool(round_["github_ai_evaluation"])
+    return hackathon_default_github_ai(hackathon)
+
+
 def submission_round_index(submission: dict[str, Any]) -> int:
     try:
         return max(0, int(submission.get("round_index", 0)))
@@ -91,6 +105,16 @@ def submission_auto_ai_enabled(
     if submission.get("auto_ai_evaluation") is not None:
         return bool(submission["auto_ai_evaluation"])
     return round_auto_ai_evaluation(hackathon, submission_round_index(submission))
+
+
+def submission_github_ai_enabled(
+    hackathon: dict[str, Any] | None, submission: dict[str, Any]
+) -> bool:
+    if not hackathon:
+        return False
+    if submission.get("github_ai_evaluation") is not None:
+        return bool(submission["github_ai_evaluation"])
+    return round_github_ai_evaluation(hackathon, submission_round_index(submission))
 
 
 def parse_iso_date(value: str | None) -> date | None:
@@ -181,6 +205,10 @@ def enrich_timeline_round(
         data["auto_ai_evaluation"] = hackathon_default_auto_ai(hackathon)
     else:
         data["auto_ai_evaluation"] = bool(data["auto_ai_evaluation"])
+    if "github_ai_evaluation" not in data:
+        data["github_ai_evaluation"] = hackathon_default_github_ai(hackathon)
+    else:
+        data["github_ai_evaluation"] = bool(data["github_ai_evaluation"])
     data.setdefault("published", False)
     data["published"] = bool(data.get("published"))
     status = round_student_status(data, now=now_ist())

@@ -44,3 +44,14 @@ def test_submission_auto_ai_resolves_from_round_when_not_stored():
         "timeline": [{"title": "R1", "auto_ai_evaluation": True}],
     }
     assert submission_auto_ai_enabled(hackathon, {"round_index": 0}) is True
+
+
+def test_round_github_ai_settings():
+    hackathon = {
+        "github_ai_evaluation": False,
+        "timeline": [{"title": "R1", "github_ai_evaluation": True}],
+    }
+    from app.utils.hackathon_round import round_github_ai_evaluation
+
+    assert round_github_ai_evaluation(hackathon, 0) is True
+    assert round_github_ai_evaluation(hackathon, 99) is False

@@ -402,6 +402,7 @@ CRUD for hackathons (banner, themes, timeline, `hackathon_url`, linked evaluatio
 | `max_team_size` | 1–4 | `1` | Team size including leader (`1` = Solo) |
 | `working_demo_video_required` | bool | `true` | Require demo video for this round's submission |
 | `auto_ai_evaluation` | bool | `false` | Auto-queue AI when admin assigns evaluators |
+| `github_ai_evaluation` | bool | `false` | Allow evaluators to run AI GitHub repo analysis |
 
 | `published` | bool | `false` | Admin must publish before students see the round |
 | `published_at` | string | — | Set by publish API (IST) |
@@ -910,12 +911,147 @@ formData.append("hackathon_id", hackathonId);
 
 - `show_ai_evaluation_button === true` → show manual **AI Evaluation** button (round had auto AI off)
 - `auto_ai_evaluation === true` → AI queues automatically on assign; hide or disable manual button while processing
+- `github_ai_evaluation === true` and `show_github_ai_evaluation_button === true` → show **Evaluate GitHub with AI** on the GitHub section
+- Poll `GET /submissions/{id}` while `github_ai_status === "processing"`; when `completed`, read scores from `github_ai_result` and `scorecard` (GitHub metric)
 
 ### Backward compatibility
 
 - Old hackathons with only hackathon-level flags: rounds without explicit fields inherit those defaults.
 - Old submissions without `round_index`: treated as `0`.
 - Top-level `hackathon.working_demo_video_required` / `auto_ai_evaluation` still returned on `GET /hackathons/{id}` for legacy UI; **prefer `timeline[i]` for new code**.
+
+---
+
+## Frontend handoff — GitHub AI evaluation (copy to frontend repo)
+
+When admin enables **AI GitHub analysis** on a hackathon round, evaluators can score the student's repository with one click. Manual GitHub scoring (visibility, structure marks, etc.) still works as today.
+
+### Admin: hackathon round settings
+
+Add a checkbox on each timeline round in the create/edit hackathon wizard:
+
+| UI label | JSON field | Default |
+|----------|------------|---------|
+| ☐ AI GitHub analysis | `github_ai_evaluation` | unchecked (`false`) |
+
+Include in each `timeline[]` object sent as multipart field `timeline` (JSON string):
+
+```json
+{
+  "title": "Round 1",
+  "max_team_size": 2,
+  "working_demo_video_required": true,
+  "auto_ai_evaluation": false,
+  "github_ai_evaluation": true,
+  "evaluation_requirement_id": "..."
+}
+```
+
+Also expose on draft PATCH (`/hackathons/drafts/{id}`) the same `timeline` shape.
+
+### Backend env (ops)
+
+```env
+GITHUB_AI_EVALUATION_URL=https://github-analyser-835728304610.us-central1.run.app/analyze/sync
+GITHUB_AI_EVALUATION_WAIT_SECONDS=120
+GITHUB_AI_EVALUATION_TIMEOUT_SECONDS=130
+GITHUB_AI_EVALUATION_API_KEY=optional_bearer_token
+```
+
+If `GITHUB_AI_EVALUATION_URL` is omitted, the backend defaults to the Cloud Run analyzer above. Gemini (existing `GEMINI_*` vars) generates **`provided_context`** and **`rubrics`** from the student's problem + solution before calling the analyzer.
+
+### External analyzer contract
+
+Uses the [github-analyser](https://github-analyser-835728304610.us-central1.run.app/docs) service (`POST /analyze/sync`).
+
+**Request** (`POST` to `GITHUB_AI_EVALUATION_URL`, query `wait_seconds` from `GITHUB_AI_EVALUATION_WAIT_SECONDS`):
+
+```json
+{
+  "github_url": "https://github.com/org/repo",
+  "context": {
+    "provided_context": "This project is a multi-agent LangGraph study planner that uses RAG over course materials and Gemini to help students build personalized study schedules.",
+    "rubrics": [
+      "Uses an LLM",
+      "Has real agent orchestration",
+      "Full-stack demo"
+    ]
+  }
+}
+```
+
+Optional header: `Authorization: Bearer {GITHUB_AI_EVALUATION_API_KEY}`
+
+**Response** (`JobResponse` — backend maps this into the scorecard):
+
+```json
+{
+  "job_id": "…",
+  "status": "succeeded",
+  "result": {
+    "access": { "is_public": true },
+    "scoring": {
+      "total_score": 16.0,
+      "max_total_score": 20.0,
+      "rubrics": [
+        { "rubric_id": "fullstack", "score": 8.0, "max_score": 10.0, "reason": "…" }
+      ]
+    }
+  }
+}
+```
+
+The backend scales `result.scoring.total_score` (0–20 on the analyzer) to your hackathon GitHub metric `max_score`, and maps:
+
+- `result.access.is_public` → segment `visibility` (`public` / `private`)
+- scaled total → segment `structure_score`
+
+`segments` keys should match the GitHub metric segments in your scorecard config (`project_github_link` / `github_link`).
+
+### Evaluator UI
+
+On **Submissions → detail**, in the GitHub section:
+
+1. Show the student's `github_link` (link out to GitHub).
+2. If `show_github_ai_evaluation_button === true`, show **Evaluate GitHub with AI**.
+3. On click:
+
+```tsx
+async function evaluateGithubWithAi(submissionId: string) {
+  const res = await apiFetch(
+    `/submissions/${submissionId}/evaluate-github-ai`,
+    { method: "POST" },
+  );
+  if (res.status === 409) throw new Error("GitHub AI already running");
+  if (!res.ok) throw new Error("GitHub AI evaluation failed");
+  return res.json() as SubmissionResponse;
+}
+```
+
+4. Poll `GET /submissions/{id}` every 2–3s while `github_ai_status === "processing"`.
+5. When `github_ai_status === "completed"`:
+   - Display `github_ai_result.rationale`, `github_ai_result.score` / `max_score`
+   - Pre-fill GitHub rows on the scorecard from `scorecard.metrics` (field `github_link` or `project_github_link`)
+6. Evaluator may still edit manual GitHub fields before **Submit for review** (manual overrides AI).
+
+**Button visibility**
+
+| Field | Meaning |
+|-------|---------|
+| `github_ai_evaluation` | Round flag (snapshot on submission) |
+| `show_github_ai_evaluation_button` | Show the AI button now |
+| `github_ai_status` | `none` \| `processing` \| `completed` \| `failed` |
+| `github_ai_result` | Staff-only result payload after success |
+| `github_ai_error` | Staff-only message when `failed` |
+
+**Errors**
+
+| Status | UI |
+|--------|-----|
+| 400 | Round flag off or missing GitHub URL |
+| 403 | Not assigned evaluator |
+| 409 | Already processing — keep polling |
+| 503 | Analyzer URL missing / external service down |
 
 ### Themes — `/themes`
 
@@ -951,6 +1087,7 @@ Per-field scoring prompts (`max_score`, natural-language scoring instructions) f
 | GET | `/submissions/{id}/analysis` | same* | Analysis doc (*students after publish) |
 | GET | `/submissions/{id}/report` | same* | Markdown report |
 | POST | `/submissions/{id}/evaluate` | admin or assignee | Start Gemini analysis |
+| POST | `/submissions/{id}/evaluate-github-ai` | admin or assignee | GitHub AI via external analyzer |
 | POST | `/submissions/{id}/submit-for-review` | assignee | Send score to admin |
 | POST | `/submissions/{id}/approve-evaluation` | admin | Approve → publish to student |
 | POST | `/submissions/{id}/request-changes` | admin | Send back to evaluator |

@@ -34,6 +34,7 @@ from app.utils.hackathon_round import (
     normalize_max_team_size,
     parse_iso_date,
     round_auto_ai_evaluation,
+    round_github_ai_evaluation,
     round_is_published,
     round_open_for_submission,
     round_student_status,
@@ -139,6 +140,7 @@ class TeamService:
                 hackathon, round_index
             ),
             auto_ai_evaluation=round_auto_ai_evaluation(hackathon, round_index),
+            github_ai_evaluation=round_github_ai_evaluation(hackathon, round_index),
             round_published=round_is_published(round_),
             round_status=round_status,
             round_open=round_open,

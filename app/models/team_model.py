@@ -75,6 +75,7 @@ class HackathonParticipationResponse(BaseModel):
     team_mode_label: str
     working_demo_video_required: bool = True
     auto_ai_evaluation: bool = False
+    github_ai_evaluation: bool = False
     round_published: bool = False
     round_status: Literal["draft", "scheduled", "open", "closed"] = "draft"
     round_open: bool = False

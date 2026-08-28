@@ -23,6 +23,7 @@ from app.utils.gcs_video import (
 )
 from app.utils.hackathon_round import (
     round_auto_ai_evaluation,
+    round_github_ai_evaluation,
     round_title,
     round_working_demo_video_required,
 )
@@ -86,6 +87,7 @@ class CreateMixin:
         round_title = self._round_title(hackathon, round_index)
         round_video_required = round_working_demo_video_required(hackathon, round_index)
         round_auto_ai = round_auto_ai_evaluation(hackathon, round_index)
+        round_github_ai = round_github_ai_evaluation(hackathon, round_index)
 
         video_path: str | None = None
         resolved_type: str | None = None
@@ -146,6 +148,7 @@ class CreateMixin:
             round_title=round_title,
             working_demo_video_required=round_video_required,
             auto_ai_evaluation=round_auto_ai,
+            github_ai_evaluation=round_github_ai,
             problem_statement=problem_statement,
             solution_description=solution_description,
             video_path=video_path,
@@ -434,6 +437,7 @@ class CreateMixin:
         round_title = self._round_title(hackathon, round_index)
         round_video_required = round_working_demo_video_required(hackathon, round_index)
         round_auto_ai = round_auto_ai_evaluation(hackathon, round_index)
+        round_github_ai = round_github_ai_evaluation(hackathon, round_index)
         submission = self._build_new_submission_document(
             student_id=student.user_id,
             hackathon_id=hackathon_id.strip(),
@@ -446,6 +450,7 @@ class CreateMixin:
             round_title=round_title,
             working_demo_video_required=round_video_required,
             auto_ai_evaluation=round_auto_ai,
+            github_ai_evaluation=round_github_ai,
             problem_statement=problem_statement,
             solution_description=solution_description,
             video_path=video_path.strip() if has_video and video_path else None,
@@ -531,6 +536,7 @@ class CreateMixin:
         round_title: str = "",
         working_demo_video_required: bool = True,
         auto_ai_evaluation: bool = False,
+        github_ai_evaluation: bool = False,
         problem_statement: str,
         solution_description: str,
         video_path: str | None,
@@ -562,6 +568,9 @@ class CreateMixin:
             "round_title": round_title,
             "working_demo_video_required": bool(working_demo_video_required),
             "auto_ai_evaluation": bool(auto_ai_evaluation),
+            "github_ai_evaluation": bool(github_ai_evaluation),
+            "github_ai_status": "none",
+            "github_ai_result": None,
             "team_name": team_name,
             "hackathon_team_id": hackathon_team_id,
             "theme_id": theme_id,
