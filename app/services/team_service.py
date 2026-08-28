@@ -26,6 +26,12 @@ from app.models.team_model import (
 from app.models.user_model import CurrentUser
 from app.services.firebase import FirebaseService
 from app.services.hackathon_service import HackathonService
+from app.services.submission.uniqueness import (
+    ALREADY_SUBMITTED_MESSAGE,
+    TEAM_ALREADY_SUBMITTED_MESSAGE,
+    assert_no_existing_round_submission,
+    find_existing_round_submission,
+)
 from app.services.user_service import UserService
 from app.utils.hackathon_round import (
     TEAM_INCOMPLETE_MESSAGE,
@@ -130,6 +136,24 @@ class TeamService:
         else:
             pending = "choose_role"
 
+        existing = find_existing_round_submission(
+            self.firebase,
+            student_id=user.user_id,
+            hackathon_id=hackathon_id,
+            round_index=round_index,
+            team_id=(team.id if team else None),
+        )
+        already_submitted = existing is not None
+        existing_submission_id = (existing or {}).get("id") if existing else None
+        if already_submitted:
+            can_submit = False
+            can_continue_to_demo = False
+            pending = "already_submitted"
+            if team and (existing or {}).get("student_id") != user.user_id:
+                block_reason = TEAM_ALREADY_SUBMITTED_MESSAGE
+            else:
+                block_reason = ALREADY_SUBMITTED_MESSAGE
+
         return HackathonParticipationResponse(
             hackathon_id=hackathon_id,
             round_index=round_index,
@@ -151,6 +175,8 @@ class TeamService:
             can_continue_to_demo=can_continue_to_demo,
             block_reason=block_reason,
             pending_action=pending,
+            already_submitted=already_submitted,
+            existing_submission_id=existing_submission_id,
         )
 
     def _assert_round_visible_to_student(
@@ -452,6 +478,12 @@ class TeamService:
                 )
             profile = self.user_service.get_user(student_id) or {}
             name = (profile.get("name") or profile.get("email") or "Solo").strip()
+            assert_no_existing_round_submission(
+                self.firebase,
+                student_id=student_id,
+                hackathon_id=hackathon_id,
+                round_index=round_index,
+            )
             return f"{name} (Solo)", None
 
         if role != "leader":
@@ -472,6 +504,13 @@ class TeamService:
         max_members = int(team_doc.get("max_members") or max_size)
         if len(members) < max_members:
             raise ForbiddenError(TEAM_INCOMPLETE_MESSAGE, code="TEAM_INCOMPLETE")
+        assert_no_existing_round_submission(
+            self.firebase,
+            student_id=student_id,
+            hackathon_id=hackathon_id,
+            round_index=round_index,
+            team_id=team_id,
+        )
         return str(team_doc.get("team_name") or "Team"), team_id
 
     def _issue_join_code(

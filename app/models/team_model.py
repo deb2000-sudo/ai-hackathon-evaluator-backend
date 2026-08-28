@@ -92,7 +92,10 @@ class HackathonParticipationResponse(BaseModel):
             "create_or_join",
             "complete_team",
             "round_not_open",
+            "already_submitted",
             "ready",
         ]
         | None
     ) = None
+    already_submitted: bool = False
+    existing_submission_id: str | None = None

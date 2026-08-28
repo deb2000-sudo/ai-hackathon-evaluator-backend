@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Callable
@@ -47,9 +48,36 @@ RATE_LIMITS = "otp_rate_limits"
 SESSION_TTL = timedelta(minutes=30)
 OTP_TTL = timedelta(minutes=10)
 RESEND_COOLDOWN = timedelta(seconds=60)
+# Per-email cap (abuse). Per-IP cap is much higher so a campus NAT can register.
 MAX_SENDS_PER_HOUR = 5
+DEFAULT_MAX_SENDS_PER_IP_PER_HOUR = 2000
 MAX_VERIFY_ATTEMPTS = 5
 RATE_WINDOW = timedelta(hours=1)
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def email_otp_sends_per_hour() -> int:
+    """Max OTP emails per address per hour (``OTP_MAX_SENDS_PER_EMAIL_PER_HOUR``)."""
+    return max(0, _int_env("OTP_MAX_SENDS_PER_EMAIL_PER_HOUR", MAX_SENDS_PER_HOUR))
+
+
+def ip_otp_sends_per_hour() -> int:
+    """
+    Max OTP emails per client IP per hour (``OTP_MAX_SENDS_PER_IP_PER_HOUR``).
+
+    Default is high so shared campus/office NAT is not treated as one user.
+    Set to ``0`` to disable the IP cap.
+    """
+    return max(0, _int_env("OTP_MAX_SENDS_PER_IP_PER_HOUR", DEFAULT_MAX_SENDS_PER_IP_PER_HOUR))
 
 
 class VerificationService:
@@ -172,8 +200,16 @@ class VerificationService:
         if session.get("email_verified"):
             raise BadRequestError("Email is already verified", code="ALREADY_VERIFIED")
 
-        self._enforce_rate_limit("ip", client_ip or "unknown")
-        self._enforce_rate_limit("email", request.email)
+        self._enforce_rate_limit(
+            "ip",
+            client_ip or "",
+            max_events=ip_otp_sends_per_hour(),
+        )
+        self._enforce_rate_limit(
+            "email",
+            request.email,
+            max_events=email_otp_sends_per_hour(),
+        )
 
         last_sent = session.get("email_last_sent_at")
         if last_sent:
@@ -481,10 +517,16 @@ class VerificationService:
             raise BadRequestError("Verification session has expired", code="SESSION_EXPIRED")
         return doc
 
-    def _enforce_rate_limit(self, kind: str, identifier: str) -> None:
-        if not identifier:
+    def _enforce_rate_limit(
+        self, kind: str, identifier: str, *, max_events: int
+    ) -> None:
+        if max_events <= 0:
             return
-        key = hashlib.sha256(f"{kind}:{identifier}".encode()).hexdigest()
+        cleaned = (identifier or "").strip()
+        if not cleaned or cleaned.lower() == "unknown":
+            # Missing / shared placeholder IPs must not block an entire event.
+            return
+        key = hashlib.sha256(f"{kind}:{cleaned}".encode()).hexdigest()
         now = self._now()
         cutoff = now - RATE_WINDOW
         doc = self.firebase.get_document(RATE_LIMITS, key) or {"events": []}
@@ -495,7 +537,7 @@ class VerificationService:
                     events.append(stamp)
             except (TypeError, ValueError):
                 continue
-        if len(events) >= MAX_SENDS_PER_HOUR:
+        if len(events) >= max_events:
             raise TooManyRequestsError(
                 "Too many verification requests. Try again later.",
                 code="RATE_LIMITED",

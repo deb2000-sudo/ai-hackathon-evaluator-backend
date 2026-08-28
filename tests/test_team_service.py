@@ -69,6 +69,16 @@ def _student(uid: str, name: str = "Student") -> CurrentUser:
     )
 
 
+def _open_round(**fields: object) -> dict:
+    round_ = {
+        "published": True,
+        "start_date": "2026-01-01",
+        "end_date": "2026-12-31",
+    }
+    round_.update(fields)
+    return round_
+
+
 def _service(
     *,
     timeline: list[dict] | None = None,
@@ -78,8 +88,8 @@ def _service(
     firebase = FakeFirebase()
     if timeline is None:
         timeline = [
-            {"title": "Round 1", "max_team_size": 2},
-            {"title": "Round 2", "max_team_size": 1},
+            _open_round(title="Round 1", max_team_size=2),
+            _open_round(title="Round 2", max_team_size=1),
         ]
     hackathons = {
         hackathon_id: {
@@ -141,8 +151,8 @@ def test_leader_creates_team_and_member_joins_for_round():
 def test_join_code_scoped_to_round():
     svc = _service(
         timeline=[
-            {"title": "Round 1", "max_team_size": 2},
-            {"title": "Round 2", "max_team_size": 3},
+            _open_round(title="Round 1", max_team_size=2),
+            _open_round(title="Round 2", max_team_size=3),
         ]
     )
     round0 = svc.create_team("hack-1", 0, _student("leader-1"), "Round One Team")
@@ -201,6 +211,59 @@ def test_create_team_requires_non_empty_name():
     assert exc.value.code == "TEAM_NAME_REQUIRED"
 
 
+def test_one_submission_per_student_per_round():
+    svc = _service(
+        timeline=[
+            {
+                "title": "Round 1",
+                "max_team_size": 1,
+                "published": True,
+                "start_date": "2026-01-01",
+                "end_date": "2026-12-31",
+            },
+            {
+                "title": "Round 2",
+                "max_team_size": 1,
+                "published": True,
+                "start_date": "2026-01-01",
+                "end_date": "2026-12-31",
+            },
+        ]
+    )
+    student = _student("solo-1")
+    svc.enroll_solo("hack-1", 0, student)
+    svc.firebase.set_document(
+        "submissions",
+        "sub-round-1",
+        {
+            "student_id": "solo-1",
+            "hackathon_id": "hack-1",
+            "round_index": 0,
+            "team_name": "Solo (Solo)",
+        },
+    )
+
+    with pytest.raises(ConflictError) as exc:
+        svc.assert_submission_allowed("hack-1", 0, "solo-1")
+    assert exc.value.code == "ALREADY_SUBMITTED"
+
+    participation = svc.get_participation("hack-1", 0, student)
+    assert participation.already_submitted is True
+    assert participation.can_submit is False
+    assert participation.can_continue_to_demo is False
+    assert participation.pending_action == "already_submitted"
+    assert participation.existing_submission_id == "sub-round-1"
+
+    svc.enroll_solo("hack-1", 1, student)
+    team_name, team_id = svc.assert_submission_allowed("hack-1", 1, "solo-1")
+    assert team_id is None
+    assert "Solo" in team_name
+    round2 = svc.get_participation("hack-1", 1, student)
+    assert round2.already_submitted is False
+    assert round2.can_submit is True
+
+
+def test_refresh_join_code_revokes_previous():
     svc = _service()
     first = svc.create_team("hack-1", 0, _student("leader-1"), "Code Team")
     refreshed = svc.refresh_join_code("hack-1", 0, _student("leader-1"))

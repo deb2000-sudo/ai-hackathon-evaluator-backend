@@ -27,6 +27,7 @@ from app.utils.hackathon_round import (
     round_title,
     round_working_demo_video_required,
 )
+from app.services.submission.uniqueness import assert_no_existing_round_submission
 from app.utils.video_upload import (
     MAX_MULTIPART_VIDEO_BYTES,
     MAX_VIDEO_UPLOAD_BYTES,
@@ -81,6 +82,12 @@ class CreateMixin:
 
         self._validate_configuration(require_bucket=video is not None or video_required)
         self._validate_round_index(hackathon, round_index)
+        assert_no_existing_round_submission(
+            self.firebase,
+            student_id=student.user_id,
+            hackathon_id=hackathon_id,
+            round_index=round_index,
+        )
         team_name, hackathon_team_id = self._resolve_submission_team(
             hackathon_id, round_index, student.user_id
         )
@@ -373,6 +380,12 @@ class CreateMixin:
 
         self._validate_configuration(require_bucket=has_video or video_required)
         self._validate_round_index(hackathon, round_index)
+        assert_no_existing_round_submission(
+            self.firebase,
+            student_id=student.user_id,
+            hackathon_id=hackathon_id,
+            round_index=round_index,
+        )
 
         resolved_type: str | None = None
         submission_id = uuid.uuid4().hex

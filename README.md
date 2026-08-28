@@ -289,6 +289,49 @@ The backend then writes to Firestore `mail` and the extension sends via Brevo. *
 | No email, API 200 | Brevo dashboard → **Transactional → Logs**; sender not verified |
 | Email in spam | Complete Brevo domain authentication (SPF/DKIM) |
 | Works on staging, not prod | Secrets created in **both** GCP projects; `_SMTP_FROM` verified in Brevo |
+| `429 RATE_LIMITED` for many students on same Wi‑Fi | Fixed: per-IP cap is 2000/hour (was 5). Redeploy. See below. |
+
+### 6. Concurrent registration (campus Wi‑Fi / ~500 people)
+
+**What was wrong:** OTP send counted **5 emails per hour per IP**. Everyone on the same Wi‑Fi shares one public IP, so the 6th student got `Too many verification requests`.
+
+**What the backend does now (unchanged per person):**
+
+| Cap | Default | Meaning |
+|-----|---------|---------|
+| Per **email** | 5 / hour | Same inbox cannot request endless codes |
+| Resend cooldown | 60 seconds | Same session must wait to resend |
+| Per **IP** | **2000 / hour** | Shared NAT can register a large batch |
+| Wrong OTP tries | 5 | Unchanged |
+
+**Steps for you (ops):**
+
+1. **Deploy this backend** (Cloud Build already sets `OTP_MAX_SENDS_PER_IP_PER_HOUR=2000`).
+2. **Brevo plan** — open [Brevo pricing / credits](https://www.brevo.com/pricing/). 500 registrations ≈ 500+ OTP emails (plus resends). Free tiers are often ~300/day; use a paid transactional plan before the event.
+3. **Confirm sender** — `noreply@mail.nxtlab.tech` verified, SPF/DKIM OK (same as section 1).
+4. **Optional Cloud Run headroom** (SMTP still opens one connection per email):
+
+```bash
+gcloud run services update ai-hackathon-evaluator-backend \
+  --region=asia-south1 \
+  --max-instances=20 \
+  --concurrency=80 \
+  --cpu=1 \
+  --memory=1Gi
+```
+
+5. **Optional local `.env`:**
+
+```env
+OTP_MAX_SENDS_PER_EMAIL_PER_HOUR=5
+OTP_MAX_SENDS_PER_IP_PER_HOUR=2000
+```
+
+Set `OTP_MAX_SENDS_PER_IP_PER_HOUR=0` to turn off the IP cap entirely. Do **not** raise the per-email cap unless you want more resends per inbox.
+
+6. After a test spike, old counters live in Firestore `otp_rate_limits` for up to 1 hour. You do not need to delete them unless you are debugging.
+
+Phone OTP is still **Firebase Phone Auth** (not Brevo). If SMS fails at the same event, check Firebase Authentication → SMS quota, not this email limiter.
 
 ## End-to-end flows
 
@@ -846,9 +889,11 @@ Key fields:
 | `round_status` | `scheduled` \| `open` \| `closed` |
 | `round_open` | `true` when submissions/demo allowed |
 | `can_continue_to_demo` | enable **Continue to Demo** button |
-| `can_submit` | same as `can_continue_to_demo` for leaders/solo |
+| `can_submit` | same as `can_continue_to_demo` for leaders/solo; **false after they already submitted this round** |
+| `already_submitted` | `true` when this student (or their team) already has a submission for this round |
+| `existing_submission_id` | id to open **View submission** when `already_submitted` |
 | `block_reason` | toast text when demo button clicked while blocked |
-| `pending_action` | UI state machine |
+| `pending_action` | UI state machine (`already_submitted` after they have submitted) |
 
 **Continue to Demo button logic:**
 
@@ -867,6 +912,8 @@ When `pending_action === "complete_team"` → show roster + join code UI; disabl
 When `pending_action === "round_not_open"` → show `block_reason` (e.g. “This round opens on 2026-09-16 (IST).”).
 
 When `pending_action === "ready"` and `can_continue_to_demo` → open wizard.
+
+When `pending_action === "already_submitted"` → **do not open the submit wizard**. Show “Already submitted for this round” and a **View submission** link using `existing_submission_id`.
 
 **Team leader — create team (step 1: name, step 2: invite):**
 
@@ -895,6 +942,36 @@ Content-Type: application/json
 ### Student: submit wizard
 
 Only open when `participation.can_submit === true`.
+
+**One submission per round.** A student may submit **once** per hackathon round. A second `POST /submissions` or `POST /submissions/from-upload` for the same `hackathon_id` + `round_index` returns **409**:
+
+```json
+{
+  "detail": {
+    "code": "ALREADY_SUBMITTED",
+    "message": "You have already submitted for this round. Only one submission is allowed per round."
+  }
+}
+```
+
+They may still submit in a **different** round of the same hackathon.
+
+```ts
+async function submitRound(init: RequestInit) {
+  const res = await apiFetch("/submissions", init);
+  if (res.status === 409) {
+    const body = await res.json();
+    if (body?.detail?.code === "ALREADY_SUBMITTED") {
+      toast.error("You already submitted for this round.");
+      return;
+    }
+  }
+  if (!res.ok) throw new Error("Submit failed");
+  return res.json();
+}
+```
+
+Hide/disable **Submit** / **Continue to Demo** when `already_submitted === true`. Do not allow a second wizard submit — they can only view the existing submission.
 
 Use `participation.working_demo_video_required` (or `hackathon.timeline[roundIndex].working_demo_video_required`) to show/hide video record/upload steps.
 

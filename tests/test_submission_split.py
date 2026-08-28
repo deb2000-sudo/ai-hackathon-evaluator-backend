@@ -20,10 +20,14 @@ def _stub_create_mixin() -> CreateMixin:
             self.hackathon_service = MagicMock()
             self.theme_service = MagicMock()
             self.firebase = MagicMock()
+            self.firebase.query_collection.return_value = []
             self._team = "Team Alpha"
 
         def _validate_configuration(self, *, require_bucket: bool = True):
             return None
+
+        def _resolve_submission_team(self, hackathon_id, round_index, student_id):
+            return self._team, None
 
         def _resolve_student_team_name(self, student_id: str) -> str:
             return self._team
@@ -100,6 +104,7 @@ def test_create_submission_uses_shared_builders():
     host.hackathon_service.get_hackathon.return_value = {
         "name": "H1",
         "theme_ids": ["t1"],
+        "timeline": [{"title": "Round 1"}],
     }
     host.theme_service.get_theme.return_value = {"name": "Theme"}
     host._upload_bytes = MagicMock()
