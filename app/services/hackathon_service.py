@@ -237,6 +237,9 @@ class HackathonService:
             "auto_ai_evaluation",
             hackathon_default_auto_ai(enriched),
         )
+        enriched.setdefault("export_spreadsheet_id", None)
+        enriched.setdefault("export_spreadsheet_url", None)
+        enriched.setdefault("export_spreadsheet_synced_at", None)
         enriched["timeline"] = self._enrich_timeline_rounds(
             enriched,
             enriched.get("timeline") or [],

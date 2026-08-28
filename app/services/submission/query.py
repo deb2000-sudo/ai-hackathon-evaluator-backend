@@ -128,6 +128,13 @@ class QueryMixin:
                     ),
                 }
             )
+            if not evaluator_id:
+                summaries[-1]["export_spreadsheet_url"] = enriched.get(
+                    "export_spreadsheet_url"
+                )
+                summaries[-1]["export_spreadsheet_synced_at"] = enriched.get(
+                    "export_spreadsheet_synced_at"
+                )
         return summaries
 
     def list_student_submissions(self, student_id: str) -> list[dict[str, Any]]:

@@ -676,6 +676,104 @@ type HackathonDraftSummary = {
 
 ---
 
+## Frontend handoff — admin submission export (copy to frontend repo)
+
+Let admins sync hackathon submission data to a **linked Google Spreadsheet** from the **Submissions** admin area. One tab per timeline round plus a Summary tab. Re-sync refreshes the same sheet — no `.xlsx` download.
+
+### GCP setup (ops / backend)
+
+Enable on the Firebase/GCP project (same service account as Firestore/GCS):
+
+1. **Google Sheets API**
+2. **Google Drive API**
+
+The backend uses `FIREBASE_PRIVATE_KEY` + `FIREBASE_CLIENT_EMAIL`.
+
+**Important:** Firebase service accounts **cannot** create spreadsheets in their own Drive (no storage quota). One-time setup:
+
+1. As `admin@nxtwave.co.in` (or any user), create a Google Drive folder e.g. **Hackathon Exports**
+2. **Share** the folder with `firebase-adminsdk-fbsvc@nxt-acad-hackathon.iam.gserviceaccount.com` as **Editor**
+3. Copy the folder id from the URL: `https://drive.google.com/drive/folders/FOLDER_ID_HERE`
+4. Set in `.env` / Cloud Run:
+
+```env
+GOOGLE_SHEETS_EXPORT_FOLDER_ID=FOLDER_ID_HERE
+```
+
+### API
+
+```http
+POST /submissions/admin/hackathons/{hackathonId}/export/google-sheet
+Authorization: Bearer … or session cookie
+```
+
+**Response (`200`):**
+
+```json
+{
+  "hackathon_id": "abc123",
+  "spreadsheet_id": "1abc…",
+  "spreadsheet_url": "https://docs.google.com/spreadsheets/d/1abc…",
+  "synced_at": "2026-08-25T11:00:00+05:30",
+  "submission_count": 42,
+  "message": "Submission data synced to Google Sheets"
+}
+```
+
+**Rules (backend):**
+- **Admin only**
+- First sync **creates** one spreadsheet per hackathon; later syncs **update** the same sheet
+- Requesting admin gets **writer** access on the spreadsheet
+- `export_spreadsheet_url` and `export_spreadsheet_synced_at` are stored on the hackathon doc and returned on `GET /hackathons/{id}` and admin `GET /submissions/admin/hackathons` rows
+- Includes **all submissions** (with or without demo video), same columns as before
+
+### Sheet layout
+
+| Tab | Contents |
+|-----|----------|
+| **Summary** | Hackathon name/id, dates, export timestamp, total submission count |
+| **Round 1** … **Round N** | One tab per `hackathon.timeline[]` entry |
+
+**Columns (each round tab):** same as previous Excel export — Submission ID, Round Index, Round Title, Participation Mode, Team Name, … Problem Statement, Solution Description, MVP Link, GitHub Link, Additional Field Answers (JSON), video fields, evaluation status, timestamps.
+
+### UI placement
+
+On **Admin → Submissions → [Hackathon detail]**, replace the download button with:
+
+**Primary:** `Sync to Google Sheets` (or `Export Data` if product prefers)
+
+**Secondary (when `export_spreadsheet_url` is set):** `Open Google Sheet` link
+
+```tsx
+async function syncHackathonToGoogleSheet(hackathonId: string) {
+  const res = await apiFetch(
+    `/submissions/admin/hackathons/${hackathonId}/export/google-sheet`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw new Error("Export failed");
+  const data = await res.json();
+  window.open(data.spreadsheet_url, "_blank", "noopener,noreferrer");
+  return data;
+}
+```
+
+**UX:**
+- Show loading spinner while syncing
+- Toast on success: “Synced N submissions to Google Sheets” + open sheet in new tab
+- If `export_spreadsheet_url` already on hackathon/summary row, show “Last synced: …” and offer **Re-sync** + **Open sheet**
+- Empty hackathon: still creates Summary (+ empty round tabs)
+- Disable for non-admin (403)
+
+### Error handling
+
+| Status | UI |
+|--------|-----|
+| 404 | Hackathon not found / linked sheet deleted (re-sync creates new) |
+| 403 | Not admin |
+| 500 / `SHEETS_*` | “Could not sync to Google Sheets — check API is enabled” |
+
+---
+
 ## Frontend handoff — hackathon rounds (copy to frontend repo)
 
 Use this section as the implementation spec for the **hackniat** admin + student UI.
@@ -842,6 +940,7 @@ Per-field scoring prompts (`max_score`, natural-language scoring instructions) f
 | GET | `/submissions` | student | Own submissions |
 | GET | `/submissions/admin/hackathons` | admin | Hackathons + submission counts |
 | GET | `/submissions/admin/hackathons/{id}` | admin | Submissions for a hackathon |
+| POST | `/submissions/admin/hackathons/{id}/export/google-sheet` | admin | Sync submissions to linked Google Sheet |
 | POST | `/submissions/admin/hackathons/{id}/assign-equally` | admin | Divide selected among evaluators |
 | GET | `/submissions/admin/all` | admin | All submissions |
 | GET | `/submissions/evaluator/hackathons` | evaluator | Hackathons with assigned work |

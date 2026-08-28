@@ -289,3 +289,15 @@ class HackathonResponse(BaseModel):
     created_by: str
     created_at: ISTDateTime
     updated_at: ISTDateTime
+    export_spreadsheet_id: Optional[str] = Field(
+        None,
+        description="Google Spreadsheet id when admin has synced submission export.",
+    )
+    export_spreadsheet_url: Optional[str] = Field(
+        None,
+        description="Browser URL for the linked submission export spreadsheet.",
+    )
+    export_spreadsheet_synced_at: Optional[ISTDateTime] = Field(
+        None,
+        description="Last time submission data was synced to Google Sheets.",
+    )

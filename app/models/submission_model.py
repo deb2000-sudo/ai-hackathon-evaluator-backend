@@ -35,6 +35,14 @@ class HackathonSubmissionSummary(BaseModel):
             "evaluators see the AI Evaluation button."
         ),
     )
+    export_spreadsheet_url: Optional[str] = Field(
+        None,
+        description="Google Sheets URL for admin submission export (admin UI only).",
+    )
+    export_spreadsheet_synced_at: Optional[ISTDateTime] = Field(
+        None,
+        description="Last Google Sheets export sync time (admin UI only).",
+    )
 
 class AcceptedVideoTypesResponse(BaseModel):
     """Constraints for Record demo vs Upload from disk pickers."""

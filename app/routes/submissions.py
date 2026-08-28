@@ -7,7 +7,7 @@ Student submission routes.
     GET    /submissions/accepted-video-types -> allowed MIME/ext for Record + Upload UI
     GET    /submissions                 -> student lists their own submissions
     GET    /submissions/admin/hackathons              -> admin: hackathons + submission counts
-    GET    /submissions/admin/hackathons/{hackathon_id} -> admin: submissions for one hackathon
+    POST   /submissions/admin/hackathons/{hackathon_id}/export/google-sheet -> admin: sync Google Sheet
     POST   /submissions/admin/hackathons/{hackathon_id}/assign-equally
            -> admin: randomly divide selected submissions among active evaluators
     GET    /submissions/admin/all       -> admin lists all submissions
@@ -43,6 +43,7 @@ from fastapi import (
 )
 
 from app.exceptions import AppError, http_exception_from_value_error
+from app.models.export_model import GoogleSheetExportRequest, GoogleSheetExportResponse
 from app.middleware.auth_middleware import (
     get_active_user,
     get_admin_user,
@@ -69,7 +70,12 @@ from app.models.submission_model import (
 from app.models.user_model import CurrentUser
 from app.services.auto_ai_evaluation import queue_auto_ai_evaluations
 from app.services.evaluation_job_service import EvaluationJobService
-from app.dependencies import get_evaluation_job_service, get_submission_service
+from app.dependencies import (
+    get_evaluation_job_service,
+    get_google_sheets_export_service,
+    get_submission_service,
+)
+from app.services.google_sheets_export_service import GoogleSheetsExportService
 from app.services.submission_service import SubmissionService
 from app.utils.async_io import run_sync
 from app.utils.video_upload import (
@@ -393,6 +399,40 @@ async def list_submissions_for_hackathon_admin(
 
     submissions = await run_sync(service.list_submissions_for_hackathon, hackathon_id)
     return await _to_submission_responses(service, submissions, current_user=admin)
+
+
+@router.post(
+    "/admin/hackathons/{hackathon_id}/export/google-sheet",
+    response_model=GoogleSheetExportResponse,
+)
+async def sync_hackathon_submissions_google_sheet(
+    hackathon_id: str,
+    request: GoogleSheetExportRequest | None = None,
+    admin: CurrentUser = Depends(get_admin_user),
+    sheets_service: GoogleSheetsExportService = Depends(get_google_sheets_export_service),
+) -> GoogleSheetExportResponse:
+    """
+    Admin: sync all hackathon submissions to a linked Google Spreadsheet.
+
+    On first sync, either auto-creates a sheet (Workspace Shared Drive folders
+    only) or accepts ``spreadsheet_id`` for a sheet you created and shared with
+    the Firebase service account. Later exports refresh the same sheet.
+    """
+    try:
+        result = await run_sync(
+            sheets_service.sync_hackathon_submissions,
+            hackathon_id,
+            admin_email=admin.email,
+            spreadsheet_id=request.spreadsheet_id if request else None,
+        )
+    except AppError:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to sync submissions to Google Sheets",
+        ) from e
+    return GoogleSheetExportResponse(**result)
 
 
 @router.post(

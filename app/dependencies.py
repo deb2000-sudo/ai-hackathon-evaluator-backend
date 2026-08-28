@@ -21,6 +21,8 @@ from app.services.evaluation_job_service import EvaluationJobService
 from app.services.evaluation_prompt_service import EvaluationPromptService
 from app.services.evaluation_requirement_service import EvaluationRequirementService
 from app.services.firebase import FirebaseService
+from app.services.hackathon_export_service import HackathonExportService
+from app.services.google_sheets_export_service import GoogleSheetsExportService
 from app.services.hackathon_draft_service import HackathonDraftService
 from app.services.hackathon_service import HackathonService
 from app.services.metric_scoring_service import MetricScoringService
@@ -220,6 +222,24 @@ def get_evaluation_job_service(request: Request) -> EvaluationJobService:
 
 def get_app_settings_service(request: Request) -> AppSettingsService:
     return get_container(request).app_settings_service
+
+
+def get_hackathon_export_service(request: Request) -> HackathonExportService:
+    container = get_container(request)
+    return HackathonExportService(
+        firebase=container.firebase,
+        hackathon_service=container.hackathon_service,
+        user_service=container.user_service,
+    )
+
+
+def get_google_sheets_export_service(request: Request) -> GoogleSheetsExportService:
+    container = get_container(request)
+    return GoogleSheetsExportService(
+        firebase=container.firebase,
+        hackathon_service=container.hackathon_service,
+        export_service=get_hackathon_export_service(request),
+    )
 
 
 def get_verification_service(request: Request) -> VerificationService:
