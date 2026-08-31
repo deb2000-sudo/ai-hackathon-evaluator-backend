@@ -4,6 +4,8 @@ FastAPI backend for **HackNIAT** — students submit hackathon demo videos (reco
 
 Stack: **Firebase Auth + Firestore**, **Google Cloud Storage** (videos), **Vertex AI / Gemini** (multimodal video analysis), deployable to **Cloud Run**.
 
+**System design:** [docs/architecture.md](docs/architecture.md) — layers, service graph, Firestore collections, evaluation jobs, and domain flows. API contracts and frontend handoff stay in this README.
+
 ## Quick start
 
 ```bash
@@ -1618,7 +1620,9 @@ setCsrfToken(null);
 
 ## Architecture & deployment (source of truth)
 
-These files define production architecture and deploy. Do not assume a different stack or pipeline.
+Current system design (layers, data stores, flows): **[docs/architecture.md](docs/architecture.md)**.
+
+These files define production deploy. Do not assume a different stack or pipeline.
 
 | File | Role |
 |------|------|
@@ -1689,6 +1693,8 @@ See [.env.example](.env.example) for local development. Production secrets/env c
 
 ## Project layout
 
+See [docs/architecture.md](docs/architecture.md) for the full tree and service graph. Summary:
+
 ```
 app/
 ├── main.py                      # app factory, CORS, handlers, lifespan + DI container
@@ -1697,34 +1703,17 @@ app/
 ├── middleware/
 │   └── auth_middleware.py       # current / active / admin / student / evaluator deps
 ├── models/                      # Pydantic schemas (users, submissions, hackathons, …)
-├── routes/
-│   ├── auth.py                  # /auth
-│   ├── admin.py                 # /admin
-│   ├── submissions.py           # /submissions
-│   ├── hackathon.py             # /hackathons
-│   ├── theme.py                 # /themes
-│   ├── evaluation_requirement.py
-│   ├── metric_scoring.py        # /ai-evaluation-metric-scoring
-│   └── internal_jobs.py         # /internal/jobs (Cloud Tasks worker)
+├── routes/                      # auth, admin, settings, hackathon, teams, submissions, …
 ├── services/
 │   ├── firebase.py              # Firebase Admin singleton
-│   ├── user_service.py
-│   ├── registration_service.py
-│   ├── submission_service.py    # thin re-export of submission package
-│   ├── submission/              # create / analysis / assignment / review / query mixins
+│   ├── submission/              # create / analysis / github_ai / assignment / review / query
 │   ├── evaluation_job_service.py
-│   ├── hackathon_service.py
-│   ├── theme_service.py
-│   ├── evaluation_requirement_service.py
-│   └── metric_scoring_service.py
-└── utils/
-    ├── seeder.py
-    ├── auth_cookies.py
-    ├── cors_config.py
-    ├── async_io.py              # run_sync offload helper
-    ├── gcs_video.py             # signed GET/PUT + streaming
-    ├── video_upload.py          # MIME allow-list (record + upload)
-    └── image_upload.py          # hackathon banners
+│   ├── leaderboard_service.py
+│   ├── team_service.py
+│   └── …
+└── utils/                       # IST, GCS, OTP, seeder, CORS, cookies
+docs/
+└── architecture.md              # current system design
 ```
 
 ## Commands
