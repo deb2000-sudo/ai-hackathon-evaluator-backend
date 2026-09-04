@@ -32,6 +32,7 @@ from app.models.verification_model import (
     ForgotPasswordResetRequest,
     ForgotPasswordResetResponse,
     ForgotPasswordStartRequest,
+    ForgotPasswordStartResponse,
     RegisterCompleteRequest,
     RegisterStartRequest,
     RegisterStartResponse,
@@ -205,22 +206,25 @@ async def register_evaluator_deprecated() -> None:
     )
 
 
-@router.post("/forgot-password/start", response_model=RegisterStartResponse, status_code=200)
+@router.post(
+    "/forgot-password/start",
+    response_model=ForgotPasswordStartResponse,
+    status_code=200,
+)
 async def forgot_password_start(
     payload: ForgotPasswordStartRequest,
     request: Request,
     verification: VerificationService = Depends(get_verification_service),
-) -> RegisterStartResponse:
+) -> ForgotPasswordStartResponse:
     """
-    Start password reset. Email and mobile must match an existing account.
-
-    Then reuse ``POST /auth/email/send-otp``, ``/email/verify-otp``, and
-    ``/verify-phone-token`` on the returned ``session_id``.
+    If the email is registered, email an OTP and return the registered mobile
+    (last 4 digits for the UI). Then verify email OTP + Firebase Phone Auth
+    before ``POST /auth/forgot-password/reset``.
     """
-    session_id = await run_sync(
+    result = await run_sync(
         verification.start_password_reset, payload, _client_ip(request)
     )
-    return RegisterStartResponse(session_id=session_id)
+    return ForgotPasswordStartResponse(**result)
 
 
 @router.post(

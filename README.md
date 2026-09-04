@@ -213,109 +213,86 @@ type EvaluatorRegisterComplete = {
 
 ## Frontend handoff — forgot password (copy to frontend repo)
 
-Unauthenticated. Reuse the **same email OTP + Firebase Phone Auth** widgets as registration. The user must prove **both** email and the mobile number already stored on their account. Works for student, evaluator, and admin.
+Unauthenticated. **Email-only start.** If the address is in Firestore, the backend emails an OTP immediately and returns the registered mobile (show **last 4 digits** only). Then verify email OTP + Firebase Phone Auth (same widgets as register). Works for student, evaluator, and admin.
 
-Do **not** call `POST /auth/register/start` or `/register/complete` for this flow. Reset sessions have `purpose: "password_reset"` and those register endpoints return `PURPOSE_MISMATCH`.
+Do **not** call `POST /auth/register/start` or `/register/complete`. Reset sessions return `PURPOSE_MISMATCH` on those endpoints.
 
 ### Flow overview
 
 ```mermaid
 flowchart TD
-  A[Login page — Forgot password] --> B[Collect email + mobile]
+  A[Login — Forgot password] --> B[Email only]
   B --> C["POST /auth/forgot-password/start"]
-  C --> D[Email OTP — same as register]
-  D --> E[Firebase Phone Auth — same as register]
-  E --> F[New password + confirm]
-  F --> G["POST /auth/forgot-password/reset"]
-  G --> H[Redirect to login]
+  C -->|404 ACCOUNT_NOT_FOUND| B
+  C --> D["Show: code sent to email and mobile ending in XXXX"]
+  D --> E[Email OTP input]
+  E --> F["Firebase Phone Auth with mobile_number from start"]
+  F --> G[New password + confirm]
+  G --> H["POST /auth/forgot-password/reset"]
+  H --> I[Redirect to login]
 ```
 
-### Step 1 — Start (both identifiers required)
+### Step 1 — Start (email only)
 
 ```ts
-const { session_id } = await api.post("/auth/forgot-password/start", {
+const started = await api.post("/auth/forgot-password/start", {
   email: "student@example.com",
-  mobile_number: "9876543210", // 10-digit IN or E.164 (+919876543210)
 });
+// started.session_id
+// started.message  e.g. "Verification code sent to your email and registered mobile ending in 3210"
+// started.mobile_last4  e.g. "3210"  — SHOW THIS
+// started.mobile_number e.g. "+919876543210" — use for Phone Auth, do not display
 ```
 
-Store `session_id` (30-minute TTL). Both fields are required on this call (unlike register, which can attach email/mobile separately).
+Show `started.message` (or your own copy using `mobile_last4`). Store `session_id` (30-minute TTL) and `mobile_number` for step 3.
 
 | Status | `detail.code` | UI |
 |--------|----------------|-----|
-| 404 | `ACCOUNT_NOT_FOUND` | “No account found with this email and mobile number.” Do not say which field is wrong. |
-| 422 | validation | Invalid email or mobile format. |
+| 404 | `ACCOUNT_NOT_FOUND` | “No account found with this email.” |
+| 400 | `PHONE_NOT_ON_FILE` | Account has no mobile on file — contact admin. |
+| 429 | `RATE_LIMITED` / `RESEND_COOLDOWN` | Wait, then retry. |
+| 422 | validation | Invalid email. |
 
-### Steps 2–3 — Same verification endpoints as register
+Do **not** ask for mobile on this screen.
 
-No CSRF header (user is not logged in). `credentials: "include"` is optional here.
+### Step 2 — Email OTP
 
-| Step | Endpoint | Body |
-|------|----------|------|
-| Send email OTP | `POST /auth/email/send-otp` | `{ session_id, email }` |
-| Verify email OTP | `POST /auth/email/verify-otp` | `{ session_id, code }` (6 digits) |
-| Verify phone | Firebase Phone Auth in the browser, then `POST /auth/verify-phone-token` | `{ session_id, firebase_id_token, mobile_number }` |
+The email code was **already sent** in step 1. Collect the 6-digit code:
 
-Same error codes as registration: `EMAIL_MISMATCH`, `INVALID_CODE`, `EXPIRED`, `RESEND_COOLDOWN`, `RATE_LIMITED`, `TOO_MANY_ATTEMPTS`, `PHONE_MISMATCH`, `SESSION_NOT_FOUND`, `SESSION_EXPIRED`.
+`POST /auth/email/verify-otp` `{ session_id, code }`
 
-Rate limits are shared with registration: **5 OTP emails/hour per address**, **2000/hour per IP**, 60s resend cooldown.
+Resend: `POST /auth/email/send-otp` `{ session_id, email }` (60s cooldown). Same codes as register: `INVALID_CODE`, `EXPIRED`, `TOO_MANY_ATTEMPTS`.
 
-Phone Auth: same Firebase config as register (`VITE_FIREBASE_PHONE_TEST_MODE` locally). After `verify-phone-token` the backend deletes the throwaway Phone Auth user (same as register).
+### Step 3 — Mobile OTP (Firebase Phone Auth)
 
-### Step 4 — Set the new password
+Immediately after start (or after email verify), call Firebase `signInWithPhoneNumber(started.mobile_number)` so SMS goes to the registered number. Then:
+
+`POST /auth/verify-phone-token` `{ session_id, firebase_id_token, mobile_number: started.mobile_number }`
+
+UI copy: “Enter the code sent to ••••{mobile_last4}”. Never render the full `mobile_number`.
+
+### Step 4 — New password
 
 ```ts
 await api.post("/auth/forgot-password/reset", {
   session_id,
-  email: "student@example.com",
-  mobile_number: "9876543210",
-  new_password: "Newpass1",
-  confirm_password: "Newpass1",
+  email,
+  mobile_number: started.mobile_number,
+  new_password,
+  confirm_password,
 });
-// { message: "Password reset successfully. Please log in.", email }
 ```
 
-Password rules (same as register): **min 8 characters, at least 1 letter and 1 number**.
-
-This does **not** set login cookies. Clear any local auth state and send the user to the login screen. Existing sessions are revoked (Firebase refresh tokens + `access_token` cookie cleared if one was present).
-
-| Status | `detail.code` | UI |
-|--------|----------------|-----|
-| 403 | `NOT_VERIFIED` | Finish email OTP and phone first. |
-| 403 | `IDENTIFIER_MISMATCH` | Email/mobile do not match the verified session. |
-| 400 | `PURPOSE_MISMATCH` | Wrong session type (e.g. used a register `session_id`). |
-| 400 | `SESSION_EXPIRED` / `SESSION_NOT_FOUND` | Restart from step 1. |
-| 422 | password validation | Show the strength message. |
-
-### Suggested UI
-
-1. Login → **Forgot password?**
-2. Form: email + mobile → Continue
-3. Email code (6 digits) → resend with cooldown
-4. Mobile OTP via Firebase (`signInWithPhoneNumber`)
-5. New password + confirm → Success → Login
-
-Do not show “current password”. Evaluators who are still `pending` can reset and then log in; they remain pending until admin approval.
+No login cookies. Redirect to login. Password: 8+ chars, 1 letter, 1 number.
 
 ### Types
 
 ```ts
-type ForgotPasswordStart = {
-  email: string;
-  mobile_number: string;
-};
-
-type ForgotPasswordReset = {
+type ForgotPasswordStartResponse = {
   session_id: string;
-  email: string;
-  mobile_number: string;
-  new_password: string;
-  confirm_password?: string;
-};
-
-type ForgotPasswordResetResponse = {
   message: string;
-  email: string;
+  mobile_last4: string;
+  mobile_number: string; // Phone Auth only — do not display
 };
 ```
 
@@ -526,7 +503,7 @@ disabled by default (`ENVIRONMENT=production`); set `ENABLE_API_DOCS=true` only 
 | POST | `/auth/register/complete` | — | Create student + session cookies |
 | POST | `/auth/register/evaluator/complete` | — | Create evaluator (verified) + session cookies (`pending`) |
 | POST | `/auth/register/evaluator` | — | **Deprecated** (410) — use verified flow |
-| POST | `/auth/forgot-password/start` | — | Start reset (email + mobile must match an account) |
+| POST | `/auth/forgot-password/start` | — | If email is registered, send OTP; return masked mobile |
 | POST | `/auth/forgot-password/reset` | — | Set new password after email + phone verified |
 | POST | `/auth/login` | — | HttpOnly cookie session |
 | POST | `/auth/logout` | — | Clear cookie |

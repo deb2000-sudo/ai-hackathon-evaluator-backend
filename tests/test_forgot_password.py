@@ -1,4 +1,4 @@
-"""Forgot-password: email + mobile must match one account, then OTP + reset."""
+"""Forgot-password: registered email lookup, auto email OTP, then phone + reset."""
 
 from datetime import datetime
 
@@ -6,12 +6,12 @@ import pytest
 
 from app.exceptions import BadRequestError, ForbiddenError, NotFoundError
 from app.models.verification_model import (
-    EmailSendOtpRequest,
     EmailVerifyOtpRequest,
     ForgotPasswordResetRequest,
     ForgotPasswordStartRequest,
     RegisterCompleteRequest,
     RegisterStartRequest,
+    EmailSendOtpRequest,
     VerifyPhoneTokenRequest,
 )
 from app.services.email_service import RecordingEmailService
@@ -96,9 +96,6 @@ def _seed_user(firebase: FakeFirebase, *, mobile_no: str = "9876543210") -> None
 
 
 def _verify_both(service: VerificationService, session_id: str) -> None:
-    service.send_email_otp(
-        EmailSendOtpRequest(session_id=session_id, email="ada@example.com")
-    )
     service.verify_email_otp(EmailVerifyOtpRequest(session_id=session_id, code="123456"))
     service.verify_phone_token(
         VerifyPhoneTokenRequest(
@@ -109,72 +106,62 @@ def _verify_both(service: VerificationService, session_id: str) -> None:
     )
 
 
-def test_start_requires_existing_email_and_matching_mobile():
+def test_start_registered_email_sends_otp_and_masks_mobile():
     now = datetime(2026, 9, 4, 12, 0, tzinfo=IST)
-    service, firebase, _ = _service(now)
+    service, firebase, email = _service(now)
     _seed_user(firebase)
 
-    session_id = service.start_password_reset(
-        ForgotPasswordStartRequest(
-            email="ada@example.com",
-            mobile_number="9876543210",
-        )
+    result = service.start_password_reset(
+        ForgotPasswordStartRequest(email="ada@example.com")
     )
-    doc = firebase.get_document("verification_sessions", session_id)
+    assert result["mobile_last4"] == "3210"
+    assert result["mobile_number"] == "+919876543210"
+    assert "ending in 3210" in result["message"]
+    assert email.sent_to == ["ada@example.com"]
+
+    doc = firebase.get_document("verification_sessions", result["session_id"])
     assert doc["purpose"] == PURPOSE_PASSWORD_RESET
     assert doc["user_id"] == "uid-ada"
-    assert doc["email"] == "ada@example.com"
     assert doc["phone"] == "+919876543210"
+    assert doc["email_code_hash"]
 
 
-def test_start_accepts_e164_when_profile_stores_national_number():
+def test_start_rejects_unknown_email():
     now = datetime(2026, 9, 4, 12, 0, tzinfo=IST)
-    service, firebase, _ = _service(now)
-    _seed_user(firebase, mobile_no="9876543210")
-
-    session_id = service.start_password_reset(
-        ForgotPasswordStartRequest(
-            email="ada@example.com",
-            mobile_number="+91 98765 43210",
-        )
-    )
-    assert session_id
-
-
-def test_start_rejects_unknown_email_or_wrong_mobile():
-    now = datetime(2026, 9, 4, 12, 0, tzinfo=IST)
-    service, firebase, _ = _service(now)
-    _seed_user(firebase)
+    service, _, email = _service(now)
 
     with pytest.raises(NotFoundError) as missing:
         service.start_password_reset(
-            ForgotPasswordStartRequest(
-                email="nobody@example.com",
-                mobile_number="9876543210",
-            )
+            ForgotPasswordStartRequest(email="nobody@example.com")
         )
     assert missing.value.code == "ACCOUNT_NOT_FOUND"
+    assert email.sent_to == []
 
-    with pytest.raises(NotFoundError) as mismatch:
+
+def test_start_rejects_account_without_mobile():
+    now = datetime(2026, 9, 4, 12, 0, tzinfo=IST)
+    service, firebase, email = _service(now)
+    firebase.set_document(
+        "users",
+        "uid-ada",
+        {"email": "ada@example.com", "mobile_no": "", "role": "student"},
+    )
+    with pytest.raises(BadRequestError) as exc:
         service.start_password_reset(
-            ForgotPasswordStartRequest(
-                email="ada@example.com",
-                mobile_number="9000000000",
-            )
+            ForgotPasswordStartRequest(email="ada@example.com")
         )
-    assert mismatch.value.code == "ACCOUNT_NOT_FOUND"
+    assert exc.value.code == "PHONE_NOT_ON_FILE"
+    assert email.sent_to == []
 
 
 def test_reset_updates_password_and_deletes_session():
     now = datetime(2026, 9, 4, 12, 0, tzinfo=IST)
     service, firebase, email = _service(now)
     _seed_user(firebase)
-    session_id = service.start_password_reset(
-        ForgotPasswordStartRequest(
-            email="ada@example.com",
-            mobile_number="9876543210",
-        )
+    started = service.start_password_reset(
+        ForgotPasswordStartRequest(email="ada@example.com")
     )
+    session_id = started["session_id"]
     _verify_both(service, session_id)
     assert email.sent_to == ["ada@example.com"]
 
@@ -197,15 +184,10 @@ def test_reset_requires_both_identifiers_verified():
     now = datetime(2026, 9, 4, 12, 0, tzinfo=IST)
     service, firebase, _ = _service(now)
     _seed_user(firebase)
-    session_id = service.start_password_reset(
-        ForgotPasswordStartRequest(
-            email="ada@example.com",
-            mobile_number="9876543210",
-        )
+    started = service.start_password_reset(
+        ForgotPasswordStartRequest(email="ada@example.com")
     )
-    service.send_email_otp(
-        EmailSendOtpRequest(session_id=session_id, email="ada@example.com")
-    )
+    session_id = started["session_id"]
     service.verify_email_otp(EmailVerifyOtpRequest(session_id=session_id, code="123456"))
 
     with pytest.raises(ForbiddenError) as exc:
@@ -225,18 +207,15 @@ def test_register_complete_rejects_password_reset_session():
     now = datetime(2026, 9, 4, 12, 0, tzinfo=IST)
     service, firebase, _ = _service(now)
     _seed_user(firebase)
-    session_id = service.start_password_reset(
-        ForgotPasswordStartRequest(
-            email="ada@example.com",
-            mobile_number="9876543210",
-        )
+    started = service.start_password_reset(
+        ForgotPasswordStartRequest(email="ada@example.com")
     )
-    _verify_both(service, session_id)
+    _verify_both(service, started["session_id"])
 
     with pytest.raises(BadRequestError) as exc:
         service.complete(
             RegisterCompleteRequest(
-                session_id=session_id,
+                session_id=started["session_id"],
                 first_name="Ada",
                 last_name="Lovelace",
                 email="ada@example.com",

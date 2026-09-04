@@ -206,20 +206,27 @@ class EvaluatorRegisterCompleteRequest(BaseModel):
 
 
 class ForgotPasswordStartRequest(BaseModel):
-    """Start a password-reset session. Email and mobile must match one account."""
+    """Start a password-reset session. Email must already be registered."""
 
     email: EmailStr
-    mobile_number: str = Field(..., min_length=8, max_length=20)
 
     @field_validator("email", mode="before")
     @classmethod
     def normalize_email(cls, value: str) -> str:
         return strip_required(value).lower()
 
-    @field_validator("mobile_number")
-    @classmethod
-    def normalize_mobile(cls, value: str) -> str:
-        return normalize_e164(value)
+
+class ForgotPasswordStartResponse(BaseModel):
+    session_id: str
+    message: str
+    mobile_last4: str
+    mobile_number: str = Field(
+        ...,
+        description=(
+            "Registered E.164 mobile for Firebase Phone Auth. "
+            "Show only mobile_last4 in the UI."
+        ),
+    )
 
 
 class ForgotPasswordResetRequest(BaseModel):

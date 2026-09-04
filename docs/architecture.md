@@ -264,7 +264,7 @@ OTP rate limits (Firestore `otp_rate_limits`): **5 sends/hour per email**, **200
 
 Unauthenticated. Same `verification_sessions` collection with `purpose: "password_reset"`:
 
-1. `POST /auth/forgot-password/start` — email **and** mobile must match one `users` doc (generic `ACCOUNT_NOT_FOUND` otherwise).
+1. `POST /auth/forgot-password/start` — **email only**. If the address is registered, email OTP is sent immediately; response includes `mobile_last4` (UI) and `mobile_number` (Firebase Phone Auth). Unknown email → `ACCOUNT_NOT_FOUND`.
 2. Reuse `POST /auth/email/send-otp`, `/email/verify-otp`, `/verify-phone-token`.
 3. `POST /auth/forgot-password/reset` updates Firebase Auth password, revokes refresh tokens, deletes the session. **No login cookies** — user signs in again.
 

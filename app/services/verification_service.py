@@ -119,27 +119,24 @@ class VerificationService:
 
     def start_password_reset(
         self, request: ForgotPasswordStartRequest, client_ip: str = ""
-    ) -> str:
+    ) -> dict[str, Any]:
         """
-        Open a 30-minute reset session only when email + mobile match one user.
-
-        ``client_ip`` is unused here (OTP send is rate-limited later) but kept
-        so the route signature matches registration start.
+        If the email is registered, open a reset session, email an OTP, and
+        return the registered mobile (last 4 for UI, E.164 for Phone Auth).
         """
-        _ = client_ip
         email = request.email
-        phone = request.mobile_number
         user = self.user_service.find_by_field("email", email)
-        if not user or not self._user_phone_matches(user, phone):
+        user_id = str((user or {}).get("id") or "").strip()
+        if not user or not user_id:
             raise NotFoundError(
-                "No account found with this email and mobile number",
+                "No account found with this email",
                 code="ACCOUNT_NOT_FOUND",
             )
-        user_id = str(user.get("id") or "").strip()
-        if not user_id:
-            raise NotFoundError(
-                "No account found with this email and mobile number",
-                code="ACCOUNT_NOT_FOUND",
+        phone = self._profile_phone_e164(user)
+        if not phone:
+            raise BadRequestError(
+                "This account has no registered mobile number",
+                code="PHONE_NOT_ON_FILE",
             )
 
         session_id = str(uuid.uuid4())
@@ -153,7 +150,20 @@ class VerificationService:
             user_id=user_id,
         )
         self.firebase.set_document(SESSIONS, session_id, doc)
-        return session_id
+        self.send_email_otp(
+            EmailSendOtpRequest(session_id=session_id, email=email),
+            client_ip,
+        )
+        last4 = self._mobile_last4(phone)
+        return {
+            "session_id": session_id,
+            "mobile_last4": last4,
+            "mobile_number": phone,
+            "message": (
+                "Verification code sent to your email and registered mobile "
+                f"ending in {last4}"
+            ),
+        }
 
     def reset_password(self, request: ForgotPasswordResetRequest) -> dict[str, Any]:
         """Update Firebase Auth password after email and phone are verified."""
@@ -568,6 +578,21 @@ class VerificationService:
                 f"This verification session is for {role} registration, not {expected}",
                 code="ROLE_MISMATCH",
             )
+
+    @staticmethod
+    def _profile_phone_e164(user: dict[str, Any]) -> str | None:
+        stored = str(user.get("mobile_no") or "").strip()
+        if not stored:
+            return None
+        try:
+            return normalize_e164(stored)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _mobile_last4(phone_e164: str) -> str:
+        digits = "".join(ch for ch in phone_e164 if ch.isdigit())
+        return digits[-4:] if len(digits) >= 4 else digits
 
     @staticmethod
     def _user_phone_matches(user: dict[str, Any], submitted: str) -> bool:
