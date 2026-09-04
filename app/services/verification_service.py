@@ -27,6 +27,8 @@ from app.models.verification_model import (
     EmailSendOtpRequest,
     EmailVerifyOtpRequest,
     EvaluatorRegisterCompleteRequest,
+    ForgotPasswordResetRequest,
+    ForgotPasswordStartRequest,
     RegisterCompleteRequest,
     RegisterStartRequest,
     VerifyPhoneTokenRequest,
@@ -45,6 +47,8 @@ logger = logging.getLogger(__name__)
 
 SESSIONS = "verification_sessions"
 RATE_LIMITS = "otp_rate_limits"
+PURPOSE_REGISTER = "register"
+PURPOSE_PASSWORD_RESET = "password_reset"
 SESSION_TTL = timedelta(minutes=30)
 OTP_TTL = timedelta(minutes=10)
 RESEND_COOLDOWN = timedelta(seconds=60)
@@ -113,6 +117,84 @@ class VerificationService:
         )
         return session_id
 
+    def start_password_reset(
+        self, request: ForgotPasswordStartRequest, client_ip: str = ""
+    ) -> str:
+        """
+        Open a 30-minute reset session only when email + mobile match one user.
+
+        ``client_ip`` is unused here (OTP send is rate-limited later) but kept
+        so the route signature matches registration start.
+        """
+        _ = client_ip
+        email = request.email
+        phone = request.mobile_number
+        user = self.user_service.find_by_field("email", email)
+        if not user or not self._user_phone_matches(user, phone):
+            raise NotFoundError(
+                "No account found with this email and mobile number",
+                code="ACCOUNT_NOT_FOUND",
+            )
+        user_id = str(user.get("id") or "").strip()
+        if not user_id:
+            raise NotFoundError(
+                "No account found with this email and mobile number",
+                code="ACCOUNT_NOT_FOUND",
+            )
+
+        session_id = str(uuid.uuid4())
+        now = self._now()
+        doc = self._new_session_doc(
+            email,
+            phone,
+            now,
+            role=str(user.get("role") or "student"),
+            purpose=PURPOSE_PASSWORD_RESET,
+            user_id=user_id,
+        )
+        self.firebase.set_document(SESSIONS, session_id, doc)
+        return session_id
+
+    def reset_password(self, request: ForgotPasswordResetRequest) -> dict[str, Any]:
+        """Update Firebase Auth password after email and phone are verified."""
+        session = self._load_session(request.session_id)
+        self._assert_purpose(session, PURPOSE_PASSWORD_RESET)
+        session_email, session_phone = self._require_verified_identifiers(session)
+        if session_email != request.email or session_phone != request.mobile_number:
+            raise ForbiddenError(
+                "Submitted email or mobile does not match verified values",
+                code="IDENTIFIER_MISMATCH",
+            )
+
+        user_id = str(session.get("user_id") or "").strip()
+        if not user_id:
+            raise ForbiddenError(
+                "Password reset session is missing the account id",
+                code="SESSION_INVALID",
+            )
+        user = self.user_service.get_user(user_id)
+        if not user:
+            raise NotFoundError("User not found in database", code="ACCOUNT_NOT_FOUND")
+        stored_email = str(user.get("email") or "").strip().lower()
+        if stored_email != request.email or not self._user_phone_matches(
+            user, request.mobile_number
+        ):
+            raise ForbiddenError(
+                "Submitted email or mobile does not match this account",
+                code="IDENTIFIER_MISMATCH",
+            )
+
+        try:
+            self.firebase.update_user_password(user_id, request.new_password)
+        except ValueError as exc:
+            raise BadRequestError(str(exc), code="PASSWORD_UPDATE_FAILED") from exc
+
+        self.firebase.delete_document(SESSIONS, request.session_id)
+        return {
+            "email": request.email,
+            "message": "Password reset successfully. Please log in.",
+        }
+
     def _new_session_doc(
         self,
         email: str | None,
@@ -120,9 +202,13 @@ class VerificationService:
         now: datetime,
         *,
         role: str = "student",
+        purpose: str = PURPOSE_REGISTER,
+        user_id: str | None = None,
     ) -> dict[str, Any]:
         return {
+            "purpose": purpose,
             "role": role,
+            "user_id": user_id,
             "email": email or "",
             "email_code_hash": None,
             "email_code_expires_at": None,
@@ -144,6 +230,7 @@ class VerificationService:
         role: str | None = None,
     ) -> str:
         session = self._load_session(session_id)
+        self._assert_purpose(session, PURPOSE_REGISTER)
         current_role = str(session.get("role") or "student")
         if role and role != current_role:
             raise BadRequestError(
@@ -349,6 +436,7 @@ class VerificationService:
 
     def complete(self, request: RegisterCompleteRequest) -> dict[str, Any]:
         session = self._load_session(request.session_id)
+        self._assert_purpose(session, PURPOSE_REGISTER)
         self._assert_session_role(session, "student")
         session_email, session_phone = self._require_verified_identifiers(session)
         if session_email != request.email or session_phone != request.mobile_number:
@@ -408,6 +496,7 @@ class VerificationService:
 
     def complete_evaluator(self, request: EvaluatorRegisterCompleteRequest) -> dict[str, Any]:
         session = self._load_session(request.session_id)
+        self._assert_purpose(session, PURPOSE_REGISTER)
         self._assert_session_role(session, "evaluator")
         session_email, session_phone = self._require_verified_identifiers(session)
         if session_email != request.email or session_phone != request.mobile_number:
@@ -463,6 +552,15 @@ class VerificationService:
         }
 
     @staticmethod
+    def _assert_purpose(session: dict[str, Any], expected: str) -> None:
+        purpose = str(session.get("purpose") or PURPOSE_REGISTER)
+        if purpose != expected:
+            raise BadRequestError(
+                "This verification session cannot be used for this action",
+                code="PURPOSE_MISMATCH",
+            )
+
+    @staticmethod
     def _assert_session_role(session: dict[str, Any], expected: str) -> None:
         role = str(session.get("role") or "student")
         if role != expected:
@@ -470,6 +568,25 @@ class VerificationService:
                 f"This verification session is for {role} registration, not {expected}",
                 code="ROLE_MISMATCH",
             )
+
+    @staticmethod
+    def _user_phone_matches(user: dict[str, Any], submitted: str) -> bool:
+        stored = str(user.get("mobile_no") or "").strip()
+        if not stored or not submitted:
+            return False
+        candidates = {submitted}
+        try:
+            candidates.add(normalize_e164(stored))
+        except ValueError:
+            candidates.add(stored)
+        national = (
+            submitted[3:]
+            if submitted.startswith("+91") and len(submitted) == 13
+            else ""
+        )
+        if national:
+            candidates.add(national)
+        return stored in candidates or stored.replace(" ", "") in candidates
 
     def _require_verified_identifiers(self, session: dict[str, Any]) -> tuple[str, str]:
         if not session.get("email_verified") or not session.get("phone_verified"):

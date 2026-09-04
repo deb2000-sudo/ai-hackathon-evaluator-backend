@@ -53,7 +53,8 @@ curl -X POST http://localhost:8000/auth/login \
 
 - `POST /auth/logout` — clear cookie  
 - `GET /auth/me` — current profile (`role`, `approval_status`, …)  
-- `POST /auth/change-password` — change password  
+- `POST /auth/change-password` — change password (logged in; requires current password)  
+- `POST /auth/forgot-password/start` + email OTP + phone + `POST /auth/forgot-password/reset` — reset without the current password (see [Forgot password](#frontend-handoff--forgot-password-copy-to-frontend-repo))  
 - Bearer `Authorization` header still works for Swagger / API clients  
 
 Pending evaluators can call `/auth/me` but other app routes return `403` until approved.
@@ -207,6 +208,114 @@ type EvaluatorRegisterComplete = {
   mobile_number: string;
   password: string;
   confirm_password?: string;
+};
+```
+
+## Frontend handoff — forgot password (copy to frontend repo)
+
+Unauthenticated. Reuse the **same email OTP + Firebase Phone Auth** widgets as registration. The user must prove **both** email and the mobile number already stored on their account. Works for student, evaluator, and admin.
+
+Do **not** call `POST /auth/register/start` or `/register/complete` for this flow. Reset sessions have `purpose: "password_reset"` and those register endpoints return `PURPOSE_MISMATCH`.
+
+### Flow overview
+
+```mermaid
+flowchart TD
+  A[Login page — Forgot password] --> B[Collect email + mobile]
+  B --> C["POST /auth/forgot-password/start"]
+  C --> D[Email OTP — same as register]
+  D --> E[Firebase Phone Auth — same as register]
+  E --> F[New password + confirm]
+  F --> G["POST /auth/forgot-password/reset"]
+  G --> H[Redirect to login]
+```
+
+### Step 1 — Start (both identifiers required)
+
+```ts
+const { session_id } = await api.post("/auth/forgot-password/start", {
+  email: "student@example.com",
+  mobile_number: "9876543210", // 10-digit IN or E.164 (+919876543210)
+});
+```
+
+Store `session_id` (30-minute TTL). Both fields are required on this call (unlike register, which can attach email/mobile separately).
+
+| Status | `detail.code` | UI |
+|--------|----------------|-----|
+| 404 | `ACCOUNT_NOT_FOUND` | “No account found with this email and mobile number.” Do not say which field is wrong. |
+| 422 | validation | Invalid email or mobile format. |
+
+### Steps 2–3 — Same verification endpoints as register
+
+No CSRF header (user is not logged in). `credentials: "include"` is optional here.
+
+| Step | Endpoint | Body |
+|------|----------|------|
+| Send email OTP | `POST /auth/email/send-otp` | `{ session_id, email }` |
+| Verify email OTP | `POST /auth/email/verify-otp` | `{ session_id, code }` (6 digits) |
+| Verify phone | Firebase Phone Auth in the browser, then `POST /auth/verify-phone-token` | `{ session_id, firebase_id_token, mobile_number }` |
+
+Same error codes as registration: `EMAIL_MISMATCH`, `INVALID_CODE`, `EXPIRED`, `RESEND_COOLDOWN`, `RATE_LIMITED`, `TOO_MANY_ATTEMPTS`, `PHONE_MISMATCH`, `SESSION_NOT_FOUND`, `SESSION_EXPIRED`.
+
+Rate limits are shared with registration: **5 OTP emails/hour per address**, **2000/hour per IP**, 60s resend cooldown.
+
+Phone Auth: same Firebase config as register (`VITE_FIREBASE_PHONE_TEST_MODE` locally). After `verify-phone-token` the backend deletes the throwaway Phone Auth user (same as register).
+
+### Step 4 — Set the new password
+
+```ts
+await api.post("/auth/forgot-password/reset", {
+  session_id,
+  email: "student@example.com",
+  mobile_number: "9876543210",
+  new_password: "Newpass1",
+  confirm_password: "Newpass1",
+});
+// { message: "Password reset successfully. Please log in.", email }
+```
+
+Password rules (same as register): **min 8 characters, at least 1 letter and 1 number**.
+
+This does **not** set login cookies. Clear any local auth state and send the user to the login screen. Existing sessions are revoked (Firebase refresh tokens + `access_token` cookie cleared if one was present).
+
+| Status | `detail.code` | UI |
+|--------|----------------|-----|
+| 403 | `NOT_VERIFIED` | Finish email OTP and phone first. |
+| 403 | `IDENTIFIER_MISMATCH` | Email/mobile do not match the verified session. |
+| 400 | `PURPOSE_MISMATCH` | Wrong session type (e.g. used a register `session_id`). |
+| 400 | `SESSION_EXPIRED` / `SESSION_NOT_FOUND` | Restart from step 1. |
+| 422 | password validation | Show the strength message. |
+
+### Suggested UI
+
+1. Login → **Forgot password?**
+2. Form: email + mobile → Continue
+3. Email code (6 digits) → resend with cooldown
+4. Mobile OTP via Firebase (`signInWithPhoneNumber`)
+5. New password + confirm → Success → Login
+
+Do not show “current password”. Evaluators who are still `pending` can reset and then log in; they remain pending until admin approval.
+
+### Types
+
+```ts
+type ForgotPasswordStart = {
+  email: string;
+  mobile_number: string;
+};
+
+type ForgotPasswordReset = {
+  session_id: string;
+  email: string;
+  mobile_number: string;
+  new_password: string;
+  confirm_password?: string;
+};
+
+type ForgotPasswordResetResponse = {
+  message: string;
+  email: string;
 };
 ```
 
@@ -417,6 +526,8 @@ disabled by default (`ENVIRONMENT=production`); set `ENABLE_API_DOCS=true` only 
 | POST | `/auth/register/complete` | — | Create student + session cookies |
 | POST | `/auth/register/evaluator/complete` | — | Create evaluator (verified) + session cookies (`pending`) |
 | POST | `/auth/register/evaluator` | — | **Deprecated** (410) — use verified flow |
+| POST | `/auth/forgot-password/start` | — | Start reset (email + mobile must match an account) |
+| POST | `/auth/forgot-password/reset` | — | Set new password after email + phone verified |
 | POST | `/auth/login` | — | HttpOnly cookie session |
 | POST | `/auth/logout` | — | Clear cookie |
 | POST | `/auth/change-password` | user | Change password |

@@ -205,6 +205,64 @@ class EvaluatorRegisterCompleteRequest(BaseModel):
         return self
 
 
+class ForgotPasswordStartRequest(BaseModel):
+    """Start a password-reset session. Email and mobile must match one account."""
+
+    email: EmailStr
+    mobile_number: str = Field(..., min_length=8, max_length=20)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        return strip_required(value).lower()
+
+    @field_validator("mobile_number")
+    @classmethod
+    def normalize_mobile(cls, value: str) -> str:
+        return normalize_e164(value)
+
+
+class ForgotPasswordResetRequest(BaseModel):
+    """Set a new password after email OTP and phone verification succeed."""
+
+    session_id: str = Field(..., min_length=8, max_length=80)
+    email: EmailStr
+    mobile_number: str = Field(..., min_length=8, max_length=20)
+    new_password: str = Field(..., min_length=8, max_length=128)
+    confirm_password: str | None = Field(None, min_length=8, max_length=128)
+
+    @field_validator("session_id", mode="before")
+    @classmethod
+    def normalize_session(cls, value: str) -> str:
+        return strip_required(value)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        return strip_required(value).lower()
+
+    @field_validator("mobile_number")
+    @classmethod
+    def normalize_mobile(cls, value: str) -> str:
+        return normalize_e164(value)
+
+    @field_validator("new_password")
+    @classmethod
+    def password_rules(cls, value: str) -> str:
+        return validate_password_strength(value)
+
+    @model_validator(mode="after")
+    def passwords_match(self) -> "ForgotPasswordResetRequest":
+        if self.confirm_password is not None and self.new_password != self.confirm_password:
+            raise ValueError("Password and confirm password do not match")
+        return self
+
+
+class ForgotPasswordResetResponse(BaseModel):
+    message: str
+    email: str
+
+
 class VerificationOkResponse(BaseModel):
     email_verified: bool = False
     phone_verified: bool = False

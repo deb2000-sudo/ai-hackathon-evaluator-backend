@@ -260,6 +260,16 @@ Student and evaluator share the same verified-email + phone flow (`VerificationS
 
 OTP rate limits (Firestore `otp_rate_limits`): **5 sends/hour per email**, **2000/hour per IP** (campus NAT), 60s resend cooldown. Codes are hashed (SHA-256 + pepper).
 
+### Forgot password
+
+Unauthenticated. Same `verification_sessions` collection with `purpose: "password_reset"`:
+
+1. `POST /auth/forgot-password/start` — email **and** mobile must match one `users` doc (generic `ACCOUNT_NOT_FOUND` otherwise).
+2. Reuse `POST /auth/email/send-otp`, `/email/verify-otp`, `/verify-phone-token`.
+3. `POST /auth/forgot-password/reset` updates Firebase Auth password, revokes refresh tokens, deletes the session. **No login cookies** — user signs in again.
+
+Register complete endpoints reject reset sessions (`PURPOSE_MISMATCH`).
+
 ---
 
 ## 8. Data stores
@@ -269,7 +279,7 @@ OTP rate limits (Firestore `otp_rate_limits`): **5 sends/hour per email**, **200
 | Collection | Document | Purpose |
 |------------|----------|---------|
 | `users` | Firebase uid | Profile, `role`, `approval_status` |
-| `verification_sessions` | session id | Registration OTP/phone state |
+| `verification_sessions` | session id | Registration or password-reset OTP/phone state |
 | `otp_rate_limits` | `email:…` / `ip:…` | Sliding-window OTP counters |
 | `hackathons` | hackathon id | Timeline rounds, themes, export sheet ids |
 | `hackathon_drafts` | draft id | Admin wizard drafts before publish |

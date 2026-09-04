@@ -29,6 +29,9 @@ from app.models.verification_model import (
     EmailSendOtpRequest,
     EmailVerifyOtpRequest,
     EvaluatorRegisterCompleteRequest,
+    ForgotPasswordResetRequest,
+    ForgotPasswordResetResponse,
+    ForgotPasswordStartRequest,
     RegisterCompleteRequest,
     RegisterStartRequest,
     RegisterStartResponse,
@@ -200,6 +203,45 @@ async def register_evaluator_deprecated() -> None:
             ),
         },
     )
+
+
+@router.post("/forgot-password/start", response_model=RegisterStartResponse, status_code=200)
+async def forgot_password_start(
+    payload: ForgotPasswordStartRequest,
+    request: Request,
+    verification: VerificationService = Depends(get_verification_service),
+) -> RegisterStartResponse:
+    """
+    Start password reset. Email and mobile must match an existing account.
+
+    Then reuse ``POST /auth/email/send-otp``, ``/email/verify-otp``, and
+    ``/verify-phone-token`` on the returned ``session_id``.
+    """
+    session_id = await run_sync(
+        verification.start_password_reset, payload, _client_ip(request)
+    )
+    return RegisterStartResponse(session_id=session_id)
+
+
+@router.post(
+    "/forgot-password/reset",
+    response_model=ForgotPasswordResetResponse,
+    status_code=200,
+)
+async def forgot_password_reset(
+    payload: ForgotPasswordResetRequest,
+    verification: VerificationService = Depends(get_verification_service),
+) -> JSONResponse:
+    """
+    Set a new password after email OTP and Firebase Phone Auth succeed.
+
+    Does not issue session cookies — the user must log in. Existing Firebase
+    refresh tokens are revoked when the password is updated.
+    """
+    result = await run_sync(verification.reset_password, payload)
+    response = JSONResponse(content=ForgotPasswordResetResponse(**result).model_dump())
+    clear_session_cookies(response)
+    return response
 
 
 @router.post("/login", status_code=200)

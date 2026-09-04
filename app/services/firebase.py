@@ -175,6 +175,13 @@ class FirebaseService:
         """
         try:
             self._auth.update_user(user_id, password=new_password)
+            try:
+                self._auth.revoke_refresh_tokens(user_id)
+            except Exception:
+                logger.warning(
+                    "Password updated for %s but refresh-token revoke failed",
+                    user_id,
+                )
             logger.info(f"Password updated for user: {user_id}")
             return True
         except auth.UserNotFoundError:
