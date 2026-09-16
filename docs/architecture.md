@@ -128,7 +128,7 @@ Startup (`lifespan`):
 | `auth` | `/auth` | Login, cookies, CSRF, register + email OTP + phone verify |
 | `admin` | `/admin` | Users, evaluator approve/list |
 | `settings` | `/admin/settings` | App settings, profile-password change, dangerous DB reset |
-| `hackathon` | `/hackathons` | CRUD, drafts, round publish, leaderboard |
+| `hackathon` | `/hackathons` | CRUD, drafts, round publish, **catalog**, leaderboard |
 | `teams` | `/hackathons` | Round enrollment, create/join team, join codes |
 | `submissions` | `/submissions` | Upload, assign, evaluate, GitHub AI, review, Sheets export |
 | `theme` | `/themes` | Reusable problem themes |

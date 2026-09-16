@@ -524,6 +524,8 @@ disabled by default (`ENVIRONMENT=production`); set `ENABLE_API_DOCS=true` only 
 
 CRUD for hackathons (banner, themes, timeline, `hackathon_url`, linked evaluation requirements). Public list/detail for authenticated users; create/update/delete are admin.
 
+**Homepage catalog (public):** `GET /hackathons/catalog` — see [Frontend handoff — home catalog](#frontend-handoff--home-hackathon-catalog-copy-to-frontend-repo).
+
 **Per-round settings:** each object in the `timeline` JSON array supports:
 
 | Field | Type | Default | Description |
@@ -907,6 +909,93 @@ async function syncHackathonToGoogleSheet(hackathonId: string) {
 | 404 | Hackathon not found / linked sheet deleted (re-sync creates new) |
 | 403 | Not admin |
 | 500 / `SHEETS_*` | “Could not sync to Google Sheets — check API is enabled” |
+
+---
+
+## Frontend handoff — home hackathon catalog (copy to frontend repo)
+
+Use **`GET /hackathons/catalog`** for the **Home** page cards. It reads live Firestore hackathons and computes badges. Do **not** use `GET /hackathons` here (that is the authenticated full document list).
+
+**Auth:** none (public). `credentials: "include"` optional.
+
+**Near real-time:** there is no websocket. Refetch on mount, on window focus, and optionally every 30–60s.
+
+```http
+GET /hackathons/catalog
+GET /hackathons/catalog?include_closed=false
+```
+
+### Badges
+
+| Field | Values | UI |
+|-------|--------|-----|
+| `status` | `open` \| `closing_soon` \| `upcoming` \| `closed` | Primary chip |
+| `status_label` | Open / Closing soon / Upcoming / Closed | Chip text |
+| `team_mode` | `solo` \| `team` | Second chip |
+| `team_mode_label` | Solo / Team | Chip text |
+| `days_until_end` | number \| null | e.g. “Ends in 2 days” when `closing_soon` |
+
+**Closing soon** = featured published round is **open** and its `end_date` is within **3 IST calendar days** (inclusive).
+
+Only hackathons with **at least one published round** appear. Unpublished admin drafts are omitted.
+
+Sort: Closing soon → Open → Upcoming → Closed, then by end date.
+
+### Card fields
+
+```ts
+type HackathonCatalogItem = {
+  id: string;
+  name: string;
+  description: string;
+  start_date: string; // YYYY-MM-DD
+  end_date: string;
+  banner_url: string | null;
+  hackathon_url: string | null;
+  prizes: { winner: string; first_runner_up: string; second_runner_up: string } | null;
+  themes: { id: string; name: string; description: string }[];
+  status: "upcoming" | "open" | "closing_soon" | "closed";
+  status_label: string;
+  team_mode: "solo" | "team";
+  team_mode_label: "Solo" | "Team";
+  max_team_size: number;
+  days_until_end: number | null;
+  featured_round: {
+    index: number; // 0-based timeline index for participate APIs
+    title: string;
+    start_date: string | null;
+    end_date: string | null;
+    round_status: "scheduled" | "open" | "closed";
+    max_team_size: number;
+    team_mode_label: string;
+  };
+};
+```
+
+### Suggested Home UI
+
+```tsx
+const cards = await api.get("/hackathons/catalog"); // or ?include_closed=false
+
+cards.map((h) => (
+  <Card key={h.id} onClick={() => navigate(`/hackathons/${h.id}`)}>
+    <img src={h.banner_url ?? placeholder} alt="" />
+    <Badge>{h.status_label}</Badge>
+    <Badge>{h.team_mode_label}</Badge>
+    <h3>{h.name}</h3>
+    <p>{h.start_date} – {h.end_date}</p>
+    {h.status === "closing_soon" && h.days_until_end != null && (
+      <p>Ends in {h.days_until_end} day{h.days_until_end === 1 ? "" : "s"}</p>
+    )}
+  </Card>
+));
+```
+
+Click-through: `GET /hackathons/{id}` then participate with `featured_round.index`:
+
+`GET /hackathons/{id}/rounds/{featured_round.index}/participation`
+
+Empty list: “No hackathons are open yet.”
 
 ---
 

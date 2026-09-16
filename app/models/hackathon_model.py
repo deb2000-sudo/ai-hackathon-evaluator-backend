@@ -329,3 +329,48 @@ class HackathonResponse(BaseModel):
         None,
         description="Last time submission data was synced to Google Sheets.",
     )
+
+
+class HackathonCatalogRound(BaseModel):
+    """The published round used for homepage status / Solo vs Team."""
+
+    index: int
+    title: str
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    round_status: str
+    max_team_size: int
+    team_mode_label: str
+
+
+class HackathonCatalogItem(BaseModel):
+    """
+    Homepage card. Status and Solo/Team come from the featured published round
+    (computed in IST from Firestore, not stored).
+    """
+
+    id: str
+    name: str
+    description: str
+    start_date: str
+    end_date: str
+    banner_url: Optional[str] = None
+    hackathon_url: Optional[str] = None
+    prizes: Optional[HackathonPrizes] = None
+    themes: list[ThemeSummary] = Field(default_factory=list)
+    status: str = Field(
+        ...,
+        description="upcoming | open | closing_soon | closed",
+    )
+    status_label: str = Field(
+        ...,
+        description="Upcoming | Open | Closing soon | Closed",
+    )
+    team_mode: str = Field(..., description="solo | team")
+    team_mode_label: str = Field(..., description="Solo | Team")
+    max_team_size: int
+    days_until_end: Optional[int] = Field(
+        None,
+        description="IST calendar days until featured round end_date when open.",
+    )
+    featured_round: HackathonCatalogRound

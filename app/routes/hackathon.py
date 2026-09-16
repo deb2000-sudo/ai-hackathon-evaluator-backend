@@ -3,6 +3,7 @@ Hackathon routes.
 
     POST   /hackathons            -> admin creates a hackathon (multipart, banner optional)
     GET    /hackathons            -> list hackathons (any authenticated user)
+    GET    /hackathons/catalog    -> homepage cards (public; published rounds only)
     GET    /hackathons/{id}       -> get a single hackathon
     PATCH  /hackathons/{id}       -> admin updates a hackathon (multipart, banner optional)
     DELETE /hackathons/{id}       -> admin deletes a hackathon
@@ -21,6 +22,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     UploadFile,
     status,
 )
@@ -29,6 +31,7 @@ from pydantic import ValidationError
 from app.middleware.auth_middleware import get_admin_user, get_current_user
 from app.exceptions import AppError
 from app.models.hackathon_model import (
+    HackathonCatalogItem,
     HackathonCreateRequest,
     HackathonPrizes,
     HackathonResponse,
@@ -369,6 +372,25 @@ async def list_hackathons(
     """List all hackathons. Available to any authenticated user."""
     hackathons = await run_sync(service.list_hackathons)
     return [await _to_response(service, item, current_user=current_user) for item in hackathons]
+
+
+@router.get("/catalog", response_model=list[HackathonCatalogItem])
+async def list_hackathon_catalog(
+    include_closed: bool = Query(
+        True,
+        description="When false, omit hackathons whose featured round has ended.",
+    ),
+    service: HackathonService = Depends(get_hackathon_service),
+) -> list[HackathonCatalogItem]:
+    """
+    Homepage listing. Reads live Firestore hackathons and attaches computed
+    badges: Open, Closing soon, Upcoming, Closed, Solo, Team.
+
+    Public (no login). Only hackathons with at least one **published** round
+    are returned. Poll this endpoint for near-real-time home cards.
+    """
+    items = await run_sync(service.list_hackathon_catalog, include_closed=include_closed)
+    return [HackathonCatalogItem(**item) for item in items]
 
 
 @router.get("/{hackathon_id}/themes", response_model=list[ThemeResponse])

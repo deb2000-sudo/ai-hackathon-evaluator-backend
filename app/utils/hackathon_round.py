@@ -17,8 +17,16 @@ TEAM_MODE_LABELS = {
 }
 
 RoundStatus = Literal["draft", "scheduled", "open", "closed"]
+CatalogStatus = Literal["upcoming", "open", "closing_soon", "closed"]
 
 TEAM_INCOMPLETE_MESSAGE = "Please complete your team to move to demo video"
+CLOSING_SOON_DAYS = 3
+CATALOG_STATUS_LABELS = {
+    "upcoming": "Upcoming",
+    "open": "Open",
+    "closing_soon": "Closing soon",
+    "closed": "Closed",
+}
 
 
 def normalize_max_team_size(value: Any) -> int:
@@ -230,3 +238,78 @@ def enrich_timeline_round(
         data["leaderboard_published_at"] = None
         data["leaderboard_published_by"] = None
     return data
+
+
+def pick_featured_published_round(
+    timeline: list[dict[str, Any]],
+) -> tuple[int, dict[str, Any]] | None:
+    """
+    Homepage card uses one published round: first open, else first scheduled,
+    else the last closed round. Unpublished rounds are ignored.
+    """
+    published: list[tuple[int, dict[str, Any]]] = []
+    for index, round_ in enumerate(timeline or []):
+        data = dict(round_) if isinstance(round_, dict) else {}
+        if not data.get("published"):
+            continue
+        published.append((index, data))
+    if not published:
+        return None
+    open_rounds = [
+        item for item in published if item[1].get("round_status") == "open"
+    ]
+    if open_rounds:
+        return open_rounds[0]
+    scheduled = [
+        item for item in published if item[1].get("round_status") == "scheduled"
+    ]
+    if scheduled:
+        return scheduled[0]
+    return published[-1]
+
+
+def catalog_status_for_round(
+    round_: dict[str, Any],
+    *,
+    now: datetime,
+    closing_soon_days: int = CLOSING_SOON_DAYS,
+) -> CatalogStatus:
+    """Map a published round to homepage status (IST calendar days)."""
+    student_status = round_.get("round_status") or round_student_status(
+        round_, now=now
+    )
+    if student_status == "closed":
+        return "closed"
+    if student_status != "open":
+        return "upcoming"
+    today = now.date()
+    end = parse_iso_date(round_.get("end_date"))
+    if end is not None:
+        days_left = (end - today).days
+        if 0 <= days_left <= closing_soon_days:
+            return "closing_soon"
+    return "open"
+
+
+def catalog_team_mode(max_team_size: Any) -> tuple[str, str]:
+    size = normalize_max_team_size(max_team_size)
+    if size <= 1:
+        return "solo", "Solo"
+    return "team", "Team"
+
+
+_CATALOG_SORT = {
+    "closing_soon": 0,
+    "open": 1,
+    "upcoming": 2,
+    "closed": 3,
+}
+
+
+def catalog_sort_key(item: dict[str, Any]) -> tuple[int, str, str]:
+    status = str(item.get("status") or "closed")
+    return (
+        _CATALOG_SORT.get(status, 9),
+        str(item.get("end_date") or "9999-12-31"),
+        str(item.get("name") or ""),
+    )

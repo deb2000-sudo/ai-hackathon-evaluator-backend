@@ -18,11 +18,17 @@ from app.services.firebase import FirebaseService
 from app.services.theme_service import ThemeService
 from app.utils.gcs_video import build_storage_client, generate_signed_url
 from app.utils.hackathon_round import (
+    CATALOG_STATUS_LABELS,
     TEAM_MODE_LABELS,
+    catalog_sort_key,
+    catalog_status_for_round,
+    catalog_team_mode,
     enrich_timeline_round,
     hackathon_default_auto_ai,
     hackathon_default_github_ai,
     hackathon_default_video_required,
+    parse_iso_date,
+    pick_featured_published_round,
     round_is_published,
     validate_round_publishable,
 )
@@ -101,6 +107,103 @@ class HackathonService:
         hackathons = self.firebase.get_collection(self.collection)
         hackathons.sort(key=lambda h: h.get("created_at", ""), reverse=True)
         return hackathons
+
+    def list_hackathon_catalog(
+        self, *, include_closed: bool = True
+    ) -> list[dict[str, Any]]:
+        """
+        Homepage cards: hackathons with at least one published round.
+
+        Status (open / closing soon / upcoming / closed) and Solo vs Team are
+        computed in IST from the featured published round.
+        """
+        now = now_ist()
+        items: list[dict[str, Any]] = []
+        for hackathon in self.list_hackathons():
+            card = self._catalog_item_for_hackathon(hackathon, now=now)
+            if not card:
+                continue
+            if not include_closed and card["status"] == "closed":
+                continue
+            items.append(card)
+        items.sort(key=catalog_sort_key)
+        return items
+
+    def _catalog_item_for_hackathon(
+        self, hackathon: dict[str, Any], *, now
+    ) -> dict[str, Any] | None:
+        data = dict(hackathon)
+        timeline = self._enrich_timeline_rounds(data, data.get("timeline") or [])
+        featured = pick_featured_published_round(timeline)
+        if featured is None:
+            return None
+        index, round_ = featured
+        status = catalog_status_for_round(round_, now=now)
+        team_mode, team_mode_label = catalog_team_mode(round_.get("max_team_size", 1))
+        max_size = int(round_.get("max_team_size") or 1)
+        end = parse_iso_date(round_.get("end_date"))
+        days_until_end = None
+        if end is not None and status in ("open", "closing_soon"):
+            days_until_end = (end - now.date()).days
+
+        banner_url = None
+        banner_path = data.get("banner_path")
+        if banner_path:
+            try:
+                banner_url = generate_signed_url(
+                    self._get_storage_client(),
+                    banner_path,
+                )
+            except Exception:
+                logger.warning(
+                    "Catalog banner URL failed for hackathon %s", data.get("id")
+                )
+                banner_url = None
+
+        theme_ids = data.get("theme_ids") or []
+        themes = self.theme_service.get_themes_by_ids(theme_ids)
+        prizes_raw = data.get("prizes")
+        prizes = None
+        if isinstance(prizes_raw, dict) and all(
+            str(prizes_raw.get(key) or "").strip()
+            for key in ("winner", "first_runner_up", "second_runner_up")
+        ):
+            prizes = prizes_raw
+
+        return {
+            "id": data.get("id"),
+            "name": data.get("name") or "",
+            "description": data.get("description") or "",
+            "start_date": data.get("start_date") or "",
+            "end_date": data.get("end_date") or "",
+            "banner_url": banner_url,
+            "hackathon_url": data.get("hackathon_url"),
+            "prizes": prizes,
+            "themes": [
+                {
+                    "id": theme["id"],
+                    "name": theme["name"],
+                    "description": theme["description"],
+                }
+                for theme in themes
+            ],
+            "status": status,
+            "status_label": CATALOG_STATUS_LABELS[status],
+            "team_mode": team_mode,
+            "team_mode_label": team_mode_label,
+            "max_team_size": max_size,
+            "days_until_end": days_until_end,
+            "featured_round": {
+                "index": index,
+                "title": round_.get("title") or f"Round {index + 1}",
+                "start_date": round_.get("start_date"),
+                "end_date": round_.get("end_date"),
+                "round_status": round_.get("round_status"),
+                "max_team_size": max_size,
+                "team_mode_label": round_.get("team_mode_label")
+                or TEAM_MODE_LABELS.get(max_size, "Solo"),
+            },
+        }
 
     def get_hackathon(self, hackathon_id: str) -> dict[str, Any] | None:
         """Fetch a single hackathon by id."""
