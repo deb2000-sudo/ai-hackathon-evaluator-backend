@@ -70,9 +70,7 @@ class CreateMixin:
         field_answers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Create a submission; upload video when provided / required."""
-        hackathon, theme, theme_id = self._validate_hackathon_and_theme(
-            hackathon_id, theme_id
-        )
+        hackathon, theme, theme_id = self._validate_hackathon_and_theme(hackathon_id, theme_id)
         video_required = demo_video_required(hackathon, round_index)
         if video_required and video is None:
             raise ValueError(
@@ -191,9 +189,7 @@ class CreateMixin:
             filename,
         )
         if content_length is not None:
-            assert_video_size(
-                content_length, max_bytes=MAX_VIDEO_UPLOAD_BYTES, via="signed"
-            )
+            assert_video_size(content_length, max_bytes=MAX_VIDEO_UPLOAD_BYTES, via="signed")
 
         submission_id = uuid.uuid4().hex
         object_name = self._video_object_name(student.user_id, submission_id, extension)
@@ -216,11 +212,7 @@ class CreateMixin:
 
         part_bytes = self._parallel_part_bytes()
         threshold = self._parallel_threshold_bytes()
-        if (
-            content_length is not None
-            and content_length >= threshold
-            and part_bytes > 0
-        ):
+        if content_length is not None and content_length >= threshold and part_bytes > 0:
             parts = self._build_parallel_parts(
                 object_name=object_name,
                 content_type=resolved_type,
@@ -299,9 +291,7 @@ class CreateMixin:
         while offset < content_length:
             if index >= _MAX_COMPOSE_PARTS:
                 # Should be unreachable after auto-sizing; fail safely.
-                raise ValueError(
-                    "Unable to plan parallel upload within GCS compose limits"
-                )
+                raise ValueError("Unable to plan parallel upload within GCS compose limits")
             end = min(offset + effective_part_bytes, content_length)
             part_name = f"{object_name}.part{index:03d}"
             upload_url = generate_signed_upload_url(
@@ -366,9 +356,7 @@ class CreateMixin:
         field_answers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Create a submission after optional signed-URL video upload."""
-        hackathon, theme, theme_id = self._validate_hackathon_and_theme(
-            hackathon_id, theme_id
-        )
+        hackathon, theme, theme_id = self._validate_hackathon_and_theme(hackathon_id, theme_id)
         video_required = demo_video_required(hackathon, round_index)
         has_video = bool(video_path and str(video_path).strip())
 
@@ -415,13 +403,10 @@ class CreateMixin:
             blob = client.bucket(bucket_name).blob(object_name)
             if not blob.exists():
                 # Parallel path: compose ``*.part000`` … into the final object.
-                part_names = self._list_parallel_part_names(
-                    client, bucket_name, object_name
-                )
+                part_names = self._list_parallel_part_names(client, bucket_name, object_name)
                 if not part_names:
                     raise ValueError(
-                        "Video has not been uploaded yet. "
-                        "Finish the GCS PUT(s), then finalize."
+                        "Video has not been uploaded yet. " "Finish the GCS PUT(s), then finalize."
                     )
                 size = compose_object_from_parts(
                     client,
@@ -588,6 +573,7 @@ class CreateMixin:
             "hackathon_team_id": hackathon_team_id,
             "theme_id": theme_id,
             "theme_name": theme["name"],
+            "theme_description": (theme.get("description") or "").strip(),
             "problem_statement": problem_statement.strip(),
             "solution_description": solution_description.strip(),
             "mvp_link": (mvp_link or "").strip() or None,

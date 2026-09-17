@@ -382,6 +382,8 @@ sequenceDiagram
 
 Status on the submission: `uploaded` → `processing` → `completed` | `failed`. The SPA polls `GET /submissions/{id}` (and `/analysis`, `/report` when allowed).
 
+AI scorecard prompts may include `{problem_statement}`, `{solution_description}`, `{theme}` (selected theme **description**), and `{theme_name}`. Tokens are interpolated from the submission at evaluation time. `{theme}` / `{Theme}` chips come from `GET /evaluation-requirements/{id}/scoring-setup`. Submissions snapshot `theme_description` on create.
+
 Locally (`EVALUATION_JOB_MODE=auto` without queue config) the same `evaluate_submission` runs as a FastAPI `BackgroundTask`. That path **does not survive process restart**. Production uses Cloud Tasks and Cloud Run `--timeout=3600`.
 
 ### 9.5 Scoring, review, leaderboard

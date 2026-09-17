@@ -51,7 +51,7 @@ def test_shared_validate_hackathon_and_theme_rejects_unreleased_theme():
 def test_build_new_submission_document_shape_is_stable():
     host = _stub_create_mixin()
     hackathon = {"name": "Hack"}
-    theme = {"name": "AI"}
+    theme = {"name": "AI", "description": "Build with generative AI."}
     doc = host._build_new_submission_document(
         student_id="stu-1",
         hackathon_id="hack-1",
@@ -74,6 +74,7 @@ def test_build_new_submission_document_shape_is_stable():
     assert doc["video_source"] == "recorded"
     assert doc["hackathon_name"] == "Hack"
     assert doc["theme_name"] == "AI"
+    assert doc["theme_description"] == "Build with generative AI."
     assert doc["created_at"] == doc["updated_at"] == "2026-01-01T00:00:00"
 
 
@@ -90,9 +91,7 @@ def test_persist_new_submission_uses_shared_message():
     result = host._persist_new_submission("sub-1", submission)
     assert result["id"] == "sub-1"
     assert result["message"] == CREATE_SUCCESS_MESSAGE
-    host.firebase.set_document.assert_called_once_with(
-        "submissions", "sub-1", submission
-    )
+    host.firebase.set_document.assert_called_once_with("submissions", "sub-1", submission)
 
 
 def test_facade_still_exports_from_submission_service_module():

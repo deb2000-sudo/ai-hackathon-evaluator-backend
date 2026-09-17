@@ -1438,6 +1438,57 @@ On first publish, each ranked candidate (all team members when `hackathon_team_i
 | 403 | `LEADERBOARD_NOT_PUBLISHED` | Hide board / show “Results coming soon” |
 | 404 | `HACKATHON_NOT_FOUND` / `ROUND_NOT_FOUND` | Not found |
 
+## Frontend handoff — scoring prompt `{theme}` (copy to frontend repo)
+
+On **Requirements → Set scoring**, admins write per-metric **Scoring prompt** text. Insert chips come from `GET /evaluation-requirements/{id}/scoring-setup` → `scoring_prompt_placeholders`. Do **not** hardcode the chip list.
+
+At evaluation time the backend replaces tokens with **that student's** submission. `{theme}` / `{Theme}` is the **description** of the theme the student selected (not a global default). Use it on **Problem Statement** and **Solution Description** so Gemini can score theme relevance.
+
+### Chips (`scoring_prompt_placeholders`)
+
+| `token` (insert this) | Also accepted | Filled with |
+|-----------------------|---------------|-------------|
+| `{problem_statement}` | `{Problem Statement}` | Student's problem statement |
+| `{solution_description}` | `{Solution Description}` | Student's solution description |
+| `{theme}` | `{Theme}` | Selected theme **description** (falls back to theme name if description is empty) |
+| `{theme_name}` | `{Theme Name}` | Selected theme display name |
+
+`{theme_description}` / `{Theme Description}` also interpolate if typed manually (same value as `{theme}`).
+
+### UI
+
+- Render one insert button per `scoring_prompt_placeholders[]` item (`token` in the chip, `label` / `description` for tooltip).
+- Same chips for every AI metric, including Problem Statement **and** Solution Description.
+- Insert at the textarea caret. Persist the raw token in `scoring_prompt` (do not expand it in the admin UI).
+- Example Problem Statement prompt:
+
+```
+Score the problem statement from 0-15 for clarity, relevance to the theme, and evidence of real user need.
+
+Theme:
+{theme}
+```
+
+- Example Solution Description prompt:
+
+```
+Score the solution from 0-15 for how well it addresses the problem and the selected theme.
+
+Theme: {theme_name}
+{theme}
+
+Problem:
+{problem_statement}
+```
+
+### Behaviour (backend — no extra frontend call)
+
+1. Student picks a theme on submit. The submission stores `theme_id`, `theme_name`, and `theme_description`.
+2. Gemini scoring interpolates `{theme}` from that snapshot (or the live theme if an older submission has no description).
+3. If the PS/SD prompt has **no** `{theme}` token, the backend still prepends a `SELECTED THEME` block so “relevance to the theme” rubrics work. Inserting `{theme}` is still the recommended explicit prompt.
+
+`GET /submissions/{id}` includes `theme_description` for display if needed. Students do **not** send theme text inside the scoring prompt.
+
 ### Themes — `/themes`
 
 CRUD for reusable themes (admin write; list/read for app).
@@ -1448,7 +1499,7 @@ Reusable requirement field definitions used by hackathons / student forms.
 
 ### AI metric scoring — `/ai-evaluation-metric-scoring`
 
-Per-field scoring prompts (`max_score`, natural-language scoring instructions) for Gemini.
+Per-field scoring prompts (`max_score`, natural-language scoring instructions) for Gemini. Scoring-prompt insert chips including `{theme}`: [Frontend handoff — scoring prompt `{theme}`](#frontend-handoff--scoring-prompt-theme-copy-to-frontend-repo).
 
 ### Submissions — `/submissions`
 

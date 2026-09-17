@@ -83,9 +83,7 @@ class QueryMixin:
         )
         if evaluator_id:
             submissions = [
-                item
-                for item in submissions
-                if item.get("assigned_evaluator_id") == evaluator_id
+                item for item in submissions if item.get("assigned_evaluator_id") == evaluator_id
             ]
         submissions.sort(key=lambda item: item.get("created_at", ""), reverse=True)
         return submissions
@@ -122,9 +120,7 @@ class QueryMixin:
 
         summaries: list[dict[str, Any]] = []
         for hackathon in hackathons:
-            enriched = self.hackathon_service.enrich_hackathon_for_submission_summary(
-                hackathon
-            )
+            enriched = self.hackathon_service.enrich_hackathon_for_submission_summary(hackathon)
             count = counts.get(enriched["id"], 0)
             if evaluator_id and count == 0:
                 continue
@@ -136,15 +132,11 @@ class QueryMixin:
                     "end_date": enriched["end_date"],
                     "submission_count": count,
                     "banner_url": enriched.get("banner_url"),
-                    "auto_ai_evaluation": bool(
-                        enriched.get("auto_ai_evaluation", False)
-                    ),
+                    "auto_ai_evaluation": bool(enriched.get("auto_ai_evaluation", False)),
                 }
             )
             if not evaluator_id:
-                summaries[-1]["export_spreadsheet_url"] = enriched.get(
-                    "export_spreadsheet_url"
-                )
+                summaries[-1]["export_spreadsheet_url"] = enriched.get("export_spreadsheet_url")
                 summaries[-1]["export_spreadsheet_synced_at"] = enriched.get(
                     "export_spreadsheet_synced_at"
                 )
@@ -186,9 +178,7 @@ class QueryMixin:
         uid = (student_id or "").strip()
         if not uid:
             return []
-        enrollments = self.firebase.query_collection(
-            ENROLLMENTS, "user_id", "==", uid
-        )
+        enrollments = self.firebase.query_collection(ENROLLMENTS, "user_id", "==", uid)
         team_ids: list[str] = []
         seen: set[str] = set()
         for doc in enrollments or []:
@@ -201,9 +191,7 @@ class QueryMixin:
             team_ids.append(team_id)
         return team_ids
 
-    def _student_on_submission_team(
-        self, submission: dict[str, Any], student_id: str
-    ) -> bool:
+    def _student_on_submission_team(self, submission: dict[str, Any], student_id: str) -> bool:
         """True when the submission belongs to a team this student enrolled in."""
         team_id = str(submission.get("hackathon_team_id") or "").strip()
         if not team_id:
@@ -288,14 +276,25 @@ class QueryMixin:
         enriched.setdefault("working_demo_video_required", True)
 
         # Migrate legacy theme_chosen → theme_name for older submissions.
+        # Fill theme_description from the live theme when the snapshot is missing.
         if not enriched.get("theme_id"):
             enriched["theme_id"] = ""
+        theme = None
+        need_theme_lookup = (
+            not enriched.get("theme_name") or not (enriched.get("theme_description") or "").strip()
+        )
+        if need_theme_lookup and enriched["theme_id"]:
+            looked_up = self.theme_service.get_theme(enriched["theme_id"])
+            if isinstance(looked_up, dict):
+                theme = looked_up
         if not enriched.get("theme_name"):
             enriched["theme_name"] = enriched.get("theme_chosen") or "Unknown theme"
-            if enriched["theme_id"]:
-                theme = self.theme_service.get_theme(enriched["theme_id"])
-                if theme:
-                    enriched["theme_name"] = theme.get("name", "Unknown theme")
+            if theme:
+                enriched["theme_name"] = theme.get("name", "Unknown theme")
+        if not (enriched.get("theme_description") or "").strip():
+            enriched["theme_description"] = (
+                (theme.get("description") or "").strip() if theme else ""
+            )
 
         if not enriched.get("team_name"):
             enriched["team_name"] = enriched.get("title")
@@ -315,9 +314,7 @@ class QueryMixin:
         else:
             enriched["video_url"] = None
 
-        is_staff = bool(
-            current_user and current_user.role in ("admin", "evaluator")
-        )
+        is_staff = bool(current_user and current_user.role in ("admin", "evaluator"))
         can_see_analysis = is_staff or self.student_can_view_report(enriched)
 
         analysis_id = enriched.get("analysis_id")
@@ -325,23 +322,20 @@ class QueryMixin:
             if analysis_by_id is not None:
                 analysis_doc = analysis_by_id.get(analysis_id)
             else:
-                analysis_doc = self.firebase.get_document(
-                    self.analysis_collection, analysis_id
-                )
+                analysis_doc = self.firebase.get_document(self.analysis_collection, analysis_id)
             if analysis_doc and analysis_doc.get("status") == "completed":
                 enriched["analysis"] = {
                     "id": analysis_id,
                     "checklist": analysis_doc["checklist"],
                     "report": analysis_doc["report"],
                     "field_scores": analysis_doc.get("field_scores"),
-                    "scorecard": analysis_doc.get("scorecard")
-                    or enriched.get("scorecard"),
+                    "scorecard": analysis_doc.get("scorecard") or enriched.get("scorecard"),
                     "analyzed_at": analysis_doc["analyzed_at"],
                 }
                 if analysis_doc.get("scorecard") and not enriched.get("scorecard"):
                     enriched["scorecard"] = analysis_doc["scorecard"]
-        elif can_see_analysis and enriched.get("analysis") and isinstance(
-            enriched["analysis"], dict
+        elif (
+            can_see_analysis and enriched.get("analysis") and isinstance(enriched["analysis"], dict)
         ):
             legacy = enriched["analysis"]
             if "id" not in legacy:
@@ -395,9 +389,7 @@ class QueryMixin:
         """Attach competition rank for a single submission detail view."""
         from app.services.leaderboard_service import LeaderboardService
 
-        is_staff = bool(
-            current_user and current_user.role in ("admin", "evaluator")
-        )
+        is_staff = bool(current_user and current_user.role in ("admin", "evaluator"))
         rank_info = LeaderboardService(
             firebase=self.firebase,
             hackathon_service=self.hackathon_service,
@@ -421,9 +413,7 @@ class QueryMixin:
         if not submissions:
             return []
 
-        is_staff = bool(
-            current_user and current_user.role in ("admin", "evaluator")
-        )
+        is_staff = bool(current_user and current_user.role in ("admin", "evaluator"))
         analysis_ids: list[str] = []
         for submission in submissions:
             analysis_id = submission.get("analysis_id")
@@ -432,16 +422,10 @@ class QueryMixin:
             if is_staff or self.student_can_view_report(submission):
                 analysis_ids.append(analysis_id)
 
-        analysis_by_id = self.firebase.get_documents(
-            self.analysis_collection, analysis_ids
-        )
+        analysis_by_id = self.firebase.get_documents(self.analysis_collection, analysis_ids)
         storage_client = self._storage_client()
 
-        hackathon_ids = {
-            sid
-            for sid in (s.get("hackathon_id") for s in submissions)
-            if sid
-        }
+        hackathon_ids = {sid for sid in (s.get("hackathon_id") for s in submissions) if sid}
         hackathon_by_id: dict[str, dict[str, Any]] = {}
         for hid in hackathon_ids:
             hackathon = self.hackathon_service.get_hackathon(hid)
@@ -477,4 +461,3 @@ class QueryMixin:
 
         content_type = submission.get("content_type", "video/mp4")
         return build_video_streaming_response(blob, content_type, range_header)
-

@@ -60,6 +60,7 @@ class HackathonSubmissionSummary(BaseModel):
         description="Last Google Sheets export sync time (admin UI only).",
     )
 
+
 class AcceptedVideoTypesResponse(BaseModel):
     """Constraints for Record demo vs Upload from disk pickers."""
 
@@ -108,6 +109,10 @@ class SubmissionResponse(BaseModel):
     team_name: str
     theme_id: str
     theme_name: str
+    theme_description: str = Field(
+        "",
+        description="Snapshot of the selected theme's description at submit time.",
+    )
     problem_statement: str
     solution_description: str
     mvp_link: Optional[str] = Field(
@@ -394,21 +399,11 @@ class SubmitForReviewRequest(BaseModel):
     def require_score_or_manual(self) -> "SubmitForReviewRequest":
         if self.override_ai_scores:
             if not self.ai_overrides:
-                raise ValueError(
-                    "ai_overrides is required when override_ai_scores is true"
-                )
+                raise ValueError("ai_overrides is required when override_ai_scores is true")
         elif self.ai_overrides:
-            raise ValueError(
-                "ai_overrides must be omitted when override_ai_scores is false"
-            )
-        if (
-            self.final_score is None
-            and not self.manual_metrics
-            and not self.override_ai_scores
-        ):
-            raise ValueError(
-                "Provide manual_metrics (preferred) and/or final_score"
-            )
+            raise ValueError("ai_overrides must be omitted when override_ai_scores is false")
+        if self.final_score is None and not self.manual_metrics and not self.override_ai_scores:
+            raise ValueError("Provide manual_metrics (preferred) and/or final_score")
         return self
 
 
@@ -645,4 +640,3 @@ class CreateSubmissionFromUploadRequest(BaseModel):
     @classmethod
     def normalize_optional_text(cls, value: Optional[str]) -> Optional[str]:
         return strip_optional(value)
-

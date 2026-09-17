@@ -149,7 +149,9 @@ class FieldScoringMetric(BaseModel):
             "the admin AI Prompts ``analyze_video`` template instead. "
             "May include submission placeholders filled at evaluation time: "
             "``{problem_statement}`` / ``{Problem Statement}``, "
-            "``{solution_description}`` / ``{Solution Description}``."
+            "``{solution_description}`` / ``{Solution Description}``, "
+            "``{theme}`` / ``{Theme}`` (selected theme description), "
+            "``{theme_name}`` / ``{Theme Name}``."
         ),
     )
     max_score: float = Field(10, gt=0, le=100)
@@ -185,18 +187,14 @@ class FieldScoringMetric(BaseModel):
             key = (self.field_key or "").strip().lower()
             # Video report + scoring instructions live under AI Prompts → analyze_video.
             if key not in SYNTHETIC_METRIC_KEYS and not (self.scoring_prompt or "").strip():
-                raise ValueError(
-                    f"scoring_prompt is required for AI metric '{self.field_key}'"
-                )
+                raise ValueError(f"scoring_prompt is required for AI metric '{self.field_key}'")
         if self.field_key.strip().lower() in SYNTHETIC_METRIC_KEYS:
             # Ignore accidental UI leftover; video prompt is not stored here.
             self.scoring_prompt = None
         if self.segments:
             keys = [s.key for s in self.segments]
             if len(keys) != len(set(keys)):
-                raise ValueError(
-                    f"Duplicate segment keys under metric '{self.field_key}'"
-                )
+                raise ValueError(f"Duplicate segment keys under metric '{self.field_key}'")
         if not self.color:
             self.color = DEFAULT_METRIC_COLORS.get(self.field_key)
         return self
@@ -312,7 +310,8 @@ class ScoringSetupResponse(BaseModel):
         default_factory=list,
         description=(
             "Tokens admins can insert into AI scoring prompts "
-            "(e.g. {Problem Statement} for solution_description rubrics)."
+            "(e.g. {theme} for theme relevance on problem_statement / "
+            "solution_description, {Problem Statement} for solution rubrics)."
         ),
     )
 
