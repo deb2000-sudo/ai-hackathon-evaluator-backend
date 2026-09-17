@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.models.user_model import CurrentUser
+from app.services.team_service import ENROLLMENTS
 from app.utils.gcs_video import (
     build_video_streaming_response,
     generate_signed_video_url,
@@ -26,9 +27,10 @@ class QueryMixin:
         current_user: CurrentUser,
     ) -> dict[str, Any] | None:
         """
-        Fetch a submission for the owner, assigned evaluator, or an admin.
+        Fetch a submission for the owner, a teammate, assigned evaluator, or admin.
 
-        Evaluators may only access submissions assigned to them.
+        Evaluators may only access submissions assigned to them. Students may
+        read their own docs and team submissions they are enrolled in.
         """
         submission = self.firebase.get_document(self.collection, submission_id)
         if not submission:
@@ -38,6 +40,11 @@ class QueryMixin:
             return {"id": submission_id, **submission}
 
         if submission.get("student_id") == current_user.user_id:
+            return {"id": submission_id, **submission}
+
+        if current_user.role == "student" and self._student_on_submission_team(
+            submission, current_user.user_id
+        ):
             return {"id": submission_id, **submission}
 
         if current_user.role == "evaluator":
@@ -144,14 +151,64 @@ class QueryMixin:
         return summaries
 
     def list_student_submissions(self, student_id: str) -> list[dict[str, Any]]:
-        """List all submissions for a student."""
-        submissions = self.firebase.query_collection(
+        """
+        List submissions this student may see: own docs (solo / leader) plus
+        team submissions for every enrollment they belong to.
+        """
+        by_id: dict[str, dict[str, Any]] = {}
+        for doc in self.firebase.query_collection(
             self.collection,
             "student_id",
             "==",
             student_id,
-        )
+        ):
+            sid = str(doc.get("id") or "").strip()
+            if sid:
+                by_id[sid] = doc
+
+        for team_id in self._team_ids_for_student(student_id):
+            for doc in self.firebase.query_collection(
+                self.collection,
+                "hackathon_team_id",
+                "==",
+                team_id,
+            ):
+                sid = str(doc.get("id") or "").strip()
+                if sid:
+                    by_id[sid] = doc
+
+        submissions = list(by_id.values())
+        submissions.sort(key=lambda item: item.get("created_at", ""), reverse=True)
         return submissions
+
+    def _team_ids_for_student(self, student_id: str) -> list[str]:
+        """Team ids from ``hackathon_enrollments`` for this user (all rounds)."""
+        uid = (student_id or "").strip()
+        if not uid:
+            return []
+        enrollments = self.firebase.query_collection(
+            ENROLLMENTS, "user_id", "==", uid
+        )
+        team_ids: list[str] = []
+        seen: set[str] = set()
+        for doc in enrollments or []:
+            if not isinstance(doc, dict):
+                continue
+            team_id = str(doc.get("team_id") or "").strip()
+            if not team_id or team_id in seen:
+                continue
+            seen.add(team_id)
+            team_ids.append(team_id)
+        return team_ids
+
+    def _student_on_submission_team(
+        self, submission: dict[str, Any], student_id: str
+    ) -> bool:
+        """True when the submission belongs to a team this student enrolled in."""
+        team_id = str(submission.get("hackathon_team_id") or "").strip()
+        if not team_id:
+            return False
+        return team_id in set(self._team_ids_for_student(student_id))
 
     def list_all_submissions(self) -> list[dict[str, Any]]:
         """List every submission (admin review queue). Newest first."""

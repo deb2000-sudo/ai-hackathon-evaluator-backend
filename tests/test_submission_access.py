@@ -16,6 +16,7 @@ def service() -> SubmissionService:
         svc.collection = "submissions"
         svc.analysis_collection = "analysis"
         svc.firebase = MagicMock()
+        svc.firebase.query_collection.return_value = []
         svc.user_service = MagicMock()
         svc.hackathon_service = MagicMock()
         svc.theme_service = MagicMock()
@@ -58,6 +59,91 @@ def test_evaluator_can_read_assigned_only(
     other = make_submission_doc(assigned_evaluator_id="someone-else")
     service.firebase.get_document.return_value = {k: v for k, v in other.items() if k != "id"}
     assert service.get_submission("sub-1", evaluator_user) is None
+
+
+def test_team_member_can_read_team_submission(
+    service: SubmissionService, student_user: CurrentUser
+):
+    doc = make_submission_doc(student_id="leader-1", hackathon_team_id="team-1")
+    service.firebase.get_document.return_value = {k: v for k, v in doc.items() if k != "id"}
+    service.firebase.query_collection.return_value = [
+        {"id": "enroll-1", "user_id": student_user.user_id, "team_id": "team-1"}
+    ]
+    result = service.get_submission("sub-1", student_user)
+    assert result is not None
+    assert result["id"] == "sub-1"
+
+
+def test_student_cannot_read_unrelated_team_or_null_team_id(
+    service: SubmissionService, student_user: CurrentUser
+):
+    other_team = make_submission_doc(student_id="leader-1", hackathon_team_id="team-other")
+    service.firebase.get_document.return_value = {
+        k: v for k, v in other_team.items() if k != "id"
+    }
+    service.firebase.query_collection.return_value = [
+        {"id": "enroll-1", "user_id": student_user.user_id, "team_id": "team-1"}
+    ]
+    assert service.get_submission("sub-1", student_user) is None
+
+    solo = make_submission_doc(student_id="other-student", hackathon_team_id=None)
+    service.firebase.get_document.return_value = {k: v for k, v in solo.items() if k != "id"}
+    service.firebase.query_collection.return_value = []
+    assert service.get_submission("sub-1", student_user) is None
+
+
+def _query_side_effect(collection, field, operator, value):
+    if collection == "submissions" and field == "student_id" and value == "member-1":
+        return []
+    if collection == "hackathon_enrollments" and field == "user_id" and value == "member-1":
+        return [
+            {"id": "enroll-1", "user_id": "member-1", "team_id": "team-1"},
+            {"id": "enroll-solo", "user_id": "member-1", "team_id": None},
+        ]
+    if collection == "submissions" and field == "hackathon_team_id" and value == "team-1":
+        return [
+            make_submission_doc(
+                submission_id="team-sub",
+                student_id="leader-1",
+                hackathon_team_id="team-1",
+            )
+        ]
+    return []
+
+
+def test_list_student_submissions_includes_team_docs_and_skips_null_team(
+    service: SubmissionService,
+):
+    service.firebase.query_collection.side_effect = _query_side_effect
+    results = service.list_student_submissions("member-1")
+    ids = [item["id"] for item in results]
+    assert ids == ["team-sub"]
+
+
+def test_list_student_submissions_unions_own_and_team_and_dedupes(
+    service: SubmissionService,
+):
+    own = make_submission_doc(
+        submission_id="own-sub",
+        student_id="leader-1",
+        hackathon_team_id="team-1",
+    )
+    own["created_at"] = "2026-09-02T00:00:00+05:30"
+    team_copy = dict(own)
+    team_copy["created_at"] = "2026-09-02T00:00:00+05:30"
+
+    def side_effect(collection, field, operator, value):
+        if collection == "submissions" and field == "student_id" and value == "leader-1":
+            return [own]
+        if collection == "hackathon_enrollments" and field == "user_id":
+            return [{"id": "e1", "user_id": "leader-1", "team_id": "team-1"}]
+        if collection == "submissions" and field == "hackathon_team_id" and value == "team-1":
+            return [team_copy]
+        return []
+
+    service.firebase.query_collection.side_effect = side_effect
+    results = service.list_student_submissions("leader-1")
+    assert [item["id"] for item in results] == ["own-sub"]
 
 
 def test_assert_can_evaluate_allows_assignee_and_admin(

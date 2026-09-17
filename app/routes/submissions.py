@@ -368,7 +368,7 @@ async def list_my_submissions(
     student: CurrentUser = Depends(get_student_user),
     service: SubmissionService = Depends(get_submission_service),
 ) -> list[SubmissionResponse]:
-    """List all submissions for the authenticated student."""
+    """List submissions the authenticated student owns or shares as a teammate."""
     submissions = await run_sync(service.list_student_submissions, student.user_id)
     return await _to_submission_responses(service, submissions, current_user=student)
 
