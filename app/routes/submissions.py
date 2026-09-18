@@ -17,6 +17,7 @@ Student submission routes.
            -> evaluator: assigned submissions for one hackathon
     GET    /submissions/assigned-to-me  -> evaluator: flat list of assigned submissions
     GET    /submissions/{id}            -> get submission (report hidden until published)
+    GET    /submissions/{id}/team       -> team roster (name, email, user_id, leader)
     GET    /submissions/{id}/video      -> stream/download the submission video
     GET    /submissions/{id}/analysis   -> analysis (students only if published)
     GET    /submissions/{id}/report     -> report (students only if published)
@@ -66,6 +67,7 @@ from app.models.submission_model import (
     PublishReportRequest,
     RequestChangesRequest,
     SubmissionResponse,
+    SubmissionTeamResponse,
     SubmitForReviewRequest,
 )
 from app.models.user_model import CurrentUser
@@ -165,20 +167,23 @@ async def create_submission(
     ),
     problem_statement: str = Form(..., min_length=1, max_length=5000),
     solution_description: str = Form(..., min_length=1, max_length=5000),
-    video: UploadFile | None = File(
+    video: UploadFile
+    | None = File(
         None,
         description=(
             "Recorded demo or local video file. Required when the hackathon has "
             "working_demo_video_required=true."
         ),
     ),
-    video_source: str | None = Form(
+    video_source: str
+    | None = Form(
         None,
         description="'recorded' (MediaRecorder) or 'uploaded' (local file).",
     ),
     mvp_link: str | None = Form(None, max_length=2000),
     github_link: str | None = Form(None, max_length=2000),
-    field_answers: str | None = Form(
+    field_answers: str
+    | None = Form(
         None,
         description='Optional JSON object of extra field answers, e.g. {"mvp_link":"https://..."}',
     ),
@@ -219,9 +224,7 @@ async def create_submission(
     try:
         if video is not None and (video.filename or video.content_type):
             try:
-                assert_multipart_request_content_length(
-                    request.headers.get("content-length")
-                )
+                assert_multipart_request_content_length(request.headers.get("content-length"))
                 spool = await spool_upload_file(video, max_bytes=MAX_MULTIPART_VIDEO_BYTES)
             except ValueError as e:
                 raise _http_from_value_error(e) from e
@@ -510,9 +513,7 @@ async def divide_submissions_equally(
         assigned_count=len(assigned),
         evaluator_count=evaluator_count,
         auto_ai_evaluation_queued=queued,
-        submissions=await _to_submission_responses(
-            service, refreshed, current_user=admin
-        ),
+        submissions=await _to_submission_responses(service, refreshed, current_user=admin),
     )
 
 
@@ -705,6 +706,28 @@ async def get_submission(
         )
 
     return await _to_submission_response(service, submission, current_user=current_user)
+
+
+@router.get("/{submission_id}/team", response_model=SubmissionTeamResponse)
+async def get_submission_team(
+    submission_id: str,
+    current_user: CurrentUser = Depends(get_active_user),
+    service: SubmissionService = Depends(get_submission_service),
+) -> SubmissionTeamResponse:
+    """
+    Team roster for a submission (admin table click-through).
+
+    Same access as ``GET /submissions/{id}``: admin, assigned evaluator,
+    submitter, or enrolled teammate. Solo submissions return one member
+    with ``is_solo=true`` instead of 404.
+    """
+    roster = await run_sync(service.get_submission_team, submission_id, current_user)
+    if not roster:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Submission not found",
+        )
+    return SubmissionTeamResponse(**roster)
 
 
 @router.post("/{submission_id}/evaluate", response_model=SubmissionResponse, status_code=202)
@@ -901,14 +924,10 @@ async def submit_evaluation_for_review(
     """
     try:
         manual = (
-            [m.model_dump() for m in request.manual_metrics]
-            if request.manual_metrics
-            else None
+            [m.model_dump() for m in request.manual_metrics] if request.manual_metrics else None
         )
         ai_overrides = (
-            [m.model_dump() for m in request.ai_overrides]
-            if request.ai_overrides
-            else None
+            [m.model_dump() for m in request.ai_overrides] if request.ai_overrides else None
         )
         submission = await run_sync(
             service.submit_for_review,

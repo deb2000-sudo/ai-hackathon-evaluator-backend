@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.models.user_model import CurrentUser
-from app.services.team_service import ENROLLMENTS
+from app.services.team_service import ENROLLMENTS, TEAMS
 from app.utils.gcs_video import (
     build_video_streaming_response,
     generate_signed_video_url,
@@ -53,6 +53,84 @@ class QueryMixin:
             return None
 
         return None
+
+    def get_submission_team(
+        self,
+        submission_id: str,
+        current_user: CurrentUser,
+    ) -> dict[str, Any] | None:
+        """
+        Roster for the team behind a submission.
+
+        Access matches ``get_submission`` (admin, assignee, owner, teammate).
+        Solo submissions (no ``hackathon_team_id``) return the submitter as the
+        only member with ``is_solo=true`` rather than 404.
+        """
+        submission = self.get_submission(submission_id, current_user)
+        if not submission:
+            return None
+
+        team_id = str(submission.get("hackathon_team_id") or "").strip() or None
+        team_name = str(submission.get("team_name") or "").strip()
+        if team_id:
+            team_doc = self.firebase.get_document(TEAMS, team_id)
+            if team_doc:
+                members = self._project_submission_team_members(team_doc.get("members"))
+                if members:
+                    return {
+                        "team_id": team_id,
+                        "team_name": str(team_doc.get("team_name") or team_name or "Team"),
+                        "is_solo": False,
+                        "members": members,
+                    }
+
+        student_id = str(submission.get("student_id") or "").strip()
+        return {
+            "team_id": team_id,
+            "team_name": team_name,
+            "is_solo": team_id is None,
+            "members": [self._solo_member_from_student(student_id, team_name)],
+        }
+
+    @staticmethod
+    def _project_submission_team_members(raw: Any) -> list[dict[str, str]]:
+        if isinstance(raw, dict):
+            rows = [raw]
+        elif isinstance(raw, list):
+            rows = raw
+        else:
+            rows = []
+        members: list[dict[str, str]] = []
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            user_id = str(item.get("user_id") or "").strip()
+            if not user_id:
+                continue
+            role = str(item.get("role") or "member").strip().lower()
+            if role not in ("leader", "member"):
+                role = "member"
+            members.append(
+                {
+                    "user_id": user_id,
+                    "name": str(item.get("name") or "").strip() or user_id,
+                    "email": str(item.get("email") or "").strip(),
+                    "role": role,
+                }
+            )
+        return members
+
+    def _solo_member_from_student(self, student_id: str, fallback_name: str = "") -> dict[str, str]:
+        profile = self.user_service.get_user(student_id) if student_id else None
+        profile = profile if isinstance(profile, dict) else {}
+        name = str(profile.get("name") or "").strip() or fallback_name or student_id
+        email = str(profile.get("email") or "").strip()
+        return {
+            "user_id": student_id,
+            "name": name,
+            "email": email,
+            "role": "leader",
+        }
 
     def assert_can_evaluate(
         self,

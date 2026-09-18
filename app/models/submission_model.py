@@ -287,6 +287,24 @@ class SubmissionResponse(BaseModel):
     updated_at: ISTDateTime
 
 
+class SubmissionTeamMember(BaseModel):
+    """One roster row for the submission team dialog."""
+
+    user_id: str
+    name: str
+    email: str = ""
+    role: Literal["leader", "member"] = "member"
+
+
+class SubmissionTeamResponse(BaseModel):
+    """Team roster behind a submission (admin table click-through)."""
+
+    team_id: Optional[str] = None
+    team_name: str = ""
+    is_solo: bool = False
+    members: list[SubmissionTeamMember] = Field(default_factory=list)
+
+
 class EvaluateSubmissionRequest(BaseModel):
     """Optional body when starting AI analysis on a submission."""
 
@@ -308,7 +326,10 @@ class ManualSegmentInput(BaseModel):
     key: str = Field(..., min_length=1, max_length=100)
     value: Optional[Any] = Field(
         None,
-        description="For boolean/enum segments (true/false, 'public'/'private').",
+        description=(
+            "Boolean true/false, or enum option value "
+            "(e.g. 'public', 'full', 'partial', 'none')."
+        ),
     )
     score: Optional[float] = Field(
         None,
