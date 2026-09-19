@@ -401,8 +401,8 @@ When the round has `github_ai_evaluation` and the submission has a GitHub URL:
 
 1. Evaluator `POST /submissions/{id}/evaluate-github-ai` → `202`
 2. Gemini builds `{ provided_context, rubrics[] }` from problem/solution
-3. Backend `POST`s the analyser `/analyze/sync` (wait ~120s, timeout ~130s)
-4. Result is mapped onto the GitHub scorecard metric (`github_ai_status`)
+3. Backend `POST`s the analyser `/analyze`, then polls `GET /analyze/{job_id}` (wait up to 120s per poll)
+4. `result.scoring.total_score` is stored on the GitHub scorecard metric (`github_ai_status`)
 
 The SPA never calls the analyser. Manual GitHub scoring still works if the flag is off.
 

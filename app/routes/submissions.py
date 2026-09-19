@@ -846,8 +846,8 @@ async def evaluate_github_ai(
     Run AI GitHub repository analysis for one submission.
 
     Generates evaluation context with Gemini from the student's problem and
-    solution, then POSTs ``github_url`` + ``context`` to ``GITHUB_AI_EVALUATION_URL``.
-    Updates the GitHub scorecard metric; manual GitHub evaluation remains available.
+    solution, then queues ``POST /analyze`` and polls ``GET /analyze/{job_id}``.
+    Stores ``result.scoring.total_score`` on the GitHub scorecard metric.
     """
     if current_user.role not in ("admin", "evaluator"):
         raise HTTPException(
