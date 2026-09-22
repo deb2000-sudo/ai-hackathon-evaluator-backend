@@ -320,7 +320,7 @@ Stored on `TimelineRound`:
 | Field | Meaning |
 |-------|---------|
 | `published` | Students can see and enroll |
-| `max_team_size` | 1 = solo, 2–4 = team |
+| `max_team_size` | 1 = solo, 2–5 = team |
 | `working_demo_video_required` | Video required vs form-only |
 | `auto_ai_evaluation` | Queue Gemini on evaluator assign |
 | `github_ai_evaluation` | Show GitHub AI button for evaluators |
@@ -342,7 +342,7 @@ Admin draft  →  POST /hackathons
              →  admin assigns evaluator(s)
              →  optional auto Gemini + optional GitHub AI
              →  evaluator submit-for-review
-             →  admin approve (report_published + final_score)
+             →  admin approve (optional publish now / auto-publish)
              →  admin publish leaderboard (ranks + email)
 ```
 
@@ -396,11 +396,12 @@ Locally (`EVALUATION_JOB_MODE=auto` without queue config) the same `evaluate_sub
 ### 9.5 Scoring, review, leaderboard
 
 1. Evaluator fills the scorecard → `review_status=pending_review` and `final_score`.
-2. Admin `approve-evaluation` → `approved` + `report_published` (student can see report/score).
-3. Admin may `request-changes` back to the evaluator.
-4. Leaderboard ranks **approved** submissions by `final_score` using competition ranking (100, 90, 90, 80 → 1st, 2nd, 2nd, 4th).
-5. Students get `403 LEADERBOARD_NOT_PUBLISHED` until `POST …/leaderboard/publish`. Admins and evaluators can preview earlier.
-6. First publish emails ranked candidates (Brevo) unless `notify: false`.
+2. Admin `approve-evaluation` → `approved`. The report stays hidden unless `publish_now` is true or the hackathon `auto_publish_reports` setting is on. `POST /submissions/{id}/publish` releases one approved report later.
+3. `PUT /hackathons/{id}/report-publishing` with `auto_publish_reports: true` publishes every already-approved hidden report in the same request (Firestore batches, no Cloud Tasks) and auto-publishes later approvals.
+4. Admin may `request-changes` back to the evaluator.
+5. Leaderboard ranks **approved** submissions by `final_score` using competition ranking (100, 90, 90, 80 → 1st, 2nd, 2nd, 4th).
+6. Students get `403 LEADERBOARD_NOT_PUBLISHED` until `POST …/leaderboard/publish`. Admins and evaluators can preview earlier.
+7. First publish emails ranked candidates (Brevo) unless `notify: false`.
 
 ### 9.6 GitHub AI (optional)
 

@@ -1,5 +1,5 @@
 """
-Per-round team enrollment (solo or 2–4 member teams with join codes).
+Per-round team enrollment (solo or 2–5 member teams with join codes).
 
 Collections:
 - ``hackathon_teams`` — team roster for a hackathon round

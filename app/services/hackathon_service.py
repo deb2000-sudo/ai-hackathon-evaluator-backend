@@ -33,6 +33,7 @@ from app.utils.hackathon_round import (
     hackathon_default_auto_ai,
     hackathon_default_github_ai,
     hackathon_default_video_required,
+    normalize_max_team_size,
     parse_iso_date,
     pick_featured_published_round,
     round_is_published,
@@ -350,6 +351,7 @@ class HackathonService:
             "github_ai_evaluation",
             hackathon_default_github_ai(enriched),
         )
+        enriched.setdefault("auto_publish_reports", False)
         enriched.setdefault("export_spreadsheet_id", None)
         enriched.setdefault("export_spreadsheet_url", None)
         enriched.setdefault("export_spreadsheet_synced_at", None)
@@ -539,11 +541,7 @@ class HackathonService:
 
     @staticmethod
     def _normalize_max_team_size(value: Any) -> int:
-        try:
-            size = int(value)
-        except (TypeError, ValueError):
-            size = 1
-        return max(1, min(4, size))
+        return normalize_max_team_size(value)
 
     @staticmethod
     def _normalize_round_for_storage(round_: dict[str, Any], *, published: bool) -> dict[str, Any]:

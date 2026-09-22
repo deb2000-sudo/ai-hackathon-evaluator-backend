@@ -14,6 +14,8 @@ Hackathon routes.
     PUT    /hackathons/{id}/video-analysis-prompts -> admin: save hackathon-specific prompts
     DELETE /hackathons/{id}/video-analysis-prompts -> admin: reset both to global Video Analysis
     DELETE /hackathons/{id}/video-analysis-prompts/{key} -> admin: reset one prompt
+    GET    /hackathons/{id}/report-publishing -> admin: auto-publish toggle + counts
+    PUT    /hackathons/{id}/report-publishing -> admin: set auto-publish (publishes backlog)
 """
 
 import json
@@ -40,6 +42,8 @@ from app.models.hackathon_model import (
     HackathonPrizes,
     HackathonResponse,
     HackathonUpdateRequest,
+    ReportPublishingResponse,
+    ReportPublishingUpdateRequest,
     TimelineRound,
 )
 from app.models.round_model import PublishRoundResponse
@@ -59,11 +63,13 @@ from app.dependencies import (
     get_hackathon_draft_service,
     get_hackathon_service,
     get_leaderboard_service,
+    get_submission_service,
 )
 from app.services.evaluation_prompt_service import EvaluationPromptService
 from app.services.hackathon_draft_service import HackathonDraftService
 from app.services.hackathon_service import HackathonService
 from app.services.leaderboard_service import LeaderboardService
+from app.services.submission_service import SubmissionService
 from app.models.hackathon_draft_model import (
     HackathonDraftResponse,
     HackathonDraftSummary,
@@ -496,6 +502,56 @@ async def reset_one_hackathon_video_analysis_prompt(
     except ValueError as e:
         raise _prompt_http_error(e) from e
     return HackathonVideoAnalysisPromptsResponse(**payload)
+
+
+@router.get(
+    "/{hackathon_id}/report-publishing",
+    response_model=ReportPublishingResponse,
+)
+async def get_report_publishing(
+    hackathon_id: str,
+    admin: CurrentUser = Depends(get_admin_user),
+    service: SubmissionService = Depends(get_submission_service),
+) -> ReportPublishingResponse:
+    """
+    Auto-publish setting and how many approved reports are waiting.
+
+    ``unpublished_approved_count`` is what turning the toggle on will release.
+    """
+    _ = admin
+    try:
+        payload = await run_sync(service.report_publishing_settings, hackathon_id)
+    except ValueError as e:
+        raise _prompt_http_error(e) from e
+    return ReportPublishingResponse(**payload)
+
+
+@router.put(
+    "/{hackathon_id}/report-publishing",
+    response_model=ReportPublishingResponse,
+)
+async def update_report_publishing(
+    hackathon_id: str,
+    request: ReportPublishingUpdateRequest,
+    admin: CurrentUser = Depends(get_admin_user),
+    service: SubmissionService = Depends(get_submission_service),
+) -> ReportPublishingResponse:
+    """
+    Turn auto-publish on or off.
+
+    On enables immediate publish for later approvals and publishes every
+    report that is already approved but not yet visible to students.
+    """
+    try:
+        payload = await run_sync(
+            service.set_auto_publish_reports,
+            hackathon_id,
+            request.auto_publish_reports,
+            admin.user_id,
+        )
+    except ValueError as e:
+        raise _prompt_http_error(e) from e
+    return ReportPublishingResponse(**payload)
 
 
 @router.get("/{hackathon_id}/themes", response_model=list[ThemeResponse])

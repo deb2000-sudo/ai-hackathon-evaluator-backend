@@ -299,6 +299,8 @@ class AnalysisMixin:
             raise ValueError("Submission not found")
 
         if publish:
+            if (submission.get("review_status") or "") != "approved":
+                raise ValueError("Approve the evaluation before publishing the report to students")
             if submission.get("status") != "completed":
                 raise ValueError("Report can only be published after analysis has completed")
             analysis_id = submission.get("analysis_id")

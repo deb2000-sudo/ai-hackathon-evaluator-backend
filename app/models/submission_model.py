@@ -146,7 +146,8 @@ class SubmissionResponse(BaseModel):
         False,
         description=(
             "When true, students may view the evaluation report and final score. "
-            "Set automatically when an admin approves the evaluation."
+            "Approval alone does not set this. It is set by Publish now, "
+            "or automatically when the hackathon's auto-publish setting is on."
         ),
     )
     published_at: OptionalISTDateTime = None
@@ -435,7 +436,7 @@ class SubmitForReviewRequest(BaseModel):
 
 
 class ApproveEvaluationRequest(BaseModel):
-    """Admin approves an evaluator's submitted evaluation (publishes to student)."""
+    """Admin approves an evaluator's submitted evaluation."""
 
     final_score: Optional[float] = Field(
         None,
@@ -447,6 +448,13 @@ class ApproveEvaluationRequest(BaseModel):
         None,
         max_length=5000,
         description="Optional admin notes.",
+    )
+    publish_now: bool = Field(
+        False,
+        description=(
+            "When true, approve and publish this report to the student in one step. "
+            "When false, only mark it approved unless the hackathon auto-publishes."
+        ),
     )
 
     @field_validator("review_notes", mode="before")

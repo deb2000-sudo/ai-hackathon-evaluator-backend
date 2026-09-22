@@ -9,11 +9,14 @@ from app.exceptions import BadRequestError
 from app.utils.time import now_ist
 
 
+MAX_ROUND_TEAM_SIZE = 5
+
 TEAM_MODE_LABELS = {
     1: "Solo",
     2: "2 Members",
     3: "3 Members",
     4: "4 Members",
+    5: "5 Members",
 }
 
 RoundStatus = Literal["draft", "scheduled", "open", "closed"]
@@ -34,7 +37,7 @@ def normalize_max_team_size(value: Any) -> int:
         size = int(value)
     except (TypeError, ValueError):
         size = 1
-    return max(1, min(4, size))
+    return max(1, min(MAX_ROUND_TEAM_SIZE, size))
 
 
 def hackathon_default_video_required(hackathon: dict[str, Any]) -> bool:
