@@ -309,7 +309,7 @@ Firestore is not schema-enforced. Pydantic models validate **API** payloads; sto
 | Object | Use |
 |--------|-----|
 | `submissions/{student_id}/{submission_id}/video.{ext}` | Demo video |
-| `hackathons/{hackathon_id}/banner…` | Banner image |
+| `hackathons/{hackathon_id}/banners/{id}.webp` | Card banner (resized WebP, `Cache-Control` ~5 days). List/catalog reuse a stored signed URL for up to ~6 days so the browser can cache it. |
 
 The API issues **signed PUT** URLs for browser upload and **signed GET** URLs (or a streaming proxy) for playback. Gemini is given the `gs://` URI — the video is not re-downloaded into Cloud Run.
 
