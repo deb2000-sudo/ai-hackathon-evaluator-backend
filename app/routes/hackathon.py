@@ -10,6 +10,10 @@ Hackathon routes.
     POST   /hackathons/{id}/rounds/{index}/publish -> admin publishes a round
     GET    /hackathons/{id}/rounds/{index}/leaderboard -> ranked results
     POST   /hackathons/{id}/rounds/{index}/leaderboard/publish -> admin publishes ranks
+    GET    /hackathons/{id}/video-analysis-prompts -> admin: Video Analysis prompts for Settings
+    PUT    /hackathons/{id}/video-analysis-prompts -> admin: save hackathon-specific prompts
+    DELETE /hackathons/{id}/video-analysis-prompts -> admin: reset both to global Video Analysis
+    DELETE /hackathons/{id}/video-analysis-prompts/{key} -> admin: reset one prompt
 """
 
 import json
@@ -44,13 +48,19 @@ from app.models.leaderboard_model import (
     PublishLeaderboardRequest,
     PublishLeaderboardResponse,
 )
+from app.models.evaluation_prompt_model import (
+    HackathonVideoAnalysisPromptsResponse,
+    HackathonVideoAnalysisPromptsUpdateRequest,
+)
 from app.models.theme_model import ThemeResponse
 from app.models.user_model import CurrentUser
 from app.dependencies import (
+    get_evaluation_prompt_service,
     get_hackathon_draft_service,
     get_hackathon_service,
     get_leaderboard_service,
 )
+from app.services.evaluation_prompt_service import EvaluationPromptService
 from app.services.hackathon_draft_service import HackathonDraftService
 from app.services.hackathon_service import HackathonService
 from app.services.leaderboard_service import LeaderboardService
@@ -292,7 +302,8 @@ async def create_hackathon(
         ...,
         description='JSON array of theme ids, e.g. ["id1","id2"]',
     ),
-    timeline: str | None = Form(
+    timeline: str
+    | None = Form(
         None,
         description=(
             'JSON array of rounds, e.g. [{"title":"Round 1","start_date":"YYYY-MM-DD",'
@@ -300,10 +311,10 @@ async def create_hackathon(
             '"working_demo_video_required":true,"auto_ai_evaluation":false}]'
         ),
     ),
-    banner: UploadFile | None = File(
-        None, description="Optional hackathon banner image (jpeg/png/webp/gif)"
-    ),
-    hackathon_url: str | None = Form(
+    banner: UploadFile
+    | None = File(None, description="Optional hackathon banner image (jpeg/png/webp/gif)"),
+    hackathon_url: str
+    | None = Form(
         None,
         max_length=2000,
         description="Official hackathon website URL (shown on student dashboard)",
@@ -391,6 +402,100 @@ async def list_hackathon_catalog(
     """
     items = await run_sync(service.list_hackathon_catalog, include_closed=include_closed)
     return [HackathonCatalogItem(**item) for item in items]
+
+
+def _prompt_http_error(exc: ValueError) -> HTTPException:
+    message = str(exc)
+    code = (
+        status.HTTP_404_NOT_FOUND if "not found" in message.lower() else status.HTTP_400_BAD_REQUEST
+    )
+    return HTTPException(status_code=code, detail=message)
+
+
+@router.get(
+    "/{hackathon_id}/video-analysis-prompts",
+    response_model=HackathonVideoAnalysisPromptsResponse,
+)
+async def get_hackathon_video_analysis_prompts(
+    hackathon_id: str,
+    admin: CurrentUser = Depends(get_admin_user),
+    prompt_service: EvaluationPromptService = Depends(get_evaluation_prompt_service),
+) -> HackathonVideoAnalysisPromptsResponse:
+    """
+    Video Analysis prompts for this hackathon's Settings page.
+
+    Defaults to Application → Video Analysis until the admin saves an override.
+    """
+    _ = admin
+    try:
+        payload = await run_sync(prompt_service.list_hackathon_prompts, hackathon_id)
+    except ValueError as e:
+        raise _prompt_http_error(e) from e
+    return HackathonVideoAnalysisPromptsResponse(**payload)
+
+
+@router.put(
+    "/{hackathon_id}/video-analysis-prompts",
+    response_model=HackathonVideoAnalysisPromptsResponse,
+)
+async def update_hackathon_video_analysis_prompts(
+    hackathon_id: str,
+    request: HackathonVideoAnalysisPromptsUpdateRequest,
+    admin: CurrentUser = Depends(get_admin_user),
+    prompt_service: EvaluationPromptService = Depends(get_evaluation_prompt_service),
+) -> HackathonVideoAnalysisPromptsResponse:
+    """Save hackathon-specific Validity checklist and/or Video analysis templates."""
+    try:
+        payload = await run_sync(
+            prompt_service.update_hackathon_prompts,
+            hackathon_id,
+            [item.model_dump() for item in request.prompts],
+            admin.user_id,
+        )
+    except ValueError as e:
+        raise _prompt_http_error(e) from e
+    return HackathonVideoAnalysisPromptsResponse(**payload)
+
+
+@router.delete(
+    "/{hackathon_id}/video-analysis-prompts",
+    response_model=HackathonVideoAnalysisPromptsResponse,
+)
+async def reset_hackathon_video_analysis_prompts(
+    hackathon_id: str,
+    admin: CurrentUser = Depends(get_admin_user),
+    prompt_service: EvaluationPromptService = Depends(get_evaluation_prompt_service),
+) -> HackathonVideoAnalysisPromptsResponse:
+    """Clear both overrides; evaluation uses Application → Video Analysis again."""
+    _ = admin
+    try:
+        payload = await run_sync(prompt_service.reset_hackathon_prompt, hackathon_id, None)
+    except ValueError as e:
+        raise _prompt_http_error(e) from e
+    return HackathonVideoAnalysisPromptsResponse(**payload)
+
+
+@router.delete(
+    "/{hackathon_id}/video-analysis-prompts/{prompt_key}",
+    response_model=HackathonVideoAnalysisPromptsResponse,
+)
+async def reset_one_hackathon_video_analysis_prompt(
+    hackathon_id: str,
+    prompt_key: str,
+    admin: CurrentUser = Depends(get_admin_user),
+    prompt_service: EvaluationPromptService = Depends(get_evaluation_prompt_service),
+) -> HackathonVideoAnalysisPromptsResponse:
+    """Clear one override (``checklist`` or ``analyze_video``)."""
+    _ = admin
+    try:
+        payload = await run_sync(
+            prompt_service.reset_hackathon_prompt,
+            hackathon_id,
+            prompt_key,
+        )
+    except ValueError as e:
+        raise _prompt_http_error(e) from e
+    return HackathonVideoAnalysisPromptsResponse(**payload)
 
 
 @router.get("/{hackathon_id}/themes", response_model=list[ThemeResponse])
@@ -526,21 +631,24 @@ async def update_hackathon(
     description: str | None = Form(None, max_length=10000),
     start_date: str | None = Form(None),
     end_date: str | None = Form(None),
-    guidelines: str | None = Form(
+    guidelines: str
+    | None = Form(
         None,
         max_length=10000,
         description="Participation guidelines for students",
     ),
-    evaluator_guidelines: str | None = Form(
+    evaluator_guidelines: str
+    | None = Form(
         None,
         max_length=10000,
         description="Guidelines for evaluators (omit to leave unchanged)",
     ),
     prizes: str | None = Form(None),
-    theme_ids: str | None = Form(None, description='JSON array of theme ids'),
+    theme_ids: str | None = Form(None, description="JSON array of theme ids"),
     timeline: str | None = Form(None),
     banner: UploadFile | None = File(None),
-    hackathon_url: str | None = Form(
+    hackathon_url: str
+    | None = Form(
         None,
         max_length=2000,
         description="Official hackathon website URL (omit to leave unchanged)",
@@ -563,9 +671,7 @@ async def update_hackathon(
         "theme_ids": theme_ids_data,
         "prizes": HackathonPrizes(**prizes_data) if prizes_data is not None else None,
         "timeline": (
-            [TimelineRound(**item) for item in timeline_data]
-            if timeline_data is not None
-            else None
+            [TimelineRound(**item) for item in timeline_data] if timeline_data is not None else None
         ),
     }
     # Only touch hackathon_url when the form field is present (allows clearing).

@@ -132,6 +132,7 @@ Startup (`lifespan`):
 | `teams` | `/hackathons` | Round enrollment, create/join team, join codes |
 | `submissions` | `/submissions` | Upload, assign, evaluate, GitHub AI, review, Sheets export |
 | `theme` | `/themes` | Reusable problem themes |
+| `university` | `/universities` | Admin catalogue; public list for student register |
 | `evaluation_requirement` | `/evaluation-requirements` | Rubric / form field definitions |
 | `evaluation_prompt` | `/ai-evaluation-prompts` | Gemini prompt templates |
 | `metric_scoring` | `/ai-evaluation-metric-scoring` | Per-field scoring config |
@@ -158,6 +159,7 @@ flowchart TB
   LS[LeaderboardService]
   EJ[EvaluationJobService]
   TH[ThemeService]
+  UN[UniversityService]
   ER[EvaluationRequirementService]
   EP[EvaluationPromptService]
   MS[MetricScoringService]
@@ -168,6 +170,8 @@ flowchart TB
   VS --> FB
   VS --> US
   TH --> FB
+  UN --> FB
+  VS --> UN
   ER --> FB
   EP --> FB
   MS --> FB
@@ -256,7 +260,9 @@ Student and evaluator share the same verified-email + phone flow (`VerificationS
 1. `POST /auth/register/start` → `verification_sessions` doc
 2. Email OTP via `EmailService` (Brevo in prod)
 3. Firebase Phone Auth in the browser → `POST /auth/verify-phone-token`
-4. `POST /auth/register/complete` creates Auth + Firestore user and sets the login cookies
+4. `POST /auth/register/complete` creates Auth + Firestore user and sets the login cookies.
+   Student complete requires `university_id` from `GET /universities` (public). The user
+   doc stores `university` (name), `university_id`, and `university_location`.
 
 OTP rate limits (Firestore `otp_rate_limits`): **5 sends/hour per email**, **2000/hour per IP** (campus NAT), 60s resend cooldown. Codes are hashed (SHA-256 + pepper).
 
@@ -289,6 +295,7 @@ Register complete endpoints reject reset sessions (`PURPOSE_MISMATCH`).
 | `submissions` | submission id | Student work, scorecard, review, GitHub AI |
 | `analysis` | submission id | Gemini video result (report, checklist, scores) |
 | `themes` | theme id | Problem catalogue |
+| `universities` | university id | Admin-created name + location for student register |
 | `evaluation_requirements` | requirement id | Rubric / form fields |
 | `ai_evaluation_prompts` | prompt key | Gemini prompt templates |
 | `ai_evaluation_metric_scoring` | scoring id | Metric scoring config |
