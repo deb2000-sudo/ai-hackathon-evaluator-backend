@@ -33,6 +33,7 @@ from app.utils.hackathon_round import (
     hackathon_default_auto_ai,
     hackathon_default_github_ai,
     hackathon_default_video_required,
+    normalize_max_submissions,
     normalize_max_team_size,
     parse_iso_date,
     pick_featured_published_round,
@@ -201,6 +202,28 @@ class HackathonService:
             },
         }
 
+    def get_submission_limit(self, hackathon_id: str) -> dict[str, Any]:
+        """Current per-round submission cap for this hackathon."""
+        existing = self.get_hackathon(hackathon_id)
+        if not existing:
+            raise ValueError("Hackathon not found")
+        return {
+            "hackathon_id": hackathon_id,
+            "max_submissions": normalize_max_submissions(existing.get("max_submissions")),
+        }
+
+    def set_submission_limit(self, hackathon_id: str, max_submissions: int) -> dict[str, Any]:
+        """Save the Settings cap. Applies to every round of this hackathon."""
+        if not self.get_hackathon(hackathon_id):
+            raise ValueError("Hackathon not found")
+        limit = normalize_max_submissions(max_submissions)
+        self.firebase.update_document(
+            self.collection,
+            hackathon_id,
+            {"max_submissions": limit, "updated_at": now_ist_iso()},
+        )
+        return {"hackathon_id": hackathon_id, "max_submissions": limit}
+
     def get_hackathon(self, hackathon_id: str) -> dict[str, Any] | None:
         """Fetch a single hackathon by id."""
         hackathon = self.firebase.get_document(self.collection, hackathon_id)
@@ -352,6 +375,8 @@ class HackathonService:
             hackathon_default_github_ai(enriched),
         )
         enriched.setdefault("auto_publish_reports", False)
+        enriched.setdefault("max_submissions", 1)
+        enriched["max_submissions"] = normalize_max_submissions(enriched.get("max_submissions"))
         enriched.setdefault("export_spreadsheet_id", None)
         enriched.setdefault("export_spreadsheet_url", None)
         enriched.setdefault("export_spreadsheet_synced_at", None)

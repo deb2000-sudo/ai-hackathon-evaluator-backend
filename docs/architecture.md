@@ -338,7 +338,7 @@ Computed `round_status`: `draft` | `scheduled` | `open` | `closed` from IST date
 Admin draft  →  POST /hackathons
              →  publish round (students can enroll)
              →  students enroll (solo or team)
-             →  one submission per student/team per round
+             →  up to max_submissions per student/team per round (default 1, max 3)
              →  admin assigns evaluator(s)
              →  optional auto Gemini + optional GitHub AI
              →  evaluator submit-for-review
@@ -360,7 +360,7 @@ A leftover `role: solo` enrollment on a team round blocks `choose_role` until th
 
 Enforced in `app/services/submission/uniqueness.py` on `POST /submissions` and `POST /submissions/from-upload`:
 
-- Same student + hackathon + round → `409 ALREADY_SUBMITTED`
+- Same student + hackathon + round → `409 SUBMISSION_LIMIT_REACHED` once `max_submissions` is used (default 1, max 3, set on the hackathon)
 - Same team (leader already submitted) → `409` with team message
 - Other rounds remain independent
 

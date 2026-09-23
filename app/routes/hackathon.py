@@ -16,6 +16,8 @@ Hackathon routes.
     DELETE /hackathons/{id}/video-analysis-prompts/{key} -> admin: reset one prompt
     GET    /hackathons/{id}/report-publishing -> admin: auto-publish toggle + counts
     PUT    /hackathons/{id}/report-publishing -> admin: set auto-publish (publishes backlog)
+    GET    /hackathons/{id}/submission-limit -> admin: max submissions per round
+    PUT    /hackathons/{id}/submission-limit -> admin: set max submissions (1–3)
 """
 
 import json
@@ -44,6 +46,8 @@ from app.models.hackathon_model import (
     HackathonUpdateRequest,
     ReportPublishingResponse,
     ReportPublishingUpdateRequest,
+    SubmissionLimitResponse,
+    SubmissionLimitUpdateRequest,
     TimelineRound,
 )
 from app.models.round_model import PublishRoundResponse
@@ -552,6 +556,47 @@ async def update_report_publishing(
     except ValueError as e:
         raise _prompt_http_error(e) from e
     return ReportPublishingResponse(**payload)
+
+
+@router.get(
+    "/{hackathon_id}/submission-limit",
+    response_model=SubmissionLimitResponse,
+)
+async def get_submission_limit(
+    hackathon_id: str,
+    admin: CurrentUser = Depends(get_admin_user),
+    service: HackathonService = Depends(get_hackathon_service),
+) -> SubmissionLimitResponse:
+    """How many times a student or team may submit for each round. Default 1."""
+    _ = admin
+    try:
+        payload = await run_sync(service.get_submission_limit, hackathon_id)
+    except ValueError as e:
+        raise _prompt_http_error(e) from e
+    return SubmissionLimitResponse(**payload)
+
+
+@router.put(
+    "/{hackathon_id}/submission-limit",
+    response_model=SubmissionLimitResponse,
+)
+async def update_submission_limit(
+    hackathon_id: str,
+    request: SubmissionLimitUpdateRequest,
+    admin: CurrentUser = Depends(get_admin_user),
+    service: HackathonService = Depends(get_hackathon_service),
+) -> SubmissionLimitResponse:
+    """Set the per-round submission cap to 1, 2, or 3."""
+    _ = admin
+    try:
+        payload = await run_sync(
+            service.set_submission_limit,
+            hackathon_id,
+            request.max_submissions,
+        )
+    except ValueError as e:
+        raise _prompt_http_error(e) from e
+    return SubmissionLimitResponse(**payload)
 
 
 @router.get("/{hackathon_id}/themes", response_model=list[ThemeResponse])

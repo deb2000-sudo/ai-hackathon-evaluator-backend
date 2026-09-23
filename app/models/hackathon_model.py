@@ -301,6 +301,15 @@ class HackathonResponse(BaseModel):
         False,
         description=("Legacy hackathon-level default for rounds that omit github_ai_evaluation."),
     )
+    max_submissions: int = Field(
+        1,
+        ge=1,
+        le=3,
+        description=(
+            "How many times a student or team may submit for each round of this "
+            "hackathon. Default 1, maximum 3."
+        ),
+    )
     auto_publish_reports: bool = Field(
         False,
         description=(
@@ -376,6 +385,22 @@ class HackathonCatalogItem(BaseModel):
         description="IST calendar days until featured round end_date when open.",
     )
     featured_round: HackathonCatalogRound
+
+
+class SubmissionLimitUpdateRequest(BaseModel):
+    """Hackathon Settings: how many submissions each round accepts."""
+
+    max_submissions: int = Field(
+        ...,
+        ge=1,
+        le=3,
+        description="1, 2, or 3. Default for a new hackathon is 1.",
+    )
+
+
+class SubmissionLimitResponse(BaseModel):
+    hackathon_id: str
+    max_submissions: int = Field(..., ge=1, le=3)
 
 
 class ReportPublishingUpdateRequest(BaseModel):
