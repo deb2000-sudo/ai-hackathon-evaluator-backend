@@ -364,6 +364,8 @@ Enforced in `app/services/submission/uniqueness.py` on `POST /submissions` and `
 - Same team (leader already submitted) → `409` with team message
 - Other rounds remain independent
 
+`GET /submissions/admin/hackathons/{id}?page=1&page_size=10` returns one page of that queue (`items`, `total`, `page`, `page_size`, `round_summary`). Optional filters are `round_index`, `status` (`uploaded` | `processing` | `completed` | `failed`), and `q` (team name, theme name, or submission id). `round_summary` counts every round and ignores status and search. `page_size` is at most 100. Omitting `page` still returns the full JSON array.
+
 ### 9.4 Video upload and Gemini evaluation
 
 ```mermaid
@@ -402,6 +404,8 @@ Locally (`EVALUATION_JOB_MODE=auto` without queue config) the same `evaluate_sub
 5. Leaderboard ranks **approved** submissions by `final_score` using competition ranking (100, 90, 90, 80 → 1st, 2nd, 2nd, 4th).
 6. Students get `403 LEADERBOARD_NOT_PUBLISHED` until `POST …/leaderboard/publish`. Admins and evaluators can preview earlier.
 7. First publish emails ranked candidates (Brevo) unless `notify: false`.
+
+Each hackathon stores `evaluator_ids`. Create copies every currently approved evaluator. `GET/PUT /hackathons/{id}/evaluators` is the Settings roster. Submission assign and divide-equally only accept ids on that roster. Hackathons saved before this field still allow any approved evaluator until an admin saves the roster.
 
 ### 9.6 GitHub AI (optional)
 
