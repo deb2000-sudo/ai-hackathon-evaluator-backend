@@ -521,6 +521,13 @@ class PublishReportRequest(BaseModel):
     )
 
 
+class WithdrawSubmissionResponse(BaseModel):
+    """Admin removed one submission so the student or team can submit again."""
+
+    id: str
+    withdrawn: bool = True
+
+
 class AssignEvaluatorRequest(BaseModel):
     """Assign (or clear) a single submission's evaluator."""
 

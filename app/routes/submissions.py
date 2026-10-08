@@ -29,6 +29,7 @@ Student submission routes.
     POST   /submissions/{id}/request-changes -> admin sends evaluation back to evaluator
     POST   /submissions/{id}/publish    -> admin publishes / unpublishes the report
     POST   /submissions/{id}/assign     -> admin assigns one evaluator (dropdown)
+    POST   /submissions/{id}/withdraw   -> admin deletes the submission so the student can resubmit
 """
 
 import json
@@ -71,6 +72,7 @@ from app.models.submission_model import (
     RequestChangesRequest,
     SubmissionResponse,
     SubmissionTeamResponse,
+    WithdrawSubmissionResponse,
     SubmitForReviewRequest,
 )
 from app.models.user_model import CurrentUser
@@ -1134,3 +1136,33 @@ async def assign_submission_evaluator(
             submission = refreshed
 
     return await _to_submission_response(service, submission, current_user=admin)
+
+
+@router.post("/{submission_id}/withdraw", response_model=WithdrawSubmissionResponse)
+async def withdraw_submission(
+    submission_id: str,
+    admin: CurrentUser = Depends(get_admin_user),
+    service: SubmissionService = Depends(get_submission_service),
+) -> WithdrawSubmissionResponse:
+    """
+    Delete one submission completely.
+
+    The video, answers, AI analysis, scores, and report are removed. That
+    round's submission slot is free, so the student or team leader can submit
+    again while the round is still open.
+
+    Only while ``assigned_evaluator_id`` is empty. AI analysis may already be
+    finished. Once an evaluator is assigned, this returns 409
+    ``SUBMISSION_ASSIGNED`` and nothing is deleted.
+    """
+    try:
+        result = await run_sync(
+            service.withdraw_submission,
+            submission_id,
+            admin.user_id,
+        )
+    except AppError:
+        raise
+    except ValueError as e:
+        raise _http_from_value_error(e) from e
+    return WithdrawSubmissionResponse(**result)
