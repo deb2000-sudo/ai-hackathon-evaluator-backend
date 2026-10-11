@@ -128,7 +128,7 @@ Startup (`lifespan`):
 | `auth` | `/auth` | Login, cookies, CSRF, register + email OTP + phone verify |
 | `admin` | `/admin` | Users, evaluator approve/list |
 | `access` | `/admin/access` | Super Admin roles, permissions, and staff logins |
-| `settings` | `/admin/settings` | Super Admin only: profile-password change and Reset Database. Admin and custom roles get 403. |
+| `settings` | `/super-admin/settings` | Super Admin only: profile-password change and Reset Database. A wrong Profile Password is 400, so the login session stays. Admin and custom roles get 403. |
 | `hackathon` | `/hackathons` | CRUD, drafts, round publish, **catalog**, leaderboard |
 | `teams` | `/hackathons` | Round enrollment, create/join team, join codes |
 | `submissions` | `/submissions` | Upload, assign, evaluate, GitHub AI, review, Sheets export |

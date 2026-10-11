@@ -62,7 +62,7 @@ ALL_PERMISSIONS: tuple[str, ...] = tuple(
 
 # Longest-prefix wins. Used only on routes that already require an admin user.
 _PATH_PERMISSIONS: tuple[tuple[str, str], ...] = (
-    ("/admin/settings", "application_settings"),
+    ("/super-admin/settings", "application_settings"),
     ("/admin/evaluators", "evaluator_management"),
     ("/admin/users", "student_management"),
     ("/admin/user/", "student_management"),

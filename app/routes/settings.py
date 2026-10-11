@@ -1,9 +1,9 @@
 """
 Super Admin Application Settings.
 
-    GET  /admin/settings                         -> settings flags (sidebar page)
-    POST /admin/settings/change-profile-password -> change Profile Password
-    POST /admin/settings/reset-database          -> wipe app Firestore data
+    GET  /super-admin/settings                         -> settings flags (sidebar page)
+    POST /super-admin/settings/change-profile-password -> change Profile Password
+    POST /super-admin/settings/reset-database          -> wipe app Firestore data
 
 Admin and custom roles receive 403. The page and Reset Database stay the same
 for Super Admin.
@@ -28,7 +28,7 @@ from app.utils.async_io import run_sync
 
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/admin/settings", tags=["admin-settings"])
+router = APIRouter(prefix="/super-admin/settings", tags=["super-admin-settings"])
 
 
 @router.get("", response_model=AppSettingsResponse)
@@ -67,13 +67,9 @@ async def change_profile_password(
             super_admin.user_id,
         )
     except ValueError as e:
-        detail = str(e)
-        code = (
-            status.HTTP_401_UNAUTHORIZED
-            if "incorrect" in detail.lower()
-            else status.HTTP_400_BAD_REQUEST
-        )
-        raise HTTPException(status_code=code, detail=detail) from e
+        # 400, not 401. A wrong Profile Password is not an expired login, and
+        # the SPA treats every 401 as "signed out".
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     except AppError:
         raise
     except Exception as e:
@@ -106,13 +102,7 @@ async def reset_database(
             confirm_phrase=request.confirm_phrase,
         )
     except ValueError as e:
-        detail = str(e)
-        code = (
-            status.HTTP_401_UNAUTHORIZED
-            if "incorrect" in detail.lower()
-            else status.HTTP_400_BAD_REQUEST
-        )
-        raise HTTPException(status_code=code, detail=detail) from e
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     except AppError:
         raise
     except Exception as e:

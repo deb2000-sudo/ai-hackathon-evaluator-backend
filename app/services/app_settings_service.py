@@ -30,7 +30,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PROFILE_PASSWORD = "12345678"
 
-# Application data wiped on reset. Admin users + app_settings are preserved.
+# Everything except the Super Admin login and the Profile Password doc.
+# Built-in Admin and Student roles are written back after the wipe, as on a
+# fresh startup. Admin user accounts are not kept.
 WIPEABLE_COLLECTIONS: tuple[str, ...] = (
     "hackathons",
     "hackathon_drafts",
@@ -47,7 +49,10 @@ WIPEABLE_COLLECTIONS: tuple[str, ...] = (
     TEAMS,
     ENROLLMENTS,
     JOIN_CODES,
-    # Ephemeral registration / email queue (not preserved on reset).
+    "application_logs",
+    "roles",
+    # Job rows left by an older worker. Not written by this service.
+    "github_analysis_jobs",
     SESSIONS,
     RATE_LIMITS,
     MAIL_COLLECTION,
@@ -78,8 +83,8 @@ class AppSettingsService:
         is_default = bool(doc.get("is_default_profile_password"))
         bucket = resolve_evaluation_bucket_name()
         wipeable = list(WIPEABLE_COLLECTIONS) + [
-            "users (non-admin)",
-            "firebase_auth (non-admin)",
+            "users (except super admin)",
+            "firebase_auth (except super admin)",
         ]
         if bucket:
             wipeable.append(f"gcs objects in gs://{bucket}")
@@ -159,16 +164,14 @@ class AppSettingsService:
         confirm_phrase: str,
     ) -> dict[str, Any]:
         """
-        Wipe application Firestore collections, non-admin Firebase Auth
-        accounts, and all objects in the evaluation GCS bucket.
-
-        Also clears ephemeral registration data: ``verification_sessions``,
-        ``otp_rate_limits``, and queued ``mail`` documents.
+        Wipe application Firestore collections, every login except Super
+        Admin, and all objects in the evaluation GCS bucket.
 
         Preserves:
         - ``app_settings/security`` (Profile Password)
-        - Firestore ``users`` with ``role == admin`` (including the caller)
-        - Matching Firebase Auth accounts for those admins
+        - Firestore ``users`` with ``role == super_admin``
+        - Matching Firebase Auth accounts
+        - Built-in Admin and Student role documents (rewritten after the wipe)
         - The GCS bucket itself (only objects are deleted)
         """
         if confirm_phrase != RESET_CONFIRM_PHRASE:
@@ -186,16 +189,17 @@ class AppSettingsService:
                 ids = list(dict.fromkeys([*ids, *AI_PROMPT_DOCUMENT_IDS]))
             deleted_counts[collection] = self.firebase.delete_documents(collection, ids)
 
-        # Remove non-admin Firestore profiles (keep admin accounts for login).
+        # Keep only Super Admin. Admin, custom, evaluator, and student accounts go.
         users = self.firebase.get_collection("users")
         preserve_auth_uids = {
             u["id"]
             for u in users
-            if u.get("id") and (
-                u.get("role") in ("admin", "super_admin") or u["id"] == preserve_user_id
-            )
+            if u.get("id") and u.get("role") == "super_admin"
         }
-        preserve_auth_uids.add(preserve_user_id)
+        if preserve_user_id:
+            caller = next((u for u in users if u.get("id") == preserve_user_id), None)
+            if caller and caller.get("role") == "super_admin":
+                preserve_auth_uids.add(preserve_user_id)
 
         non_admin_ids = [
             u["id"] for u in users if u.get("id") and u["id"] not in preserve_auth_uids
@@ -234,7 +238,11 @@ class AppSettingsService:
         # ``ai_evaluation_prompts`` empty. Evaluation falls back to in-code
         # defaults until an admin saves prompts in the AI prompts UI.
 
-        # Ensure profile password doc still present.
+        # Fresh startup writes the built-in Admin and Student roles, and the
+        # Profile Password when it is missing.
+        from app.services.access_service import AccessService
+
+        AccessService(firebase=self.firebase).seed_builtin_admin_role()
         self.ensure_default_profile_password()
 
         logger.warning(
@@ -244,18 +252,19 @@ class AppSettingsService:
         )
         preserved = [
             "app_settings/security",
-            "users (role=admin)",
-            "firebase_auth (admin)",
-            f"users/{preserve_user_id}",
+            "users (role=super_admin)",
+            "firebase_auth (super_admin)",
+            "roles (built-in Admin and Student)",
         ]
         if bucket_name:
             preserved.append(f"gcs bucket gs://{bucket_name} (emptied, not deleted)")
         return {
             "message": (
-                "Database reset completed. Application collections, non-admin "
-                "Firebase Auth accounts, and evaluation-bucket objects were "
-                "cleared. Admin accounts, the Profile Password, and the GCS "
-                "bucket itself were preserved."
+                "Database reset completed. Application collections and every "
+                "login except Super Admin were cleared, including evaluation-"
+                "bucket objects. The Super Admin account, the Profile "
+                "Password, the built-in roles, and the GCS bucket itself "
+                "were preserved."
             ),
             "deleted_counts": deleted_counts,
             "preserved": preserved,
