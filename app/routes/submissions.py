@@ -139,7 +139,9 @@ def _ensure_student_can_view_report(
     current_user: CurrentUser,
 ) -> None:
     """Staff always; students only after publish/approval."""
-    if current_user.role in ("admin", "evaluator"):
+    if current_user.role in ("admin", "super_admin", "evaluator") or (
+        "submissions" in (current_user.permissions or [])
+    ):
         return
     if not service.student_can_view_report(submission):
         raise HTTPException(
@@ -817,7 +819,9 @@ async def evaluate_submission(
     After analysis completes, the evaluator submits for review; admin approval
     publishes the final score to the student.
     """
-    if current_user.role not in ("admin", "evaluator"):
+    if current_user.role not in ("admin", "super_admin", "evaluator") and (
+        "submissions" not in (current_user.permissions or [])
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admins or assigned evaluators can start analysis",
@@ -913,7 +917,9 @@ async def evaluate_github_ai(
     solution, then queues ``POST /analyze`` and polls ``GET /analyze/{job_id}``.
     Stores ``result.scoring.total_score`` on the GitHub scorecard metric.
     """
-    if current_user.role not in ("admin", "evaluator"):
+    if current_user.role not in ("admin", "super_admin", "evaluator") and (
+        "submissions" not in (current_user.permissions or [])
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admins or assigned evaluators can run GitHub AI evaluation",

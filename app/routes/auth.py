@@ -13,16 +13,19 @@ from fastapi.responses import JSONResponse
 from app.middleware.auth_middleware import get_current_user
 from app.exceptions import AppError
 from app.dependencies import (
+    get_access_service,
     get_firebase,
     get_user_service,
     get_verification_service,
 )
+from app.services.access_service import AccessService
 from app.models.user_model import (
     ChangePasswordRequest,
     CurrentUser,
     LoginRequest,
     CsrfTokenResponse,
     LoginResponse,
+    ProfileUpdateRequest,
     UserResponse,
 )
 from app.models.verification_model import (
@@ -36,6 +39,10 @@ from app.models.verification_model import (
     RegisterCompleteRequest,
     RegisterStartRequest,
     RegisterStartResponse,
+    StaffProfileCompleteRequest,
+    StaffProfileCompleteResponse,
+    StaffProfileStartRequest,
+    StaffProfileStartResponse,
     VerificationOkResponse,
     VerifyPhoneTokenRequest,
 )
@@ -56,6 +63,41 @@ from app.utils.auth_cookies import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+@router.post("/profile/start", response_model=StaffProfileStartResponse, status_code=200)
+async def start_staff_profile(
+    payload: StaffProfileStartRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    verification: VerificationService = Depends(get_verification_service),
+) -> StaffProfileStartResponse:
+    """
+    First login for a Super Admin-created account.
+
+    Starts the same verification session used by registration. Email must be
+    the login email. Call the existing email OTP and phone-token routes next.
+    """
+    session_id = await run_sync(verification.start_staff_profile, current_user.user_id, payload)
+    return StaffProfileStartResponse(session_id=session_id)
+
+
+@router.post(
+    "/profile/complete",
+    response_model=StaffProfileCompleteResponse,
+    status_code=200,
+)
+async def complete_staff_profile(
+    payload: StaffProfileCompleteRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    verification: VerificationService = Depends(get_verification_service),
+) -> StaffProfileCompleteResponse:
+    """Save employee ID after email and mobile are both verified."""
+    completed = await run_sync(
+        verification.complete_staff_profile,
+        current_user.user_id,
+        payload,
+    )
+    return StaffProfileCompleteResponse(**completed)
 
 
 @router.post("/register/start", response_model=RegisterStartResponse, status_code=200)
@@ -173,9 +215,7 @@ async def register_evaluator_complete(
         name=created["name"],
         role=created["role"],
         approval_status=created.get("approval_status"),
-        message=(
-            "Evaluator registration submitted. Your account is pending admin approval."
-        ),
+        message=("Evaluator registration submitted. Your account is pending admin approval."),
         csrf_token=csrf_token,
     ).model_dump()
     response = JSONResponse(content=body)
@@ -221,9 +261,7 @@ async def forgot_password_start(
     (last 4 digits for the UI). Then verify email OTP + Firebase Phone Auth
     before ``POST /auth/forgot-password/reset``.
     """
-    result = await run_sync(
-        verification.start_password_reset, payload, _client_ip(request)
-    )
+    result = await run_sync(verification.start_password_reset, payload, _client_ip(request))
     return ForgotPasswordStartResponse(**result)
 
 
@@ -251,8 +289,10 @@ async def forgot_password_reset(
 @router.post("/login", status_code=200)
 async def login(
     request: LoginRequest,
+    http_request: Request,
     firebase: FirebaseService = Depends(get_firebase),
     user_service: UserService = Depends(get_user_service),
+    access_service: AccessService = Depends(get_access_service),
 ) -> JSONResponse:
     """
     Login with email and password.
@@ -329,6 +369,12 @@ async def login(
             )
 
         approval_status = RegistrationService.resolve_approval_status(user_data)
+        http_request.state.activity_actor = {
+            "user_id": user.uid,
+            "name": user_data.get("name") or "",
+            "email": user.email or user_data.get("email") or "",
+            "role": user_data.get("role") or "",
+        }
 
         csrf_token = new_csrf_token()
         payload = LoginResponse(
@@ -337,6 +383,10 @@ async def login(
             name=user_data.get("name", ""),
             role=user_data.get("role", "student"),
             approval_status=approval_status,
+            custom_role_id=user_data.get("custom_role_id"),
+            custom_role_name=access_service.custom_role_name(user_data),
+            permissions=access_service.permissions_for(user_data),
+            profile_completed=user_data.get("profile_completed", True) is not False,
             csrf_token=csrf_token,
         ).model_dump()
 
@@ -465,6 +515,19 @@ async def change_password(
     return response
 
 
+def _profile_response(
+    user_id: str,
+    user_data: dict,
+    user_service: UserService,
+    access_service: AccessService,
+) -> UserResponse:
+    profile = user_service.to_user_response(user_id, user_data)
+    profile.custom_role_id = user_data.get("custom_role_id")
+    profile.custom_role_name = access_service.custom_role_name(user_data)
+    profile.permissions = access_service.permissions_for(user_data)
+    return profile
+
+
 def _client_ip(request: Request) -> str:
     forwarded = request.headers.get("x-forwarded-for", "")
     if forwarded:
@@ -487,10 +550,44 @@ def _decode_unverified_payload(token: str) -> dict:
         return {}
 
 
+@router.patch("/me", response_model=UserResponse, status_code=200)
+async def update_current_user_profile(
+    request: ProfileUpdateRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    user_service: UserService = Depends(get_user_service),
+    access_service: AccessService = Depends(get_access_service),
+) -> UserResponse:
+    """
+    Update the signed-in user's name, and employee ID for staff and evaluators.
+
+    Email and mobile number are not accepted. Every role may call this.
+    """
+    try:
+        user_data = await run_sync(
+            user_service.update_own_profile,
+            current_user.user_id,
+            request.first_name,
+            request.last_name,
+            request.employee_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except AppError:
+        raise
+    except Exception as exc:
+        logger.exception("Error updating user profile")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error updating user profile",
+        ) from exc
+    return _profile_response(current_user.user_id, user_data, user_service, access_service)
+
+
 @router.get("/me", response_model=UserResponse, status_code=200)
 async def get_current_user_profile(
     current_user: CurrentUser = Depends(get_current_user),
     user_service: UserService = Depends(get_user_service),
+    access_service: AccessService = Depends(get_access_service),
 ) -> UserResponse:
     """
     Get current user profile.
@@ -504,7 +601,7 @@ async def get_current_user_profile(
                 detail="User not found",
             )
 
-        return user_service.to_user_response(current_user.user_id, user_data)
+        return _profile_response(current_user.user_id, user_data, user_service, access_service)
 
     except HTTPException:
         raise

@@ -30,6 +30,8 @@ from app.models.verification_model import (
     ForgotPasswordResetRequest,
     ForgotPasswordStartRequest,
     RegisterCompleteRequest,
+    StaffProfileCompleteRequest,
+    StaffProfileStartRequest,
     RegisterStartRequest,
     VerifyPhoneTokenRequest,
     validate_nxtwave_email,
@@ -50,6 +52,7 @@ SESSIONS = "verification_sessions"
 RATE_LIMITS = "otp_rate_limits"
 PURPOSE_REGISTER = "register"
 PURPOSE_PASSWORD_RESET = "password_reset"
+PURPOSE_STAFF_PROFILE = "staff_profile"
 SESSION_TTL = timedelta(minutes=30)
 OTP_TTL = timedelta(minutes=10)
 RESEND_COOLDOWN = timedelta(seconds=60)
@@ -458,6 +461,10 @@ class VerificationService:
             raise ConflictError("NIAT ID is already registered", code="NIAT_ID_TAKEN")
 
         university = self.university_service.require_university(request.university_id)
+        batch = self.university_service.require_batch_for_university(
+            request.batch_id,
+            university["id"],
+        )
         display_name = f"{request.first_name} {request.last_name}".strip()
         registration = RegistrationService(firebase=self.firebase, user_service=self.user_service)
         registration._ensure_email_available(request.email)
@@ -475,6 +482,8 @@ class VerificationService:
                     "university": university["name"],
                     "university_id": university["id"],
                     "university_location": university["location"],
+                    "batch_id": batch["id"],
+                    "batch_name": batch["name"],
                     "niat_id": request.niat_id,
                     "mobile_no": request.mobile_number,
                     "role": "student",
@@ -553,6 +562,109 @@ class VerificationService:
             "approval_status": "pending",
             "password": request.password,
         }
+
+    def start_staff_profile(self, user_id: str, request: StaffProfileStartRequest) -> str:
+        """Open the same email OTP + phone session for a Super Admin-created login."""
+        user = self._require_staff_profile(user_id)
+        account_email = str(user.get("email") or "").strip().lower()
+        if request.email != account_email:
+            raise ForbiddenError(
+                "Email must be the address this account signs in with",
+                code="EMAIL_MISMATCH",
+            )
+        self._assert_phone_available(request.mobile_number, user_id)
+        session_id = str(uuid.uuid4())
+        now = self._now()
+        self.firebase.set_document(
+            SESSIONS,
+            session_id,
+            self._new_session_doc(
+                request.email,
+                request.mobile_number,
+                now,
+                role=str(user.get("role") or "admin"),
+                purpose=PURPOSE_STAFF_PROFILE,
+                user_id=user_id,
+            ),
+        )
+        return session_id
+
+    def complete_staff_profile(
+        self, user_id: str, request: StaffProfileCompleteRequest
+    ) -> dict[str, Any]:
+        """Store employee ID and mobile after both verifications succeed."""
+        self._require_staff_profile(user_id)
+        session = self._load_session(request.session_id)
+        self._assert_purpose(session, PURPOSE_STAFF_PROFILE)
+        if str(session.get("user_id") or "") != user_id:
+            raise ForbiddenError(
+                "This verification session belongs to another account",
+                code="SESSION_INVALID",
+            )
+        session_email, session_phone = self._require_verified_identifiers(session)
+        if session_email != request.email or session_phone != request.mobile_number:
+            raise ForbiddenError(
+                "Submitted email or mobile does not match verified values",
+                code="IDENTIFIER_MISMATCH",
+            )
+        user = self.user_service.get_user(user_id) or {}
+        account_email = str(user.get("email") or "").strip().lower()
+        if request.email != account_email:
+            raise ForbiddenError(
+                "Email must be the address this account signs in with",
+                code="EMAIL_MISMATCH",
+            )
+        self._assert_phone_available(request.mobile_number, user_id)
+        employee_id = request.employee_id.strip()
+        taken = self.user_service.find_by_field("employee_id", employee_id)
+        if taken and taken.get("id") != user_id:
+            raise ConflictError("Employee ID is already registered", code="EMPLOYEE_ID_TAKEN")
+
+        self.user_service.update_user(
+            user_id,
+            {
+                "mobile_no": request.mobile_number,
+                "employee_id": employee_id,
+                "email_verified": True,
+                "phone_verified": True,
+                "profile_completed": True,
+            },
+        )
+        self.firebase.delete_document(SESSIONS, request.session_id)
+        return {
+            "message": "Profile completed. You can use the screens for your role.",
+            "profile_completed": True,
+            "email": request.email,
+            "mobile_no": request.mobile_number,
+            "employee_id": employee_id,
+            "email_verified": True,
+            "phone_verified": True,
+        }
+
+    def _require_staff_profile(self, user_id: str) -> dict[str, Any]:
+        user = self.user_service.get_user(user_id)
+        if not user:
+            raise NotFoundError("User not found", code="USER_NOT_FOUND")
+        if user.get("role") not in ("admin", "custom"):
+            raise ForbiddenError(
+                "This account does not need profile setup",
+                code="PROFILE_NOT_REQUIRED",
+            )
+        if user.get("profile_completed") is not False:
+            raise ConflictError("Profile is already complete", code="PROFILE_ALREADY_COMPLETE")
+        return user
+
+    def _assert_phone_available(self, phone: str, user_id: str) -> None:
+        matches = [self.user_service.find_by_field("mobile_no", phone)]
+        national = phone[3:] if phone.startswith("+91") and len(phone) == 13 else ""
+        if national:
+            matches.append(self.user_service.find_by_field("mobile_no", national))
+        for match in matches:
+            if match and match.get("id") != user_id:
+                raise ConflictError(
+                    "An account with this mobile number already exists",
+                    code="PHONE_TAKEN",
+                )
 
     @staticmethod
     def _assert_purpose(session: dict[str, Any], expected: str) -> None:

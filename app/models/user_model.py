@@ -11,10 +11,12 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, mo
 from app.models.string_utils import strip_optional, strip_required
 
 
-UserRole = Literal["admin", "evaluator", "student"]
+UserRole = Literal["super_admin", "admin", "evaluator", "student", "custom"]
 ApprovalStatus = Literal["pending", "approved"]
 
-USER_ROLES: tuple[UserRole, ...] = ("admin", "evaluator", "student")
+USER_ROLES: tuple[UserRole, ...] = ("super_admin", "admin", "evaluator", "student", "custom")
+# Roles a person can pick on the public register screen.
+REGISTRATION_ROLES: tuple[str, ...] = ("evaluator", "student")
 NXTWAVE_EMAIL_DOMAIN = "@nxtwave.co.in"
 
 
@@ -164,6 +166,24 @@ class EvaluatorRegisterRequest(BaseModel):
         return self
 
 
+class ProfileUpdateRequest(BaseModel):
+    """Signed-in user editing their own profile. Email and mobile stay unchanged."""
+
+    first_name: str = Field(..., min_length=1, max_length=50)
+    last_name: str = Field(..., min_length=1, max_length=50)
+    employee_id: Optional[str] = Field(None, max_length=50)
+
+    @field_validator("first_name", "last_name", mode="before")
+    @classmethod
+    def normalize_name_parts(cls, value: str) -> str:
+        return strip_required(value)
+
+    @field_validator("employee_id", mode="before")
+    @classmethod
+    def normalize_employee_id(cls, value: str | None) -> str | None:
+        return strip_optional(value)
+
+
 class UserUpdate(BaseModel):
     """Schema for user updates"""
 
@@ -195,9 +215,24 @@ class UserResponse(BaseModel):
     university: Optional[str] = None
     university_id: Optional[str] = None
     university_location: Optional[str] = None
+    batch_id: Optional[str] = None
+    batch_name: Optional[str] = None
     team_leader_name: Optional[str] = None
     team_members: Optional[list[TeamMember]] = None
     approval_status: Optional[ApprovalStatus] = None
+    custom_role_id: Optional[str] = None
+    custom_role_name: Optional[str] = None
+    permissions: list[str] = Field(
+        default_factory=list,
+        description="Application areas this user may open. Empty for students and evaluators.",
+    )
+    profile_completed: bool = Field(
+        True,
+        description=(
+            "False until a Super Admin-created admin or custom user verifies email "
+            "and mobile and saves an employee ID."
+        ),
+    )
     email_verified: Optional[bool] = None
     phone_verified: Optional[bool] = None
     created_at: OptionalISTDateTime = None
@@ -274,6 +309,10 @@ class LoginResponse(BaseModel):
     name: str
     role: UserRole
     approval_status: Optional[ApprovalStatus] = None
+    custom_role_id: Optional[str] = None
+    custom_role_name: Optional[str] = None
+    permissions: list[str] = Field(default_factory=list)
+    profile_completed: bool = True
     message: str = "Login successful"
     csrf_token: str
 
@@ -292,3 +331,6 @@ class CurrentUser(BaseModel):
     role: UserRole
     name: str
     approval_status: Optional[ApprovalStatus] = None
+    custom_role_id: Optional[str] = None
+    permissions: list[str] = Field(default_factory=list)
+    profile_completed: bool = True

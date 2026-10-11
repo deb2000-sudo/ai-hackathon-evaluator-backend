@@ -64,7 +64,9 @@ class QueryMixin:
         if not submission:
             return None
 
-        if current_user.role == "admin":
+        if current_user.role in ("admin", "super_admin") or (
+            "submissions" in (current_user.permissions or [])
+        ):
             return {"id": submission_id, **submission}
 
         if submission.get("student_id") == current_user.user_id:
@@ -166,7 +168,9 @@ class QueryMixin:
         current_user: CurrentUser,
     ) -> None:
         """Admin, or the assigned evaluator, may start AI analysis."""
-        if current_user.role == "admin":
+        if current_user.role in ("admin", "super_admin") or (
+            "submissions" in (current_user.permissions or [])
+        ):
             return
         if (
             current_user.role == "evaluator"
@@ -495,7 +499,13 @@ class QueryMixin:
         else:
             enriched["video_url"] = None
 
-        is_staff = bool(current_user and current_user.role in ("admin", "evaluator"))
+        is_staff = bool(
+            current_user
+            and (
+                current_user.role in ("admin", "super_admin", "evaluator")
+                or "submissions" in (current_user.permissions or [])
+            )
+        )
         can_see_analysis = is_staff or self.student_can_view_report(enriched)
 
         analysis_id = enriched.get("analysis_id")
@@ -534,7 +544,10 @@ class QueryMixin:
             enriched["review_notes"] = None
 
         can_start = False
-        if current_user and current_user.role in ("admin", "evaluator"):
+        if current_user and (
+            current_user.role in ("admin", "super_admin", "evaluator")
+            or "submissions" in (current_user.permissions or [])
+        ):
             try:
                 self.assert_can_evaluate(enriched, current_user)
                 can_start = True
@@ -570,7 +583,13 @@ class QueryMixin:
         """Attach competition rank for a single submission detail view."""
         from app.services.leaderboard_service import LeaderboardService
 
-        is_staff = bool(current_user and current_user.role in ("admin", "evaluator"))
+        is_staff = bool(
+            current_user
+            and (
+                current_user.role in ("admin", "super_admin", "evaluator")
+                or "submissions" in (current_user.permissions or [])
+            )
+        )
         rank_info = LeaderboardService(
             firebase=self.firebase,
             hackathon_service=self.hackathon_service,
@@ -594,7 +613,13 @@ class QueryMixin:
         if not submissions:
             return []
 
-        is_staff = bool(current_user and current_user.role in ("admin", "evaluator"))
+        is_staff = bool(
+            current_user
+            and (
+                current_user.role in ("admin", "super_admin", "evaluator")
+                or "submissions" in (current_user.permissions or [])
+            )
+        )
         analysis_ids: list[str] = []
         for submission in submissions:
             analysis_id = submission.get("analysis_id")

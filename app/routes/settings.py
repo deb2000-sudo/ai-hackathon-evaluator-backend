@@ -1,9 +1,12 @@
 """
-Admin Application Settings.
+Super Admin Application Settings.
 
     GET  /admin/settings                         -> settings flags (sidebar page)
     POST /admin/settings/change-profile-password -> change Profile Password
     POST /admin/settings/reset-database          -> wipe app Firestore data
+
+Admin and custom roles receive 403. The page and Reset Database stay the same
+for Super Admin.
 """
 
 import logging
@@ -12,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.dependencies import get_app_settings_service
 from app.exceptions import AppError
-from app.middleware.auth_middleware import get_admin_user
+from app.middleware.auth_middleware import get_super_admin_user
 from app.models.settings_model import (
     AppSettingsResponse,
     ChangeProfilePasswordRequest,
@@ -30,14 +33,15 @@ router = APIRouter(prefix="/admin/settings", tags=["admin-settings"])
 
 @router.get("", response_model=AppSettingsResponse)
 async def get_application_settings(
-    admin: CurrentUser = Depends(get_admin_user),
+    super_admin: CurrentUser = Depends(get_super_admin_user),
     service: AppSettingsService = Depends(get_app_settings_service),
 ) -> AppSettingsResponse:
     """
-    Application Settings page payload for the admin sidebar.
+    Application Settings page payload for Super Admin.
 
     Never returns the Profile Password itself — only configuration flags.
     """
+    _ = super_admin
     payload = await run_sync(service.get_settings_public)
     return AppSettingsResponse(**payload)
 
@@ -45,7 +49,7 @@ async def get_application_settings(
 @router.post("/change-profile-password", status_code=200)
 async def change_profile_password(
     request: ChangeProfilePasswordRequest,
-    admin: CurrentUser = Depends(get_admin_user),
+    super_admin: CurrentUser = Depends(get_super_admin_user),
     service: AppSettingsService = Depends(get_app_settings_service),
 ) -> dict:
     """
@@ -60,7 +64,7 @@ async def change_profile_password(
             service.change_profile_password,
             request.current_profile_password,
             request.new_profile_password,
-            admin.user_id,
+            super_admin.user_id,
         )
     except ValueError as e:
         detail = str(e)
@@ -85,7 +89,7 @@ async def change_profile_password(
 @router.post("/reset-database", response_model=ResetDatabaseResponse)
 async def reset_database(
     request: ResetDatabaseRequest,
-    admin: CurrentUser = Depends(get_admin_user),
+    super_admin: CurrentUser = Depends(get_super_admin_user),
     service: AppSettingsService = Depends(get_app_settings_service),
 ) -> ResetDatabaseResponse:
     """
@@ -98,7 +102,7 @@ async def reset_database(
         result = await run_sync(
             service.reset_database,
             request.profile_password,
-            preserve_user_id=admin.user_id,
+            preserve_user_id=super_admin.user_id,
             confirm_phrase=request.confirm_phrase,
         )
     except ValueError as e:
@@ -112,7 +116,7 @@ async def reset_database(
     except AppError:
         raise
     except Exception as e:
-        logger.exception("Database reset failed for admin %s", admin.user_id)
+        logger.exception("Database reset failed for super admin %s", super_admin.user_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to reset database",

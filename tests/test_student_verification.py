@@ -237,6 +237,17 @@ def test_verify_then_complete_happy_path():
             "updated_at": "2026-08-18T12:00:00+05:30",
         },
     )
+    firebase.set_document(
+        "batches",
+        "batch-2024",
+        {
+            "university_id": "uni-niat",
+            "name": "2024-2028",
+            "created_by": "admin",
+            "created_at": "2026-08-18T12:00:00+05:30",
+            "updated_at": "2026-08-18T12:00:00+05:30",
+        },
+    )
 
     created = service.complete(
         RegisterCompleteRequest(
@@ -245,6 +256,7 @@ def test_verify_then_complete_happy_path():
             last_name="Lovelace",
             email="ada@example.com",
             university_id="uni-niat",
+            batch_id="batch-2024",
             university_name="ignored-client-text",
             niat_id="N123",
             mobile_number="+919876543210",
@@ -259,6 +271,8 @@ def test_verify_then_complete_happy_path():
     assert user["university"] == "NIAT"
     assert user["university_id"] == "uni-niat"
     assert user["university_location"] == "Hyderabad"
+    assert user["batch_id"] == "batch-2024"
+    assert user["batch_name"] == "2024-2028"
     assert user["team_members"] == []
     assert firebase.get_document("verification_sessions", session_id) is None
 
@@ -282,12 +296,58 @@ def test_complete_rejects_unknown_university():
                 last_name="Lovelace",
                 email="ada@example.com",
                 university_id="missing-uni",
+                batch_id="batch-2024",
                 niat_id="N123",
                 mobile_number="+919876543210",
                 password="secret12",
             )
         )
     assert exc.value.code == "UNKNOWN_UNIVERSITY"
+
+
+def test_complete_rejects_batch_from_another_university():
+    now = datetime(2026, 8, 18, 12, 0, tzinfo=IST)
+    service, firebase, _ = _service(now)
+    session_id = service.start(
+        RegisterStartRequest(email="ada@example.com", mobile_number="+919876543210")
+    )
+    firebase.update_document(
+        "verification_sessions",
+        session_id,
+        {"email_verified": True, "phone_verified": True},
+    )
+    firebase.set_document(
+        "universities",
+        "uni-niat",
+        {"name": "NIAT", "location": "Hyderabad"},
+    )
+    firebase.set_document(
+        "universities",
+        "uni-other",
+        {"name": "Anna University", "location": "Chennai"},
+    )
+    firebase.set_document(
+        "batches",
+        "batch-other",
+        {"university_id": "uni-other", "name": "2024-2028"},
+    )
+
+    with pytest.raises(ConflictError) as exc:
+        service.complete(
+            RegisterCompleteRequest(
+                session_id=session_id,
+                first_name="Ada",
+                last_name="Lovelace",
+                email="ada@example.com",
+                university_id="uni-niat",
+                batch_id="batch-other",
+                niat_id="N123",
+                mobile_number="+919876543210",
+                password="secret12",
+            )
+        )
+    assert exc.value.code == "BATCH_UNIVERSITY_MISMATCH"
+    assert firebase.get_document("users", "new-student-uid") is None
 
 
 def test_complete_rejected_without_both_verifications():
@@ -304,6 +364,7 @@ def test_complete_rejected_without_both_verifications():
                 last_name="Lovelace",
                 email="ada@example.com",
                 university_id="uni-niat",
+                batch_id="batch-2024",
                 university_name="NIAT",
                 niat_id="N123",
                 mobile_number="+919876543210",
@@ -332,6 +393,7 @@ def test_complete_rejects_swapped_email():
                 last_name="Lovelace",
                 email="eve@example.com",
                 university_id="uni-niat",
+                batch_id="batch-2024",
                 university_name="NIAT",
                 niat_id="N123",
                 mobile_number="+919876543210",

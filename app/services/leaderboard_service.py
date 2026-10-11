@@ -113,7 +113,11 @@ class LeaderboardService:
         hackathon, round_ = self._require_round(hackathon_id, round_index)
         published = round_leaderboard_published(hackathon, round_index)
         is_staff = bool(
-            current_user and getattr(current_user, "role", None) in ("admin", "evaluator")
+            current_user
+            and (
+                getattr(current_user, "role", None) in ("admin", "super_admin", "evaluator")
+                or "hackathons" in (getattr(current_user, "permissions", None) or [])
+            )
         )
         if not published and not is_staff:
             raise ForbiddenError(

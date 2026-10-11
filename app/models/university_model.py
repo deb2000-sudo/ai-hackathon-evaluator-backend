@@ -55,3 +55,42 @@ class UniversityResponse(BaseModel):
     created_by: str
     created_at: ISTDateTime
     updated_at: ISTDateTime
+
+
+class BatchCreateRequest(BaseModel):
+    """A batch offered at one NIAT partnered university."""
+
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description='Label students pick, such as "2024-2028".',
+    )
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        return strip_required(value)
+
+
+class BatchUpdateRequest(BaseModel):
+    """Rename a batch. It stays on the same university."""
+
+    name: str = Field(..., min_length=1, max_length=100)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        return strip_required(value)
+
+
+class BatchResponse(BaseModel):
+    """One batch, always tied to a single university."""
+
+    id: str
+    university_id: str
+    university_name: str = ""
+    name: str
+    created_by: str
+    created_at: ISTDateTime
+    updated_at: ISTDateTime

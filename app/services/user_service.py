@@ -6,7 +6,7 @@ import logging
 from typing import Any, Optional
 from app.utils.time import now_ist_iso
 
-from app.exceptions import InfrastructureError, NotFoundError
+from app.exceptions import ConflictError, InfrastructureError, NotFoundError
 from app.models.user_model import ApprovalStatus, TeamMember, UserResponse, UserRole
 from app.services.firebase import FirebaseService
 
@@ -103,7 +103,8 @@ class UserService:
             List of non-admin users
         """
         users = self.firebase.get_collection("users")
-        return [user for user in users if user.get("role") != "admin"]
+        staff_roles = {"admin", "super_admin", "custom"}
+        return [user for user in users if user.get("role") not in staff_roles]
 
     def paginate_users(
         self,
@@ -181,6 +182,114 @@ class UserService:
             raise InfrastructureError("Failed to load updated evaluator profile")
         return updated
 
+    def delete_student_account(self, user_id: str) -> None:
+        """
+        Remove a student from Firestore and Firebase Auth.
+
+        Also drops their round enrollments and takes them off team rosters so
+        the seat is free. Submissions already made stay on the hackathon.
+        """
+        user = self.get_user(user_id)
+        if not user:
+            raise NotFoundError("User not found", code="USER_NOT_FOUND")
+        if user.get("role") != "student":
+            raise ConflictError(
+                "Only a student can be deleted from Student Management",
+                code="NOT_A_STUDENT",
+            )
+        self._detach_student(user_id)
+        self.delete_user(user_id)
+
+    def get_evaluator_account(self, user_id: str) -> dict[str, Any]:
+        """One evaluator for the View details panel."""
+        user = self.get_user(user_id)
+        if not user or user.get("role") != "evaluator":
+            raise NotFoundError("Evaluator not found", code="EVALUATOR_NOT_FOUND")
+        return user
+
+    def delete_evaluator_account(self, user_id: str) -> None:
+        """
+        Remove an evaluator from Firestore and Firebase Auth.
+
+        Submissions they were assigned are unassigned so another evaluator can
+        take them. Their id is also taken off each hackathon's evaluator list.
+        The submissions themselves stay.
+        """
+        user = self.get_user(user_id)
+        if not user:
+            raise NotFoundError("Evaluator not found", code="EVALUATOR_NOT_FOUND")
+        if user.get("role") != "evaluator":
+            raise ConflictError(
+                "Only an evaluator can be deleted from Evaluator Management",
+                code="NOT_AN_EVALUATOR",
+            )
+        self._detach_evaluator(user_id)
+        self.delete_user(user_id)
+
+    def _detach_evaluator(self, user_id: str) -> None:
+        now = now_ist_iso()
+        for submission in self.firebase.query_collection(
+            "submissions", "assigned_evaluator_id", "==", user_id
+        ):
+            submission_id = submission.get("id")
+            if submission_id:
+                self.firebase.update_document(
+                    "submissions",
+                    submission_id,
+                    {"assigned_evaluator_id": None, "updated_at": now},
+                )
+
+        for hackathon in self.firebase.get_collection("hackathons"):
+            hackathon_id = hackathon.get("id")
+            roster = hackathon.get("evaluator_ids")
+            if not hackathon_id or not isinstance(roster, list) or user_id not in roster:
+                continue
+            self.firebase.update_document(
+                "hackathons",
+                hackathon_id,
+                {
+                    "evaluator_ids": [item for item in roster if item != user_id],
+                    "updated_at": now,
+                },
+            )
+
+    def _detach_student(self, user_id: str) -> None:
+        for enrollment in self.firebase.query_collection(
+            "hackathon_enrollments", "user_id", "==", user_id
+        ):
+            if enrollment.get("id"):
+                self.firebase.delete_document("hackathon_enrollments", enrollment["id"])
+
+        for code in self.firebase.query_collection("team_join_codes", "leader_id", "==", user_id):
+            if code.get("id"):
+                self.firebase.delete_document("team_join_codes", code["id"])
+
+        now = now_ist_iso()
+        for team in self.firebase.get_collection("hackathon_teams"):
+            team_id = team.get("id")
+            if not team_id:
+                continue
+            members = list(team.get("members") or [])
+            if team.get("leader_id") != user_id and not any(
+                member.get("user_id") == user_id for member in members
+            ):
+                continue
+            remaining = [member for member in members if member.get("user_id") != user_id]
+            if not remaining:
+                self.firebase.delete_document("hackathon_teams", team_id)
+                continue
+            leader_id = team.get("leader_id")
+            if leader_id == user_id:
+                leader_id = remaining[0].get("user_id")
+            for member in remaining:
+                if member.get("user_id") == leader_id:
+                    member["role"] = "leader"
+            self.firebase.update_document(
+                "hackathon_teams",
+                team_id,
+                {"members": remaining, "leader_id": leader_id, "updated_at": now},
+            )
+
     def delete_user(self, user_id: str) -> bool:
         """
         Delete user from Firestore and Firebase Auth
@@ -195,6 +304,47 @@ class UserService:
         self.firebase.delete_user(user_id)
         logger.info(f"User deleted: {user_id}")
         return True
+
+    def update_own_profile(
+        self,
+        user_id: str,
+        first_name: str,
+        last_name: str,
+        employee_id: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Update the signed-in user's name.
+
+        Staff and evaluators may also change employee ID. Email and mobile are
+        never written here.
+        """
+        user = self.get_user(user_id)
+        if not user:
+            raise NotFoundError("User not found", code="USER_NOT_FOUND")
+        role = user.get("role") or "student"
+        full_name = f"{first_name.strip()} {last_name.strip()}".strip()
+        updates: dict[str, Any] = {
+            "first_name": first_name.strip(),
+            "last_name": last_name.strip(),
+            "name": full_name,
+            "updated_at": now_ist_iso(),
+        }
+        if role == "student":
+            updates["team_leader_name"] = full_name
+        if employee_id is not None and role in ("super_admin", "admin", "custom", "evaluator"):
+            cleaned = employee_id.strip()
+            if not cleaned:
+                raise ValueError("Employee ID is required")
+            taken = self.find_by_field("employee_id", cleaned)
+            if taken and taken.get("id") != user_id:
+                raise ConflictError(
+                    "Employee ID is already registered",
+                    code="EMPLOYEE_ID_TAKEN",
+                )
+            updates["employee_id"] = cleaned
+        self.firebase.update_document("users", user_id, updates)
+        self.firebase.update_display_name(user_id, full_name)
+        return {**user, **updates}
 
     def user_exists(self, email: str) -> bool:
         """
@@ -230,6 +380,8 @@ class UserService:
             university=user_data.get("university"),
             university_id=user_data.get("university_id"),
             university_location=user_data.get("university_location"),
+            batch_id=user_data.get("batch_id"),
+            batch_name=user_data.get("batch_name"),
             team_leader_name=user_data.get("team_leader_name"),
             team_members=[
                 TeamMember(name=member["name"], email=member["email"])
@@ -237,6 +389,8 @@ class UserService:
             ]
             or None,
             approval_status=approval_status,
+            custom_role_id=user_data.get("custom_role_id"),
+            profile_completed=user_data.get("profile_completed", True) is not False,
             email_verified=user_data.get("email_verified"),
             phone_verified=user_data.get("phone_verified"),
             created_at=user_data.get("created_at"),

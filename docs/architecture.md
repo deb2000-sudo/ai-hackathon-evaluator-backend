@@ -127,7 +127,8 @@ Startup (`lifespan`):
 |--------|--------|----------|
 | `auth` | `/auth` | Login, cookies, CSRF, register + email OTP + phone verify |
 | `admin` | `/admin` | Users, evaluator approve/list |
-| `settings` | `/admin/settings` | App settings, profile-password change, dangerous DB reset |
+| `access` | `/admin/access` | Super Admin roles, permissions, and staff logins |
+| `settings` | `/admin/settings` | Super Admin only: profile-password change and Reset Database. Admin and custom roles get 403. |
 | `hackathon` | `/hackathons` | CRUD, drafts, round publish, **catalog**, leaderboard |
 | `teams` | `/hackathons` | Round enrollment, create/join team, join codes |
 | `submissions` | `/submissions` | Upload, assign, evaluate, GitHub AI, review, Sheets export |
@@ -261,8 +262,10 @@ Student and evaluator share the same verified-email + phone flow (`VerificationS
 2. Email OTP via `EmailService` (Brevo in prod)
 3. Firebase Phone Auth in the browser → `POST /auth/verify-phone-token`
 4. `POST /auth/register/complete` creates Auth + Firestore user and sets the login cookies.
-   Student complete requires `university_id` from `GET /universities` (public). The user
-   doc stores `university` (name), `university_id`, and `university_location`.
+   Student complete requires `university_id` from `GET /universities` (public) and
+   `batch_id` from `GET /universities/{id}/batches` for that same university. A batch
+   from another university is `409 BATCH_UNIVERSITY_MISMATCH`. The user doc stores
+   `university`, `university_id`, `university_location`, `batch_id`, and `batch_name`.
 
 OTP rate limits (Firestore `otp_rate_limits`): **5 sends/hour per email**, **2000/hour per IP** (campus NAT), 60s resend cooldown. Codes are hashed (SHA-256 + pepper).
 
@@ -284,7 +287,9 @@ Register complete endpoints reject reset sessions (`PURPOSE_MISMATCH`).
 
 | Collection | Document | Purpose |
 |------------|----------|---------|
-| `users` | Firebase uid | Profile, `role`, `approval_status`. Student Management pages with `GET /admin/users?page=1&page_size=15&role=student&q=`. Omitting `page` still returns the full non-admin array. |
+| `users` | Firebase uid | Profile, `role` (`super_admin`, `admin`, `evaluator`, `student`, `custom`), `custom_role_id`, `approval_status`. Student Management pages with `GET /admin/users?page=1&page_size=15&role=student&q=`. Omitting `page` still returns the full non-admin array. |
+| `roles` | `admin` or a generated id | Named roles and their permission keys. The built-in Admin role is seeded and cannot be edited. Custom users store `role=custom` and `custom_role_id`. Assigning the Admin role stores `role=admin`. |
+| `application_logs` | generated id | Signed-in actions for Super Admin Application Logs. Each row has the user, operation, status, duration, and an IST `created_at`. Rows older than 7 days are removed. `GET /admin/access/logs` pages that window with search and filters. |
 | `verification_sessions` | session id | Registration or password-reset OTP/phone state |
 | `otp_rate_limits` | `email:…` / `ip:…` | Sliding-window OTP counters |
 | `hackathons` | hackathon id | Timeline rounds, themes, export sheet ids |
@@ -295,7 +300,8 @@ Register complete endpoints reject reset sessions (`PURPOSE_MISMATCH`).
 | `submissions` | submission id | Student work, scorecard, review, GitHub AI |
 | `analysis` | submission id | Gemini video result (report, checklist, scores) |
 | `themes` | theme id | Problem catalogue |
-| `universities` | university id | Admin-created name + location for student register |
+| `universities` | university id | Admin-created NIAT partnered university (name + location) |
+| `batches` | batch id | Batch name scoped to one `university_id`. Register only lists that university's batches. |
 | `evaluation_requirements` | requirement id | Rubric / form fields |
 | `ai_evaluation_prompts` | prompt key | Gemini prompt templates |
 | `ai_evaluation_metric_scoring` | scoring id | Metric scoring config |

@@ -36,6 +36,7 @@ WIPEABLE_COLLECTIONS: tuple[str, ...] = (
     "hackathon_drafts",
     "themes",
     "universities",
+    "batches",
     "evaluation_requirements",
     "ai_evaluation_metric_scoring",
     "ai_evaluation_prompts",
@@ -190,7 +191,9 @@ class AppSettingsService:
         preserve_auth_uids = {
             u["id"]
             for u in users
-            if u.get("id") and (u.get("role") == "admin" or u["id"] == preserve_user_id)
+            if u.get("id") and (
+                u.get("role") in ("admin", "super_admin") or u["id"] == preserve_user_id
+            )
         }
         preserve_auth_uids.add(preserve_user_id)
 
