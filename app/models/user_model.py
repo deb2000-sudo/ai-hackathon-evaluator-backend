@@ -330,6 +330,8 @@ class CurrentUser(BaseModel):
     email: str
     role: UserRole
     name: str
+    university_id: Optional[str] = None
+    batch_id: Optional[str] = None
     approval_status: Optional[ApprovalStatus] = None
     custom_role_id: Optional[str] = None
     permissions: list[str] = Field(default_factory=list)

@@ -13,11 +13,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from app.models.string_utils import strip_optional, strip_required
 from app.models.theme_model import ThemeSummary
 from app.utils.hackathon_round import (
-    MAX_ROUND_TEAM_SIZE,
-    MIN_FLEX_TEAM_SIZE,
-    TEAM_MODE_LABELS,
-    min_team_size_for,
-    normalize_max_team_size,
+    MAX_MULTI_TEAM_SIZE,
+    validate_team_size_fields,
 )
 
 
@@ -45,24 +42,36 @@ class TimelineRound(BaseModel):
         None,
         description="Id of a reusable evaluation requirement linked to this round.",
     )
-    max_team_size: int = Field(
-        1,
-        ge=1,
-        le=MAX_ROUND_TEAM_SIZE,
+    team_size_mode: Optional[str] = Field(
+        None,
         description=(
-            "1 = Solo. Any value from 2 to 5 is stored as 5 and means a flexible "
-            "team of 2–5 members."
+            "single = one student submits alone. "
+            "multi = a team whose size is between min_team_size and max_team_size (2–6). "
+            "open = no size restriction (1 or more). "
+            "Omit to keep a previously saved Solo / 2–5 round."
         ),
     )
-    min_team_size: int = Field(
+    max_team_size: Optional[int] = Field(
         1,
         ge=1,
-        le=MIN_FLEX_TEAM_SIZE,
-        description="1 for Solo. 2 when the round is a 2–5 member team.",
+        le=MAX_MULTI_TEAM_SIZE,
+        description=(
+            "Largest roster. 1 for single. 2–6 for multi, and it may equal the minimum. "
+            "Null for open. A round saved without team_size_mode still stores 1 or 5."
+        ),
+    )
+    min_team_size: Optional[int] = Field(
+        1,
+        ge=1,
+        le=MAX_MULTI_TEAM_SIZE,
+        description="1 for single and open. 2–6 for multi, and it may equal the maximum.",
     )
     team_mode_label: Optional[str] = Field(
         None,
-        description='Read-only label: "Solo" or "2-5 Members".',
+        description=(
+            "Read-only label such as Single person, 3 members, "
+            "2-6 members, or No fixed team size."
+        ),
     )
     working_demo_video_required: bool = Field(
         True,
@@ -140,9 +149,15 @@ class TimelineRound(BaseModel):
 
     @model_validator(mode="after")
     def apply_team_mode(self) -> "TimelineRound":
-        self.max_team_size = normalize_max_team_size(self.max_team_size)
-        self.min_team_size = min_team_size_for(self.max_team_size)
-        self.team_mode_label = TEAM_MODE_LABELS.get(self.max_team_size, "2-5 Members")
+        bounds = validate_team_size_fields(
+            self.team_size_mode,
+            self.min_team_size,
+            self.max_team_size,
+        )
+        self.team_size_mode = bounds.mode
+        self.min_team_size = bounds.min_size
+        self.max_team_size = bounds.max_size
+        self.team_mode_label = bounds.label
         return self
 
 
@@ -272,6 +287,15 @@ class HackathonUpdateRequest(BaseModel):
         return self
 
 
+class HackathonVisibility(BaseModel):
+    """Audience for one hackathon. Select-all flags ignore the id lists."""
+
+    all_universities: bool = True
+    all_batches: bool = True
+    university_ids: list[str] = Field(default_factory=list)
+    batch_ids: list[str] = Field(default_factory=list)
+
+
 class HackathonResponse(BaseModel):
     """Full hackathon document returned to clients."""
 
@@ -329,6 +353,13 @@ class HackathonResponse(BaseModel):
             "hackathon. Default 1, maximum 3."
         ),
     )
+    visibility: HackathonVisibility = Field(
+        default_factory=HackathonVisibility,
+        description=(
+            "Which universities and batches see this hackathon. "
+            "Both flags true means every student."
+        ),
+    )
     auto_publish_reports: bool = Field(
         False,
         description=(
@@ -369,7 +400,9 @@ class HackathonCatalogRound(BaseModel):
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     round_status: str
-    max_team_size: int
+    team_size_mode: str = "single"
+    min_team_size: int = 1
+    max_team_size: Optional[int] = None
     team_mode_label: str
 
 
@@ -396,9 +429,17 @@ class HackathonCatalogItem(BaseModel):
         ...,
         description="Upcoming | Open | Closing soon | Closed",
     )
-    team_mode: str = Field(..., description="solo | team")
-    team_mode_label: str = Field(..., description="Solo | Team")
-    max_team_size: int
+    team_mode: str = Field(..., description="solo | team | open")
+    team_mode_label: str = Field(
+        ...,
+        description=(
+            "Single person, a size or range such as 3 members or 2-4 members, "
+            "or No fixed team size."
+        ),
+    )
+    team_size_mode: str = "single"
+    min_team_size: int = 1
+    max_team_size: Optional[int] = None
     days_until_end: Optional[int] = Field(
         None,
         description="IST calendar days until featured round end_date when open.",
@@ -490,3 +531,54 @@ class ReportPublishingResponse(BaseModel):
         0,
         description="How many reports this request just published. Zero on GET.",
     )
+
+
+class HackathonVisibilityUpdateRequest(BaseModel):
+    """Replace who can see this hackathon on the student dashboard."""
+
+    all_universities: bool = Field(
+        ...,
+        description="True selects every university, including ones created later.",
+    )
+    all_batches: bool = Field(
+        ...,
+        description="True selects every batch, including ones created later.",
+    )
+    university_ids: list[str] = Field(default_factory=list)
+    batch_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("university_ids", "batch_ids")
+    @classmethod
+    def dedupe_ids(cls, value: list[str]) -> list[str]:
+        seen: list[str] = []
+        for item in value:
+            text = str(item or "").strip()
+            if text and text not in seen:
+                seen.append(text)
+        return seen
+
+
+class VisibilityUniversityOption(BaseModel):
+    id: str
+    name: str
+    location: str = ""
+    display_label: str = ""
+
+
+class VisibilityBatchOption(BaseModel):
+    id: str
+    university_id: str
+    university_name: str = ""
+    name: str
+
+
+class HackathonVisibilityResponse(BaseModel):
+    """Settings payload: the saved rule plus every university and batch."""
+
+    hackathon_id: str
+    all_universities: bool
+    all_batches: bool
+    university_ids: list[str] = Field(default_factory=list)
+    batch_ids: list[str] = Field(default_factory=list)
+    universities: list[VisibilityUniversityOption] = Field(default_factory=list)
+    batches: list[VisibilityBatchOption] = Field(default_factory=list)

@@ -20,6 +20,8 @@ Hackathon routes.
     PUT    /hackathons/{id}/submission-limit -> admin: set max submissions (1–3)
     GET    /hackathons/{id}/evaluators -> admin: roster for settings and the dropdown
     PUT    /hackathons/{id}/evaluators -> admin: replace which evaluators can be assigned
+    GET    /hackathons/{id}/visibility -> admin: universities and batches for Settings
+    PUT    /hackathons/{id}/visibility -> admin: who can see this hackathon
 """
 
 import json
@@ -38,7 +40,11 @@ from fastapi import (
 )
 from pydantic import ValidationError
 
-from app.middleware.auth_middleware import get_admin_user, get_current_user
+from app.middleware.auth_middleware import (
+    get_admin_user,
+    get_current_user,
+    get_optional_current_user,
+)
 from app.exceptions import AppError
 from app.models.hackathon_model import (
     HackathonCatalogItem,
@@ -52,6 +58,8 @@ from app.models.hackathon_model import (
     ReportPublishingUpdateRequest,
     SubmissionLimitResponse,
     SubmissionLimitUpdateRequest,
+    HackathonVisibilityResponse,
+    HackathonVisibilityUpdateRequest,
     TimelineRound,
 )
 from app.models.round_model import PublishRoundResponse
@@ -84,6 +92,7 @@ from app.models.hackathon_draft_model import (
     HackathonDraftUpdateRequest,
 )
 from app.utils.async_io import run_sync
+from app.utils.hackathon_visibility import visible_to_viewer
 
 
 logger = logging.getLogger(__name__)
@@ -394,8 +403,10 @@ async def list_hackathons(
     current_user: CurrentUser = Depends(get_current_user),
     service: HackathonService = Depends(get_hackathon_service),
 ) -> list[HackathonResponse]:
-    """List all hackathons. Available to any authenticated user."""
+    """List hackathons. Students only receive ones open to their university and batch."""
     hackathons = await run_sync(service.list_hackathons)
+    if current_user.role == "student":
+        hackathons = [item for item in hackathons if visible_to_viewer(item, current_user)]
     return [await _to_response(service, item, current_user=current_user) for item in hackathons]
 
 
@@ -406,15 +417,20 @@ async def list_hackathon_catalog(
         description="When false, omit hackathons whose featured round has ended.",
     ),
     service: HackathonService = Depends(get_hackathon_service),
+    viewer: CurrentUser | None = Depends(get_optional_current_user),
 ) -> list[HackathonCatalogItem]:
     """
     Homepage listing. Reads live Firestore hackathons and attaches computed
     badges: Open, Closing soon, Upcoming, Closed, Solo, Team.
 
-    Public (no login). Only hackathons with at least one **published** round
-    are returned. Poll this endpoint for near-real-time home cards.
+    Public when nobody is signed in: only hackathons opened to every university
+    and batch. A signed-in student also sees hackathons for their campus.
     """
-    items = await run_sync(service.list_hackathon_catalog, include_closed=include_closed)
+    items = await run_sync(
+        service.list_hackathon_catalog,
+        include_closed=include_closed,
+        viewer=viewer,
+    )
     return [HackathonCatalogItem(**item) for item in items]
 
 
@@ -604,6 +620,43 @@ async def update_submission_limit(
 
 
 @router.get(
+    "/{hackathon_id}/visibility",
+    response_model=HackathonVisibilityResponse,
+)
+async def get_hackathon_visibility(
+    hackathon_id: str,
+    admin: CurrentUser = Depends(get_admin_user),
+    service: HackathonService = Depends(get_hackathon_service),
+) -> HackathonVisibilityResponse:
+    """Universities, batches, and which of them can see this hackathon."""
+    _ = admin
+    try:
+        payload = await run_sync(service.get_visibility, hackathon_id)
+    except ValueError as e:
+        raise _prompt_http_error(e) from e
+    return HackathonVisibilityResponse(**payload)
+
+
+@router.put(
+    "/{hackathon_id}/visibility",
+    response_model=HackathonVisibilityResponse,
+)
+async def update_hackathon_visibility(
+    hackathon_id: str,
+    request: HackathonVisibilityUpdateRequest,
+    admin: CurrentUser = Depends(get_admin_user),
+    service: HackathonService = Depends(get_hackathon_service),
+) -> HackathonVisibilityResponse:
+    """Choose the universities and batches whose students see this hackathon."""
+    _ = admin
+    try:
+        payload = await run_sync(service.set_visibility, hackathon_id, request)
+    except ValueError as e:
+        raise _prompt_http_error(e) from e
+    return HackathonVisibilityResponse(**payload)
+
+
+@router.get(
     "/{hackathon_id}/evaluators",
     response_model=HackathonEvaluatorsResponse,
 )
@@ -659,6 +712,12 @@ async def list_hackathon_themes(
 
     Students use this list on the submission form to pick a theme.
     """
+    hackathon = await run_sync(service.get_hackathon, hackathon_id)
+    if not hackathon or not visible_to_viewer(hackathon, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Hackathon not found",
+        )
     themes = await run_sync(service.get_hackathon_themes, hackathon_id)
     if themes is None:
         raise HTTPException(
@@ -676,7 +735,7 @@ async def get_hackathon(
 ) -> HackathonResponse:
     """Get a single hackathon by id (includes resolved ``themes``)."""
     hackathon = await run_sync(service.get_hackathon, hackathon_id)
-    if not hackathon:
+    if not hackathon or not visible_to_viewer(hackathon, current_user):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Hackathon not found",
@@ -728,13 +787,20 @@ async def get_round_leaderboard(
     round_index: int,
     current_user: CurrentUser = Depends(get_current_user),
     service: LeaderboardService = Depends(get_leaderboard_service),
+    hackathon_service: HackathonService = Depends(get_hackathon_service),
 ) -> LeaderboardResponse:
     """
     Ranked results for one round (highest ``final_score`` first).
 
     Admin and evaluators always get a preview. Students only after the admin
-    publishes the leaderboard.
+    publishes the leaderboard, and only when the hackathon is open to them.
     """
+    hackathon = await run_sync(hackathon_service.get_hackathon, hackathon_id)
+    if not hackathon or not visible_to_viewer(hackathon, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Hackathon not found",
+        )
     result = await run_sync(
         service.get_leaderboard,
         hackathon_id,

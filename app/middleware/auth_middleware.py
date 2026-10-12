@@ -161,6 +161,8 @@ def _authenticate_token(
         email=user_data.get("email", ""),
         role=role,
         name=user_data.get("name", ""),
+        university_id=user_data.get("university_id"),
+        batch_id=user_data.get("batch_id"),
         approval_status=approval_status,
         custom_role_id=user_data.get("custom_role_id"),
         permissions=access.permissions_for(user_data),
@@ -188,8 +190,7 @@ def _enforce_profile_ready(current_user: CurrentUser, path: str) -> None:
         detail={
             "code": "PROFILE_INCOMPLETE",
             "message": (
-                "Verify your email and mobile number and add your employee ID "
-                "before continuing."
+                "Verify your email and mobile number and add your employee ID " "before continuing."
             ),
         },
     )
@@ -246,6 +247,22 @@ async def get_current_user(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Authentication error",
         ) from e
+
+
+async def get_optional_current_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    firebase: FirebaseService = Depends(get_firebase),
+    user_service: UserService = Depends(get_user_service),
+) -> CurrentUser | None:
+    """Signed-in user when a token is present. Anonymous callers stay anonymous."""
+    token, _used_cookie = _extract_token(request, credentials)
+    if not token:
+        return None
+    try:
+        return await run_sync(_authenticate_token, token, firebase, user_service)
+    except (HTTPException, AppError, ValueError):
+        return None
 
 
 def get_admin_user(

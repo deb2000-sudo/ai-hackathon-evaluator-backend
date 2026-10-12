@@ -326,11 +326,13 @@ Stored on `TimelineRound`:
 | Field | Meaning |
 |-------|---------|
 | `published` | Students can see and enroll |
-| `max_team_size` | 1 = Solo. 5 = flexible team of 2–5 members (2, 3, and 4 are stored as 5). Leader may submit once the roster is 2–5. |
+| `team_size_mode` | `single` (one student), `multi` (`min_team_size` and `max_team_size`, each 2–6, equal allowed), or `open` (any size, including 1). Rounds saved before this field stay Solo (`max_team_size` 1) or a flexible 2–5 team (`max_team_size` 5). |
 | `working_demo_video_required` | Video required vs form-only |
 | `auto_ai_evaluation` | Queue Gemini on evaluator assign |
 | `github_ai_evaluation` | Show GitHub AI button for evaluators |
 | `leaderboard_published` | Students may `GET` the ranked board |
+
+Hackathon visibility (`hackathons.visibility`) is set from Hackathon Settings, not at create time. `all_universities` and `all_batches` default to true, so existing hackathons stay on every student dashboard. A specific list is the intersection: the student's `university_id` and `batch_id` must both match. Select-all stays open to universities and batches created later. Students who do not match are omitted from `GET /hackathons` and the catalog, and `GET /hackathons/{id}`, enrollment, and submit return as if the hackathon does not exist (`404` or `NOT_VISIBLE`). Staff are not filtered. Anonymous catalog visitors only see hackathons with both select-all flags on.
 
 Computed `round_status`: `draft` | `scheduled` | `open` | `closed` from IST dates.
 
@@ -342,7 +344,8 @@ Computed `round_status`: `draft` | `scheduled` | `open` | `closed` from IST date
 
 ```text
 Admin draft  →  POST /hackathons
-             →  publish round (students can enroll)
+             →  Settings → Visibility (universities and batches; default is everyone)
+             →  publish round (matching students can enroll)
              →  students enroll (solo or team)
              →  up to max_submissions per student/team per round (default 1, max 3)
              →  admin assigns evaluator(s)
@@ -356,7 +359,8 @@ Admin draft  →  POST /hackathons
 
 Per **hackathon + round index** (not per hackathon overall):
 
-- Solo (`max_team_size == 1`): `POST …/enroll/solo`
+- Single (`team_size_mode` `single`, or legacy `max_team_size == 1`): `POST …/enroll/solo`
+- Open (`team_size_mode` `open`): the same solo enroll, or a team of any size. The leader may submit with one or more members.
 - Team: leader `POST …/teams/create` (name + 6-digit join code) → members `POST …/teams/join`
 - `GET …/participation` drives the SPA (`can_submit`, `already_submitted`, `pending_action`, team completeness)
 

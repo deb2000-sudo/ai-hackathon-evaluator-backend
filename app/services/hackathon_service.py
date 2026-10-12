@@ -13,10 +13,15 @@ from app.utils.time import now_ist, now_ist_iso
 from google.cloud import storage
 
 from app.exceptions import ConflictError, NotFoundError
-from app.models.hackathon_model import HackathonCreateRequest, HackathonUpdateRequest
+from app.models.hackathon_model import (
+    HackathonCreateRequest,
+    HackathonUpdateRequest,
+    HackathonVisibilityUpdateRequest,
+)
 from app.services.evaluation_requirement_service import EvaluationRequirementService
 from app.services.firebase import FirebaseService
 from app.services.theme_service import ThemeService
+from app.services.university_service import UniversityService
 from app.services.user_service import UserService
 from app.utils.banner_cache import (
     BANNER_CACHE_CONTROL,
@@ -26,10 +31,9 @@ from app.utils.banner_cache import (
 from app.utils.gcs_video import build_storage_client, parse_gs_uri
 from app.utils.hackathon_round import (
     CATALOG_STATUS_LABELS,
-    TEAM_MODE_LABELS,
     catalog_sort_key,
     catalog_status_for_round,
-    catalog_team_mode,
+    catalog_team_mode_for_round,
     enrich_timeline_round,
     hackathon_default_auto_ai,
     hackathon_default_github_ai,
@@ -41,6 +45,7 @@ from app.utils.hackathon_round import (
     round_is_published,
     validate_round_publishable,
 )
+from app.utils.hackathon_visibility import normalize_visibility, visible_to_viewer
 from app.utils.image_upload import prepare_card_banner, resolve_image_content_type
 
 
@@ -103,6 +108,7 @@ class HackathonService:
             "created_by": created_by,
             "created_at": now,
             "updated_at": now,
+            "visibility": normalize_visibility({}),
             # Snapshot of approved evaluators at creation. Settings can narrow it.
             "evaluator_ids": self._approved_evaluator_ids(),
         }
@@ -117,16 +123,24 @@ class HackathonService:
         self._prime_banner_urls(hackathons)
         return hackathons
 
-    def list_hackathon_catalog(self, *, include_closed: bool = True) -> list[dict[str, Any]]:
+    def list_hackathon_catalog(
+        self,
+        *,
+        include_closed: bool = True,
+        viewer: Any | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Homepage cards: hackathons with at least one published round.
 
         Status (open / closing soon / upcoming / closed) and Solo vs Team are
-        computed in IST from the featured published round.
+        computed in IST from the featured published round. A student only
+        receives cards their university and batch are allowed to see.
         """
         now = now_ist()
         items: list[dict[str, Any]] = []
         for hackathon in self.list_hackathons():
+            if not visible_to_viewer(hackathon, viewer):
+                continue
             card = self._catalog_item_for_hackathon(hackathon, now=now)
             if not card:
                 continue
@@ -146,8 +160,10 @@ class HackathonService:
             return None
         index, round_ = featured
         status = catalog_status_for_round(round_, now=now)
-        team_mode, team_mode_label = catalog_team_mode(round_.get("max_team_size", 1))
-        max_size = int(round_.get("max_team_size") or 1)
+        team_mode, team_mode_label = catalog_team_mode_for_round(round_)
+        max_size = round_.get("max_team_size")
+        min_size = int(round_.get("min_team_size") or 1)
+        size_mode = str(round_.get("team_size_mode") or "single")
         end = parse_iso_date(round_.get("end_date"))
         days_until_end = None
         if end is not None and status in ("open", "closing_soon"):
@@ -191,6 +207,8 @@ class HackathonService:
             "status_label": CATALOG_STATUS_LABELS[status],
             "team_mode": team_mode,
             "team_mode_label": team_mode_label,
+            "team_size_mode": size_mode,
+            "min_team_size": min_size,
             "max_team_size": max_size,
             "days_until_end": days_until_end,
             "featured_round": {
@@ -199,9 +217,10 @@ class HackathonService:
                 "start_date": round_.get("start_date"),
                 "end_date": round_.get("end_date"),
                 "round_status": round_.get("round_status"),
+                "team_size_mode": size_mode,
+                "min_team_size": min_size,
                 "max_team_size": max_size,
-                "team_mode_label": round_.get("team_mode_label")
-                or TEAM_MODE_LABELS.get(max_size, "2-5 Members"),
+                "team_mode_label": round_.get("team_mode_label") or team_mode_label,
             },
         }
 
@@ -226,6 +245,88 @@ class HackathonService:
             {"max_submissions": limit, "updated_at": now_ist_iso()},
         )
         return {"hackathon_id": hackathon_id, "max_submissions": limit}
+
+    def get_visibility(self, hackathon_id: str) -> dict[str, Any]:
+        """Saved audience plus every university and batch for the settings form."""
+        existing = self.get_hackathon(hackathon_id)
+        if not existing:
+            raise ValueError("Hackathon not found")
+        universities, batches = self._visibility_catalog()
+        rule = normalize_visibility(existing)
+        return {
+            "hackathon_id": hackathon_id,
+            **rule,
+            "universities": [
+                {
+                    "id": item["id"],
+                    "name": item.get("name") or "",
+                    "location": item.get("location") or "",
+                    "display_label": item.get("display_label") or "",
+                }
+                for item in universities
+            ],
+            "batches": [
+                {
+                    "id": item["id"],
+                    "university_id": item.get("university_id") or "",
+                    "university_name": item.get("university_name") or "",
+                    "name": item.get("name") or "",
+                }
+                for item in batches
+            ],
+        }
+
+    def set_visibility(
+        self,
+        hackathon_id: str,
+        request: HackathonVisibilityUpdateRequest,
+    ) -> dict[str, Any]:
+        """Replace the audience. Select-all stays open to campuses created later."""
+        if not self.get_hackathon(hackathon_id):
+            raise ValueError("Hackathon not found")
+        universities, batches = self._visibility_catalog()
+        known_universities = {item["id"] for item in universities}
+        known_batches = {item["id"]: item for item in batches}
+        university_ids = list(request.university_ids)
+        batch_ids = list(request.batch_ids)
+        if request.all_universities:
+            university_ids = []
+        elif not university_ids:
+            raise ValueError("Select at least one university, or choose all universities")
+        elif any(item not in known_universities for item in university_ids):
+            raise ValueError("One or more universities do not exist")
+        if request.all_batches:
+            batch_ids = []
+        elif not batch_ids:
+            raise ValueError("Select at least one batch, or choose all batches")
+        elif any(item not in known_batches for item in batch_ids):
+            raise ValueError("One or more batches do not exist")
+        elif not request.all_universities:
+            outside = [
+                item
+                for item in batch_ids
+                if known_batches[item].get("university_id") not in university_ids
+            ]
+            if outside:
+                raise ValueError("Each selected batch must belong to a selected university")
+        self.firebase.update_document(
+            self.collection,
+            hackathon_id,
+            {
+                "visibility": {
+                    "all_universities": request.all_universities,
+                    "all_batches": request.all_batches,
+                    "university_ids": university_ids,
+                    "batch_ids": batch_ids,
+                },
+                "updated_at": now_ist_iso(),
+            },
+        )
+        return self.get_visibility(hackathon_id)
+
+    def _visibility_catalog(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        catalogue = UniversityService(firebase=self.firebase)
+        return catalogue.list_universities(), catalogue.list_batches()
 
     def _approved_evaluators(self) -> list[dict[str, Any]]:
         return UserService(firebase=self.firebase).get_evaluators(approval_status="approved")
@@ -457,6 +558,7 @@ class HackathonService:
         enriched.setdefault("auto_publish_reports", False)
         enriched.setdefault("max_submissions", 1)
         enriched["max_submissions"] = normalize_max_submissions(enriched.get("max_submissions"))
+        enriched["visibility"] = normalize_visibility(enriched)
         enriched.setdefault("export_spreadsheet_id", None)
         enriched.setdefault("export_spreadsheet_url", None)
         enriched.setdefault("export_spreadsheet_synced_at", None)

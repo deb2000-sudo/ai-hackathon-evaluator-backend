@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Literal
 
@@ -11,6 +12,8 @@ from app.utils.time import now_ist
 
 MAX_ROUND_TEAM_SIZE = 5
 MIN_FLEX_TEAM_SIZE = 2
+MIN_MULTI_TEAM_SIZE = 2
+MAX_MULTI_TEAM_SIZE = 6
 DEFAULT_MAX_SUBMISSIONS = 1
 MAX_SUBMISSIONS_PER_ROUND = 3
 
@@ -18,6 +21,7 @@ TEAM_MODE_LABELS = {
     1: "Solo",
     5: "2-5 Members",
 }
+TEAM_SIZE_MODES = ("single", "multi", "open")
 
 RoundStatus = Literal["draft", "scheduled", "open", "closed"]
 CatalogStatus = Literal["upcoming", "open", "closing_soon", "closed"]
@@ -46,10 +50,108 @@ def normalize_max_team_size(value: Any) -> int:
 
 
 def min_team_size_for(max_team_size: Any) -> int:
-    """Smallest roster that may submit: 1 for solo, 2 for a team round."""
+    """Smallest roster that may submit: 1 for solo, 2 for a legacy team round."""
     if normalize_max_team_size(max_team_size) <= 1:
         return 1
     return MIN_FLEX_TEAM_SIZE
+
+
+def team_incomplete_message(min_size: int, max_size: int | None) -> str:
+    """Why a leader cannot submit yet for this round's size rule."""
+    if min_size == MIN_FLEX_TEAM_SIZE and max_size == MAX_ROUND_TEAM_SIZE:
+        return TEAM_INCOMPLETE_MESSAGE
+    if max_size is not None and min_size == max_size:
+        return f"This team must have exactly {min_size} members before you can submit."
+    if max_size is None:
+        return "Create the team before you can submit."
+    return f"This team must have {min_size} to {max_size} members before you can submit."
+
+
+def _multi_label(min_size: int, max_size: int) -> str:
+    if min_size == MIN_FLEX_TEAM_SIZE and max_size == MAX_ROUND_TEAM_SIZE:
+        return TEAM_MODE_LABELS[MAX_ROUND_TEAM_SIZE]
+    if min_size == max_size:
+        return f"{min_size} members"
+    return f"{min_size}-{max_size} members"
+
+
+def team_too_large_message(max_size: int) -> str:
+    return f"A team cannot have more than {max_size} members."
+
+
+@dataclass(frozen=True)
+class TeamBounds:
+    mode: str
+    min_size: int
+    max_size: int | None
+    label: str
+
+
+def resolve_team_bounds(data: dict[str, Any] | None) -> TeamBounds:
+    """
+    Return ``(team_size_mode, min_size, max_size, label)``.
+
+    ``max_size`` is ``None`` when the round has no fixed team size.
+    Rounds saved before this field existed stay Solo (1) or a flexible 2–5 team.
+    """
+    source = data or {}
+    mode = source.get("team_size_mode")
+    if mode == "single":
+        return TeamBounds("single", 1, 1, "Single person")
+    if mode == "open":
+        return TeamBounds("open", 1, None, "No fixed team size")
+    if mode == "multi":
+        try:
+            min_size = int(source.get("min_team_size") or MIN_MULTI_TEAM_SIZE)
+        except (TypeError, ValueError):
+            min_size = MIN_MULTI_TEAM_SIZE
+        try:
+            max_size = int(source.get("max_team_size") or min_size)
+        except (TypeError, ValueError):
+            max_size = min_size
+        min_size = max(MIN_MULTI_TEAM_SIZE, min(MAX_MULTI_TEAM_SIZE, min_size))
+        max_size = max(min_size, min(MAX_MULTI_TEAM_SIZE, max_size))
+        return TeamBounds("multi", min_size, max_size, _multi_label(min_size, max_size))
+
+    max_size = normalize_max_team_size(source.get("max_team_size", 1))
+    if max_size <= 1:
+        return TeamBounds("single", 1, 1, TEAM_MODE_LABELS[1])
+    return TeamBounds(
+        "multi",
+        MIN_FLEX_TEAM_SIZE,
+        max_size,
+        TEAM_MODE_LABELS.get(max_size, "2-5 Members"),
+    )
+
+
+def validate_team_size_fields(
+    mode: str | None,
+    min_team_size: int | None,
+    max_team_size: int | None,
+) -> TeamBounds:
+    """Validate a round write. Missing mode keeps the legacy Solo / 2–5 rule."""
+    if mode is None:
+        if max_team_size is not None and max_team_size > MAX_ROUND_TEAM_SIZE:
+            raise ValueError("max_team_size cannot be greater than 5 unless team_size_mode is set")
+        stored = max_team_size if max_team_size is not None else 1
+        return resolve_team_bounds({"max_team_size": stored})
+    if mode not in TEAM_SIZE_MODES:
+        raise ValueError("team_size_mode must be single, multi, or open")
+    if mode == "single":
+        return TeamBounds("single", 1, 1, "Single person")
+    if mode == "open":
+        return TeamBounds("open", 1, None, "No fixed team size")
+    if min_team_size is None or max_team_size is None:
+        raise ValueError("Minimum and maximum participants are required")
+    if not MIN_MULTI_TEAM_SIZE <= min_team_size <= MAX_MULTI_TEAM_SIZE:
+        raise ValueError("Minimum participants must be from 2 to 6")
+    if not MIN_MULTI_TEAM_SIZE <= max_team_size <= MAX_MULTI_TEAM_SIZE:
+        raise ValueError("Maximum participants must be from 2 to 6")
+    if min_team_size > max_team_size:
+        raise ValueError("Minimum participants cannot be greater than the maximum")
+    return TeamBounds(
+        "multi", min_team_size, max_team_size, _multi_label(min_team_size, max_team_size)
+    )
 
 
 def normalize_max_submissions(value: Any) -> int:
@@ -236,10 +338,17 @@ def enrich_timeline_round(
 ) -> dict[str, Any]:
     """Normalize one timeline round for API responses."""
     data = dict(round_)
-    max_size = normalize_max_team_size(data.get("max_team_size", 1))
+    bounds = resolve_team_bounds(data)
+    mode, min_size, max_size, label = (
+        bounds.mode,
+        bounds.min_size,
+        bounds.max_size,
+        bounds.label,
+    )
+    data["team_size_mode"] = mode
+    data["min_team_size"] = min_size
     data["max_team_size"] = max_size
-    data["min_team_size"] = min_team_size_for(max_size)
-    data["team_mode_label"] = TEAM_MODE_LABELS.get(max_size, "2-5 Members")
+    data["team_mode_label"] = label
     if "working_demo_video_required" not in data:
         data["working_demo_video_required"] = hackathon_default_video_required(hackathon)
     else:
@@ -313,9 +422,20 @@ def catalog_status_for_round(
 
 
 def catalog_team_mode(max_team_size: Any) -> tuple[str, str]:
+    """Legacy helper: 1 is Solo, any larger stored size is Team."""
     size = normalize_max_team_size(max_team_size)
     if size <= 1:
         return "solo", "Solo"
+    return "team", "Team"
+
+
+def catalog_team_mode_for_round(round_: dict[str, Any] | None) -> tuple[str, str]:
+    """Homepage chip: Solo, Team, or No fixed team size."""
+    mode = resolve_team_bounds(round_).mode
+    if mode == "single":
+        return "solo", "Solo"
+    if mode == "open":
+        return "open", "No fixed team size"
     return "team", "Team"
 
 
