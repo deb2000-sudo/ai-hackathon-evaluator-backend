@@ -287,6 +287,43 @@ class HackathonUpdateRequest(BaseModel):
         return self
 
 
+class BulkApproveFailure(BaseModel):
+    submission_id: str
+    reason: str
+
+
+class EvaluationApprovalSummary(BaseModel):
+    """Counts for the Super Admin bulk-approve control."""
+
+    hackathon_id: str
+    pending_review_count: int = Field(
+        0,
+        description="Completed evaluations the evaluator has submitted and nobody has approved.",
+    )
+    approved_count: int = Field(
+        0,
+        description="Submissions already approved. These scores are eligible for the leaderboard.",
+    )
+    skipped_count: int = Field(
+        0,
+        description="Submissions that are not ready: still with the evaluator, or not evaluated.",
+    )
+
+
+class BulkApproveEvaluationsResponse(BaseModel):
+    """Result of approving every pending evaluation on one hackathon."""
+
+    hackathon_id: str
+    approved_now: int = 0
+    already_approved: int = 0
+    skipped: int = 0
+    failed: list[BulkApproveFailure] = Field(default_factory=list)
+    leaderboard_eligible: int = Field(
+        0,
+        description="Approved submissions whose scores the leaderboard can rank.",
+    )
+
+
 class HackathonVisibility(BaseModel):
     """Audience for one hackathon. Select-all flags ignore the id lists."""
 

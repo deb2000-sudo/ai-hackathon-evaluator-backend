@@ -22,6 +22,8 @@ Hackathon routes.
     PUT    /hackathons/{id}/evaluators -> admin: replace which evaluators can be assigned
     GET    /hackathons/{id}/visibility -> admin: universities and batches for Settings
     PUT    /hackathons/{id}/visibility -> admin: who can see this hackathon
+    GET    /hackathons/{id}/evaluation-approvals -> super admin: pending review counts
+    POST   /hackathons/{id}/evaluation-approvals/approve-all -> super admin: approve them
 """
 
 import json
@@ -44,6 +46,7 @@ from app.middleware.auth_middleware import (
     get_admin_user,
     get_current_user,
     get_optional_current_user,
+    get_super_admin_user,
 )
 from app.exceptions import AppError
 from app.models.hackathon_model import (
@@ -60,6 +63,8 @@ from app.models.hackathon_model import (
     SubmissionLimitUpdateRequest,
     HackathonVisibilityResponse,
     HackathonVisibilityUpdateRequest,
+    BulkApproveEvaluationsResponse,
+    EvaluationApprovalSummary,
     TimelineRound,
 )
 from app.models.round_model import PublishRoundResponse
@@ -654,6 +659,51 @@ async def update_hackathon_visibility(
     except ValueError as e:
         raise _prompt_http_error(e) from e
     return HackathonVisibilityResponse(**payload)
+
+
+@router.get(
+    "/{hackathon_id}/evaluation-approvals",
+    response_model=EvaluationApprovalSummary,
+)
+async def get_evaluation_approvals(
+    hackathon_id: str,
+    super_admin: CurrentUser = Depends(get_super_admin_user),
+    service: SubmissionService = Depends(get_submission_service),
+) -> EvaluationApprovalSummary:
+    """How many evaluator-submitted reviews are waiting for Super Admin."""
+    _ = super_admin
+    try:
+        payload = await run_sync(service.evaluation_approval_summary, hackathon_id)
+    except ValueError as e:
+        raise _prompt_http_error(e) from e
+    return EvaluationApprovalSummary(**payload)
+
+
+@router.post(
+    "/{hackathon_id}/evaluation-approvals/approve-all",
+    response_model=BulkApproveEvaluationsResponse,
+)
+async def bulk_approve_evaluations(
+    hackathon_id: str,
+    super_admin: CurrentUser = Depends(get_super_admin_user),
+    service: SubmissionService = Depends(get_submission_service),
+) -> BulkApproveEvaluationsResponse:
+    """
+    Approve every evaluation an evaluator has submitted for this hackathon.
+
+    Each approval uses the score already on the submission. Those scores are
+    then eligible for the leaderboard. Students still see the board only after
+    that round's leaderboard is published.
+    """
+    try:
+        payload = await run_sync(
+            service.bulk_approve_evaluations,
+            hackathon_id,
+            super_admin.user_id,
+        )
+    except ValueError as e:
+        raise _prompt_http_error(e) from e
+    return BulkApproveEvaluationsResponse(**payload)
 
 
 @router.get(

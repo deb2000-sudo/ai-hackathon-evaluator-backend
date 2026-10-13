@@ -332,6 +332,8 @@ Stored on `TimelineRound`:
 | `github_ai_evaluation` | Show GitHub AI button for evaluators |
 | `leaderboard_published` | Students may `GET` the ranked board |
 
+Super Admin can approve every evaluator-submitted review for one hackathon from Settings: `POST /hackathons/{id}/evaluation-approvals/approve-all`. Only `status=completed` and `review_status=pending_review` are approved, using the score already stored. Those rows become eligible for the leaderboard. The student-facing board still needs the existing per-round publish. Built-in Admin cannot call this route.
+
 Hackathon visibility (`hackathons.visibility`) is set from Hackathon Settings, not at create time. `all_universities` and `all_batches` default to true, so existing hackathons stay on every student dashboard. A specific list is the intersection: the student's `university_id` and `batch_id` must both match. Select-all stays open to universities and batches created later. Students who do not match are omitted from `GET /hackathons` and the catalog, and `GET /hackathons/{id}`, enrollment, and submit return as if the hackathon does not exist (`404` or `NOT_VISIBLE`). Staff are not filtered. Anonymous catalog visitors only see hackathons with both select-all flags on.
 
 Computed `round_status`: `draft` | `scheduled` | `open` | `closed` from IST dates.
