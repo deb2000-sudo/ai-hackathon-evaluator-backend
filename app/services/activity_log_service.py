@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import logging
 import time
-import uuid
 from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any
 
 from app.services.firebase import FirebaseService
+from app.utils.ids import new_id
 from app.utils.time import now_ist, parse_to_ist
 
 
@@ -77,6 +77,7 @@ _OPERATIONS: tuple[tuple[str, str, str, str], ...] = (
     ("PATCH", "/hackathons/", "Hackathons", "Updated a hackathon"),
     ("DELETE", "/hackathons/", "Hackathons", "Deleted a hackathon"),
     ("GET", "/hackathons", "Hackathons", "Viewed hackathons"),
+    ("GET", "/admin/overview", "Overview", "Viewed overview"),
     ("*", "/admin/users", "Students", "Viewed students"),
     ("*", "/admin/evaluators", "Evaluators", "Viewed evaluators"),
     ("POST", "/super-admin/settings/reset-database", "Settings", "Reset the database"),
@@ -232,7 +233,7 @@ class ActivityLogService:
     def record(self, entry: dict[str, Any]) -> None:
         """Store one action. Failures are logged and never raised to the request."""
         try:
-            self.firebase.set_document(COLLECTION, uuid.uuid4().hex, entry)
+            self.firebase.set_document(COLLECTION, new_id(), entry)
             self._maybe_prune()
         except Exception:
             logger.warning("Could not write an application log", exc_info=True)

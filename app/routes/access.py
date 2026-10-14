@@ -9,6 +9,7 @@ Super Admin access control.
     GET    /admin/access/users       -> super admin, admin, and custom-role users
     POST   /admin/access/users       -> create a user with email, password, and a role
     PATCH  /admin/access/users/{id}  -> change a user's name and role
+    DELETE /admin/access/users/{id}  -> delete an Admin or custom-role user
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -146,3 +147,20 @@ async def update_staff_user(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return StaffUserResponse(**updated)
+
+
+@router.delete("/users/{user_id}", status_code=200)
+async def delete_staff_user(
+    user_id: str,
+    super_admin: CurrentUser = Depends(get_super_admin_user),
+    service: AccessService = Depends(get_access_service),
+) -> dict:
+    """
+    Remove an Admin or custom-role login from Firestore and Firebase Auth.
+
+    A Super Admin account cannot be deleted.
+    """
+    deleted = await run_sync(service.delete_staff_user, user_id, super_admin.user_id)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return {"message": "User deleted successfully"}

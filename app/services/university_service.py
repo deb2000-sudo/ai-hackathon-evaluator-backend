@@ -3,7 +3,6 @@ University catalogue — admin-created institutions for student registration.
 """
 
 import logging
-import uuid
 from typing import Any
 
 from app.exceptions import ConflictError, NotFoundError
@@ -12,9 +11,11 @@ from app.models.university_model import (
     BatchUpdateRequest,
     UniversityCreateRequest,
     UniversityUpdateRequest,
+    normalize_college_type,
     university_display_label,
 )
 from app.services.firebase import FirebaseService
+from app.utils.ids import new_id
 from app.utils.time import now_ist_iso
 
 
@@ -39,11 +40,12 @@ class UniversityService:
         name = request.name.strip()
         location = request.location.strip()
         self._assert_unique(name, location)
-        university_id = uuid.uuid4().hex
+        university_id = new_id()
         now = now_ist_iso()
         document = {
             "name": name,
             "location": location,
+            "college_type": request.college_type,
             "created_by": created_by,
             "created_at": now,
             "updated_at": now,
@@ -99,6 +101,8 @@ class UniversityService:
             update["name"] = name
         if request.location is not None:
             update["location"] = location
+        if request.college_type is not None:
+            update["college_type"] = request.college_type
         if update:
             update["updated_at"] = now_ist_iso()
             self.firebase.update_document(self.collection, university_id, update)
@@ -128,7 +132,7 @@ class UniversityService:
         university = self.require_university(university_id)
         name = request.name.strip()
         self._assert_batch_name_unique(university_id, name)
-        batch_id = uuid.uuid4().hex
+        batch_id = new_id()
         now = now_ist_iso()
         document = {
             "university_id": university["id"],
@@ -276,6 +280,7 @@ class UniversityService:
             "name": name,
             "location": location,
             "display_label": university_display_label(name, location),
+            "college_type": normalize_college_type(document.get("college_type")),
             "created_by": document.get("created_by", ""),
             "created_at": document.get("created_at", ""),
             "updated_at": document.get("updated_at", ""),

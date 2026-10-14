@@ -20,6 +20,13 @@ REGISTRATION_ROLES: tuple[str, ...] = ("evaluator", "student")
 NXTWAVE_EMAIL_DOMAIN = "@nxtwave.co.in"
 
 
+class VerificationDue(BaseModel):
+    """Channels a signed-in student or evaluator must still verify."""
+
+    email: bool = False
+    mobile: bool = False
+
+
 class TeamMember(BaseModel):
     """A non-leader member on a student hackathon team."""
 
@@ -209,6 +216,8 @@ class UserResponse(BaseModel):
     email: str
     role: UserRole
     niat_id: Optional[str] = None
+    college_id: Optional[str] = None
+    college_type: Optional[Literal["NIAT", "Non NIAT"]] = None
     employee_id: Optional[str] = None
     mobile_no: Optional[str] = None
     team_name: Optional[str] = None
@@ -235,8 +244,33 @@ class UserResponse(BaseModel):
     )
     email_verified: Optional[bool] = None
     phone_verified: Optional[bool] = None
+    verification_due: VerificationDue = Field(
+        default_factory=VerificationDue,
+        description=(
+            "True for a channel only after Super Admin has released verification "
+            "for this account and that channel is still unverified."
+        ),
+    )
     created_at: OptionalISTDateTime = None
     updated_at: OptionalISTDateTime = None
+
+
+class OverviewPendingEvaluator(BaseModel):
+    """One pending evaluator shown on the Overview panel."""
+
+    id: str
+    name: str = ""
+    email: str = ""
+
+
+class AdminOverviewResponse(BaseModel):
+    """Counts for Overview. The hackathon list stays on GET /hackathons."""
+
+    total_users: int = 0
+    student_count: int = 0
+    evaluator_count: int = 0
+    pending_count: int = 0
+    pending_evaluators: list[OverviewPendingEvaluator] = Field(default_factory=list)
 
 
 class PaginatedUsersResponse(BaseModel):
@@ -313,6 +347,7 @@ class LoginResponse(BaseModel):
     custom_role_name: Optional[str] = None
     permissions: list[str] = Field(default_factory=list)
     profile_completed: bool = True
+    verification_due: VerificationDue = Field(default_factory=VerificationDue)
     message: str = "Login successful"
     csrf_token: str
 

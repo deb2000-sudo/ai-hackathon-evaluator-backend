@@ -14,11 +14,13 @@ from app.middleware.auth_middleware import get_current_user
 from app.exceptions import AppError
 from app.dependencies import (
     get_access_service,
+    get_app_settings_service,
     get_firebase,
     get_user_service,
     get_verification_service,
 )
 from app.services.access_service import AccessService
+from app.models.settings_model import RegistrationConfigResponse
 from app.models.user_model import (
     ChangePasswordRequest,
     CurrentUser,
@@ -27,8 +29,11 @@ from app.models.user_model import (
     LoginResponse,
     ProfileUpdateRequest,
     UserResponse,
+    VerificationDue,
 )
 from app.models.verification_model import (
+    AccountVerificationCompleteRequest,
+    AccountVerificationStartResponse,
     EmailSendOtpRequest,
     EmailVerifyOtpRequest,
     EvaluatorRegisterCompleteRequest,
@@ -46,6 +51,7 @@ from app.models.verification_model import (
     VerificationOkResponse,
     VerifyPhoneTokenRequest,
 )
+from app.services.app_settings_service import AppSettingsService, verification_due_for
 from app.services.firebase import FirebaseService
 from app.services.registration_service import RegistrationService
 from app.services.user_service import UserService
@@ -98,6 +104,51 @@ async def complete_staff_profile(
         payload,
     )
     return StaffProfileCompleteResponse(**completed)
+
+
+@router.get("/registration-config", response_model=RegistrationConfigResponse)
+async def registration_config(
+    service: AppSettingsService = Depends(get_app_settings_service),
+) -> RegistrationConfigResponse:
+    """
+    Public flags for the register page.
+
+    When a channel is false, hide its Verify button. Registration still collects
+    the email and mobile number.
+    """
+    config = await run_sync(service.get_registration_config)
+    return RegistrationConfigResponse(**config)
+
+
+@router.post("/verification/start", response_model=AccountVerificationStartResponse)
+async def start_account_verification(
+    current_user: CurrentUser = Depends(get_current_user),
+    verification: VerificationService = Depends(get_verification_service),
+) -> AccountVerificationStartResponse:
+    """
+    Start OTP for a signed-in student or evaluator Super Admin has asked to verify.
+
+    ``email_required`` and ``mobile_required`` say which Verify buttons to show.
+    """
+    started = await run_sync(verification.start_account_verification, current_user.user_id)
+    return AccountVerificationStartResponse(**started)
+
+
+@router.post("/verification/complete", response_model=UserResponse)
+async def finish_account_verification(
+    payload: AccountVerificationCompleteRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    verification: VerificationService = Depends(get_verification_service),
+    user_service: UserService = Depends(get_user_service),
+    access_service: AccessService = Depends(get_access_service),
+) -> UserResponse:
+    """Save verified channels and clear the login popup for this account."""
+    user_data = await run_sync(
+        verification.finish_account_verification,
+        current_user.user_id,
+        payload.session_id,
+    )
+    return _profile_response(current_user.user_id, user_data, user_service, access_service)
 
 
 @router.post("/register/start", response_model=RegisterStartResponse, status_code=200)
@@ -157,7 +208,9 @@ async def register_complete(
     verification: VerificationService = Depends(get_verification_service),
 ) -> JSONResponse:
     """
-    Create the student account only after both email and phone are verified.
+    Create the student account after every channel Application config requires.
+
+    A channel the Super Admin turned off is stored as not yet verified.
     Issues the same session cookies as POST /auth/login.
     """
     created = await run_sync(verification.complete, payload)
@@ -194,7 +247,7 @@ async def register_evaluator_complete(
     verification: VerificationService = Depends(get_verification_service),
 ) -> JSONResponse:
     """
-    Create the evaluator account after email and phone are verified.
+    Create the evaluator account after every channel Application config requires.
     Issues session cookies; ``approval_status`` is ``pending`` until admin approves.
     """
     created = await run_sync(verification.complete_evaluator, payload)
@@ -387,6 +440,7 @@ async def login(
             custom_role_name=access_service.custom_role_name(user_data),
             permissions=access_service.permissions_for(user_data),
             profile_completed=user_data.get("profile_completed", True) is not False,
+            verification_due=_verification_due(user_data, user_service),
             csrf_token=csrf_token,
         ).model_dump()
 
@@ -525,7 +579,13 @@ def _profile_response(
     profile.custom_role_id = user_data.get("custom_role_id")
     profile.custom_role_name = access_service.custom_role_name(user_data)
     profile.permissions = access_service.permissions_for(user_data)
+    profile.verification_due = _verification_due(user_data, user_service)
     return profile
+
+
+def _verification_due(user_data: dict, user_service: UserService) -> VerificationDue:
+    config = AppSettingsService(firebase=user_service.firebase).get_registration_config()
+    return VerificationDue(**verification_due_for(user_data or {}, config))
 
 
 def _client_ip(request: Request) -> str:

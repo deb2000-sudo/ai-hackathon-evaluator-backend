@@ -178,6 +178,8 @@ def test_permission_for_path_maps_admin_screens():
     assert permission_for_path("/universities/uni-1/batches") == "batch_management"
     assert permission_for_path("/universities/uni-1") == "university_management"
     assert permission_for_path("/admin/users") == "student_management"
+    assert permission_for_path("/admin/overview") == "overview"
+    assert permissions_for_request("/admin/overview", "GET") == frozenset({"overview"})
     assert permission_for_path("/super-admin/settings") == "application_settings"
     assert permission_for_path("/admin/access/roles") is None
     assert permissions_for_request("/admin/users", "GET") == frozenset(
@@ -236,7 +238,10 @@ def test_custom_role_is_unique_and_blocks_reserved_names():
         RoleCreateRequest(name="Theme Editor", permissions=["themes"]),
         created_by="super-1",
     )
+    assert created["id"] == "theme-editor"
+    assert created["key"] == "theme-editor"
     assert created["permissions"] == ["themes"]
+    assert service.firebase.get_document("roles", "theme-editor")["name"] == "Theme Editor"
     with pytest.raises(ConflictError) as duplicate:
         service.create_role(
             RoleCreateRequest(name="theme editor", permissions=["themes"]),
@@ -246,6 +251,27 @@ def test_custom_role_is_unique_and_blocks_reserved_names():
     with pytest.raises(ConflictError) as reserved:
         service.create_role(RoleCreateRequest(name="Admin", permissions=["themes"]), "super-1")
     assert reserved.value.code == "ROLE_RESERVED"
+
+
+def test_renaming_a_role_uses_the_new_name_as_the_document_id():
+    firebase = FakeFirebase()
+    service = AccessService(firebase=firebase)
+    created = service.create_role(
+        RoleCreateRequest(name="Theme Editor", permissions=["themes"]),
+        "super-1",
+    )
+    firebase.set_document(
+        "users",
+        "user-9",
+        {"role": "custom", "custom_role_id": created["id"], "email": "a@challazo.com"},
+    )
+
+    updated = service.update_role(created["id"], RoleUpdateRequest(name="Content Editor"))
+
+    assert updated["id"] == "content-editor"
+    assert firebase.get_document("roles", "theme-editor") is None
+    assert firebase.get_document("roles", "content-editor")["name"] == "Content Editor"
+    assert firebase.get_document("users", "user-9")["custom_role_id"] == "content-editor"
 
 
 def test_role_in_use_cannot_be_deleted():
@@ -368,6 +394,40 @@ def test_update_staff_user_changes_name_and_role():
     )
     assert restored["role"] == "admin"
     assert restored["custom_role_id"] is None
+
+
+def test_delete_staff_user_removes_firestore_and_auth():
+    firebase = FakeFirebase()
+    service = AccessService(firebase=firebase)
+    service.seed_builtin_admin_role()
+    created = service.create_staff_user(
+        StaffUserCreateRequest(
+            first_name="Ada",
+            last_name="Admin",
+            email="ada@challazo.com",
+            password="12345678",
+            role_id="admin",
+        ),
+        created_by="super-1",
+    )
+    assert service.delete_staff_user(created["id"], "super-1") is True
+    assert firebase.get_document("users", created["id"]) is None
+    assert firebase.get_user_by_email("ada@challazo.com") is None
+    assert service.delete_staff_user(created["id"], "super-1") is False
+
+
+def test_super_admin_account_cannot_be_deleted():
+    firebase = FakeFirebase()
+    service = AccessService(firebase=firebase)
+    firebase.set_document(
+        "users",
+        "super-1",
+        {"role": "super_admin", "email": "superadmin@challazo.com", "name": "Debashis"},
+    )
+    with pytest.raises(ConflictError) as exc:
+        service.delete_staff_user("super-1", "super-1")
+    assert exc.value.code == "SUPER_ADMIN_DELETE_LOCKED"
+    assert firebase.get_document("users", "super-1") is not None
 
 
 def test_super_admin_name_can_change_and_role_cannot():

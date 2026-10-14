@@ -6,9 +6,7 @@ requirement (AI + manual modes, nested segments).
 """
 
 import logging
-import uuid
 from typing import Any
-from app.utils.time import now_ist_iso
 
 from app.models.metric_scoring_model import (
     DEFAULT_METRIC_COLORS,
@@ -21,6 +19,8 @@ from app.models.metric_scoring_model import (
 )
 from app.services.evaluation_requirement_service import EvaluationRequirementService
 from app.services.firebase import FirebaseService
+from app.utils.ids import new_id
+from app.utils.time import now_ist_iso
 
 
 logger = logging.getLogger(__name__)
@@ -42,9 +42,7 @@ class MetricScoringService:
         requirements: EvaluationRequirementService | None = None,
     ):
         self.firebase = firebase or FirebaseService()
-        self.requirements = requirements or EvaluationRequirementService(
-            firebase=self.firebase
-        )
+        self.requirements = requirements or EvaluationRequirementService(firebase=self.firebase)
 
     def create_scoring(
         self,
@@ -63,7 +61,7 @@ class MetricScoringService:
                 "requirement. Use update instead."
             )
 
-        scoring_id = uuid.uuid4().hex
+        scoring_id = new_id()
         now = now_ist_iso()
         document = {
             "evaluation_requirement_id": request.evaluation_requirement_id,
@@ -77,9 +75,7 @@ class MetricScoringService:
         self.firebase.set_document(self.collection, scoring_id, document)
         return {"id": scoring_id, **document}
 
-    def list_scoring(
-        self, evaluation_requirement_id: str | None = None
-    ) -> list[dict[str, Any]]:
+    def list_scoring(self, evaluation_requirement_id: str | None = None) -> list[dict[str, Any]]:
         """List metric-scoring configs, optionally filtered by requirement."""
         if evaluation_requirement_id:
             documents = self.firebase.query_collection(
@@ -100,9 +96,7 @@ class MetricScoringService:
             return None
         return {"id": scoring_id, **document}
 
-    def get_scoring_for_requirement(
-        self, evaluation_requirement_id: str
-    ) -> dict[str, Any] | None:
+    def get_scoring_for_requirement(self, evaluation_requirement_id: str) -> dict[str, Any] | None:
         """Return the metric-scoring config linked to a requirement, if any."""
         return self._find_by_requirement(evaluation_requirement_id)
 
@@ -206,9 +200,7 @@ class MetricScoringService:
         weights_present = 0
         resolved: list[dict[str, Any]] = []
         for metric in metrics:
-            canonical_key = canonicalize_metric_field_key(
-                metric.field_key, requirement_keys
-            )
+            canonical_key = canonicalize_metric_field_key(metric.field_key, requirement_keys)
             if canonical_key not in valid_keys:
                 raise ValueError(
                     f"field_key '{metric.field_key}' is not a field of the linked "
@@ -220,16 +212,12 @@ class MetricScoringService:
             data["field_key"] = canonical_key
             if canonical_key in SYNTHETIC_METRIC_KEYS:
                 data["field_label"] = (
-                    metric.field_label
-                    or SYNTHETIC_LABELS.get(canonical_key)
-                    or canonical_key
+                    metric.field_label or SYNTHETIC_LABELS.get(canonical_key) or canonical_key
                 )
                 # Video rubric lives in AI Prompts (analyze_video), not here.
                 data["scoring_prompt"] = None
             else:
-                data["field_label"] = (
-                    label_by_key.get(canonical_key) or metric.field_label
-                )
+                data["field_label"] = label_by_key.get(canonical_key) or metric.field_label
             if not data.get("color"):
                 data["color"] = DEFAULT_METRIC_COLORS.get(
                     canonical_key

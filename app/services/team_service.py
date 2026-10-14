@@ -10,7 +10,6 @@ Collections:
 from __future__ import annotations
 
 import logging
-import uuid
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
@@ -34,6 +33,7 @@ from app.services.submission.uniqueness import (
 )
 from app.services.user_service import UserService
 from app.utils.hackathon_visibility import student_can_see
+from app.utils.ids import new_uuid
 from app.utils.hackathon_round import (
     TeamBounds,
     get_timeline_round,
@@ -312,7 +312,7 @@ class TeamService:
             )
 
         profile = self._student_profile(user.user_id)
-        team_id = str(uuid.uuid4())
+        team_id = new_uuid()
         now = now_ist_iso()
         leader_member = self._member_record(user, profile, role="leader", joined_at=now)
         normalized_name = team_name.strip()

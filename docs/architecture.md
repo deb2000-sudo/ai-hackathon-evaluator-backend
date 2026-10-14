@@ -128,7 +128,7 @@ Startup (`lifespan`):
 | `auth` | `/auth` | Login, cookies, CSRF, register + email OTP + phone verify |
 | `admin` | `/admin` | Users, evaluator approve/list |
 | `access` | `/admin/access` | Super Admin roles, permissions, and staff logins |
-| `settings` | `/super-admin/settings` | Super Admin only: profile-password change and Reset Database. A wrong Profile Password is 400, so the login session stays. Admin and custom roles get 403. |
+| `settings` | `/super-admin/settings` | Super Admin only: profile-password change, registration OTP toggles, deleting one hackathon and its submissions, and Reset Database. A wrong Profile Password is 400, so the login session stays. Admin and custom roles get 403. |
 | `hackathon` | `/hackathons` | CRUD, drafts, round publish, **catalog**, leaderboard |
 | `teams` | `/hackathons` | Round enrollment, create/join team, join codes |
 | `submissions` | `/submissions` | Upload, assign, evaluate, GitHub AI, review, Sheets export |
@@ -256,7 +256,7 @@ Pending evaluators may call `/auth/me`; other app routes return 403 until approv
 
 ### Registration
 
-Student and evaluator share the same verified-email + phone flow (`VerificationService`):
+Student and evaluator share one registration flow (`VerificationService`). Super Admin turns email OTP and mobile OTP on or off together for both roles (`app_settings/registration`, default both on):
 
 1. `POST /auth/register/start` → `verification_sessions` doc
 2. Email OTP via `EmailService` (Brevo in prod)
@@ -265,7 +265,14 @@ Student and evaluator share the same verified-email + phone flow (`VerificationS
    Student complete requires `university_id` from `GET /universities` (public) and
    `batch_id` from `GET /universities/{id}/batches` for that same university. A batch
    from another university is `409 BATCH_UNIVERSITY_MISMATCH`. The user doc stores
-   `university`, `university_id`, `university_location`, `batch_id`, and `batch_name`.
+   `university`, `university_id`, `university_location`, `batch_id`, `batch_name`,
+   and `college_type` (`NIAT` or `Non NIAT`, copied from the university). A NIAT
+   university requires `niat_id` (`400 NIAT_ID_REQUIRED`, `409 NIAT_ID_TAKEN`).
+   A Non NIAT university requires `college_id` (`400 COLLEGE_ID_REQUIRED`).
+   That college id is unique only within the same university
+   (`409 COLLEGE_ID_TAKEN`).
+
+`GET /auth/registration-config` is public. The register page hides Verify for a channel that is off, still calls `register/start`, and `register/complete` stores that channel as `email_verified` / `phone_verified: false` with `verification_required: false`. Turning a channel back on does not popup anyone by itself. `POST /super-admin/settings/registration/release` with `{ "batch_size": 20 }` marks the next oldest waiting students and evaluators (`verification_required: true`). It does not send OTP mail. On the next `POST /auth/login` or `GET /auth/me`, `verification_due.email` / `verification_due.mobile` is true only for a released account that still lacks a channel that is on now. The popup calls `POST /auth/verification/start`, the existing OTP routes, then `POST /auth/verification/complete`. Older accounts with a missing verified flag are treated as already verified.
 
 OTP rate limits (Firestore `otp_rate_limits`): **5 sends/hour per email**, **2000/hour per IP** (campus NAT), 60s resend cooldown. Codes are hashed (SHA-256 + pepper).
 
@@ -287,8 +294,10 @@ Register complete endpoints reject reset sessions (`PURPOSE_MISMATCH`).
 
 | Collection | Document | Purpose |
 |------------|----------|---------|
-| `users` | Firebase uid | Profile, `role` (`super_admin`, `admin`, `evaluator`, `student`, `custom`), `custom_role_id`, `approval_status`. Student Management pages with `GET /admin/users?page=1&page_size=15&role=student&q=`. Omitting `page` still returns the full non-admin array. |
-| `roles` | `admin` or a generated id | Named roles and their permission keys. The built-in Admin role is seeded and cannot be edited. Custom users store `role=custom` and `custom_role_id`. Assigning the Admin role stores `role=admin`. |
+| `users` | Firebase uid | Profile, `role` (`super_admin`, `admin`, `evaluator`, `student`, `custom`), `custom_role_id`, `approval_status`. Student Management pages with `GET /admin/users?page=1&page_size=15&role=student&q=`. Omitting `page` still returns the full non-admin array. `GET /admin/overview` returns the Overview counts and the newest five pending evaluators. |
+| `roles` | role slug (`admin`, `student`, `theme-editor`) | Named roles and their permission keys. The built-in Admin and Student roles are seeded and cannot be edited. A custom role's document id is its name slug. Custom users store `role=custom` and `custom_role_id`. Assigning the Admin role stores `role=admin`. |
+
+`DELETE /admin/access/users/{id}` removes an Admin or custom-role login from Firestore and Firebase Auth. A Super Admin account cannot be deleted.
 | `application_logs` | generated id | Signed-in actions for Super Admin Application Logs. Each row has the user, operation, status, duration, and an IST `created_at`. Rows older than 7 days are removed. `GET /admin/access/logs` pages that window with search and filters. |
 | `verification_sessions` | session id | Registration or password-reset OTP/phone state |
 | `otp_rate_limits` | `email:…` / `ip:…` | Sliding-window OTP counters |
@@ -300,12 +309,12 @@ Register complete endpoints reject reset sessions (`PURPOSE_MISMATCH`).
 | `submissions` | submission id | Student work, scorecard, review, GitHub AI |
 | `analysis` | submission id | Gemini video result (report, checklist, scores) |
 | `themes` | theme id | Problem catalogue |
-| `universities` | university id | Admin-created NIAT partnered university (name + location) |
+| `universities` | university id | Admin-created university (name, location, `college_type` `NIAT` or `Non NIAT`). A missing type is treated as NIAT |
 | `batches` | batch id | Batch name scoped to one `university_id`. Register only lists that university's batches. |
 | `evaluation_requirements` | requirement id | Rubric / form fields |
 | `ai_evaluation_prompts` | prompt key | Gemini prompt templates |
 | `ai_evaluation_metric_scoring` | scoring id | Metric scoring config |
-| `app_settings` | `security` | Admin-tunable settings |
+| `app_settings` | `security`, `registration` | Profile Password, and email/mobile OTP toggles |
 | `mail` | message id | Optional Trigger Email queue |
 
 Firestore is not schema-enforced. Pydantic models validate **API** payloads; stored docs are dicts.
@@ -346,6 +355,8 @@ Computed `round_status`: `draft` | `scheduled` | `open` | `closed` from IST date
 
 ```text
 Admin draft  →  POST /hackathons
+
+`POST /hackathons/{id}/duplicate` (admin or super admin) opens a draft filled from that hackathon: name with ` (copy)`, description, dates, guidelines, themes, prizes, rounds, and the banner. Rounds are unpublished and leaderboards are not published. Visibility, submission limit, report auto-publish, the evaluator roster, and video-analysis prompt overrides are stored on the draft and written onto the new hackathon when the draft is published. Submissions, teams, and scores stay on the original.
              →  Settings → Visibility (universities and batches; default is everyone)
              →  publish round (matching students can enroll)
              →  students enroll (solo or team)
@@ -376,6 +387,7 @@ Enforced in `app/services/submission/uniqueness.py` on `POST /submissions` and `
 - Same team (leader already submitted) → `409` with team message
 - Other rounds remain independent
 - Admin `POST /submissions/{id}/withdraw` deletes that submission, its analysis document, and its GCS video. The round slot is free again. Allowed only before an evaluator is assigned; AI analysis may already be done. Once `assigned_evaluator_id` is set, the call returns `409 SUBMISSION_ASSIGNED` and nothing is deleted. Students and evaluators cannot call it. A closed round still rejects a new submit.
+- Super Admin `POST /super-admin/settings/hackathons/{id}/delete` removes that hackathon and every submission, analysis document, video, banner, team, enrollment, and join code stored for it. The body needs the Profile Password and `confirm_name` equal to the hackathon name. Student accounts stay. `GET /super-admin/settings/hackathons` and `GET /super-admin/settings/hackathons/{id}` fill the settings list and the confirm counts.
 
 `GET /submissions/admin/hackathons/{id}?page=1&page_size=10` returns one page of that queue (`items`, `total`, `page`, `page_size`, `round_summary`). Optional filters are `round_index`, `status` (`uploaded` | `processing` | `completed` | `failed`), and `q` (team name, theme name, or submission id). `round_summary` counts every round and ignores status and search. `page_size` is at most 100. Omitting `page` still returns the full JSON array.
 
@@ -416,7 +428,8 @@ Locally (`EVALUATION_JOB_MODE=auto` without queue config) the same `evaluate_sub
 4. Admin may `request-changes` back to the evaluator.
 5. Leaderboard ranks **approved** submissions by `final_score` using competition ranking (100, 90, 90, 80 → 1st, 2nd, 2nd, 4th).
 6. Students get `403 LEADERBOARD_NOT_PUBLISHED` until `POST …/leaderboard/publish`. Admins and evaluators can preview earlier.
-7. First publish emails ranked candidates (Brevo) unless `notify: false`.
+7. Publishing the leaderboard does not send email. Students see the Leaderboard section on the hackathon after they sign in.
+8. Super Admin `POST /hackathons/{id}/rounds/{index}/winners/announce` with `{ "top_n": 5 }` emails that many places. Rank 1 is Winner (1st prize), rank 2 is 1st runner-up (2nd prize), rank 3 is 2nd runner-up, and the rest are 4th, 5th, and so on. Ties at the cutoff are included. The board must already be published.
 
 Each hackathon stores `evaluator_ids`. Create copies every currently approved evaluator. `GET/PUT /hackathons/{id}/evaluators` is the Settings roster. Submission assign and divide-equally only accept ids on that roster. Hackathons saved before this field still allow any approved evaluator until an admin saves the roster.
 

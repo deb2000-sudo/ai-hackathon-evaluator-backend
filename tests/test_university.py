@@ -51,6 +51,50 @@ def test_display_label_is_name_with_location():
     assert university_display_label("NIAT", "Hyderabad") == "NIAT, Hyderabad"
 
 
+def test_new_university_defaults_to_niat_and_can_be_non_niat():
+    service, firebase = _service()
+    niat = service.create_university(
+        UniversityCreateRequest(name="NIAT", location="Hyderabad"),
+        created_by="admin-1",
+    )
+    other = service.create_university(
+        UniversityCreateRequest(
+            name="Other University",
+            location="All location",
+            college_type="Non NIAT",
+        ),
+        created_by="admin-1",
+    )
+    assert niat["college_type"] == "NIAT"
+    assert other["college_type"] == "Non NIAT"
+    stored = firebase.get_document("universities", other["id"])
+    assert stored["college_type"] == "Non NIAT"
+
+    changed = service.update_university(
+        niat["id"],
+        UniversityUpdateRequest(college_type="Non NIAT"),
+    )
+    assert changed["college_type"] == "Non NIAT"
+
+
+def test_university_without_college_type_is_treated_as_niat():
+    service, firebase = _service()
+    firebase.set_document(
+        "universities",
+        "legacy",
+        {
+            "name": "NIAT",
+            "location": "KKH",
+            "created_by": "admin",
+            "created_at": "",
+            "updated_at": "",
+        },
+    )
+    loaded = service.get_university("legacy")
+    assert loaded is not None
+    assert loaded["college_type"] == "NIAT"
+
+
 def test_create_and_list_sorted_by_name():
     service, _ = _service()
     service.create_university(

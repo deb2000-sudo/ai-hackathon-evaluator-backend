@@ -2,6 +2,7 @@
 Hackathon routes.
 
     POST   /hackathons            -> admin creates a hackathon (multipart, banner optional)
+    POST   /hackathons/{id}/duplicate -> admin copies one into an editable draft
     GET    /hackathons            -> list hackathons (any authenticated user)
     GET    /hackathons/catalog    -> homepage cards (public; published rounds only)
     GET    /hackathons/{id}       -> get a single hackathon
@@ -9,7 +10,9 @@ Hackathon routes.
     DELETE /hackathons/{id}       -> admin deletes a hackathon
     POST   /hackathons/{id}/rounds/{index}/publish -> admin publishes a round
     GET    /hackathons/{id}/rounds/{index}/leaderboard -> ranked results
-    POST   /hackathons/{id}/rounds/{index}/leaderboard/publish -> admin publishes ranks
+    POST   /hackathons/{id}/rounds/{index}/leaderboard/publish -> admin publishes ranks (no email)
+    GET    /hackathons/{id}/rounds/{index}/winners -> super admin: preview top N
+    POST   /hackathons/{id}/rounds/{index}/winners/announce -> super admin: email those places
     GET    /hackathons/{id}/video-analysis-prompts -> admin: Video Analysis prompts for Settings
     PUT    /hackathons/{id}/video-analysis-prompts -> admin: save hackathon-specific prompts
     DELETE /hackathons/{id}/video-analysis-prompts -> admin: reset both to global Video Analysis
@@ -69,9 +72,11 @@ from app.models.hackathon_model import (
 )
 from app.models.round_model import PublishRoundResponse
 from app.models.leaderboard_model import (
+    AnnounceWinnersRequest,
     LeaderboardResponse,
     PublishLeaderboardRequest,
     PublishLeaderboardResponse,
+    WinnerAnnouncementResponse,
 )
 from app.models.evaluation_prompt_model import (
     HackathonVideoAnalysisPromptsResponse,
@@ -302,6 +307,26 @@ async def delete_hackathon_draft(
             detail="Draft not found",
         )
     return {"message": "Draft deleted successfully"}
+
+
+@router.post(
+    "/{hackathon_id}/duplicate",
+    response_model=HackathonDraftResponse,
+    status_code=201,
+)
+async def duplicate_hackathon(
+    hackathon_id: str,
+    admin: CurrentUser = Depends(get_admin_user),
+    draft_service: HackathonDraftService = Depends(get_hackathon_draft_service),
+) -> HackathonDraftResponse:
+    """
+    Copy an existing hackathon into a creation draft.
+
+    The admin edits the copy in the wizard and publishes it. Rounds stay
+    unpublished. Submissions and scores are not copied.
+    """
+    draft = await run_sync(draft_service.duplicate_hackathon, hackathon_id, admin.user_id)
+    return HackathonDraftResponse(**draft)
 
 
 @router.post("", response_model=HackathonResponse, status_code=201)
@@ -875,7 +900,7 @@ async def publish_round_leaderboard(
     Publish (or unpublish) the round leaderboard.
 
     Ranking includes only submissions with ``review_status=approved``.
-    On first publish, ranked candidates are emailed unless ``notify`` is false.
+    Students see the board on the hackathon page. This does not send email.
     """
     payload = request or PublishLeaderboardRequest()
     result = await run_sync(
@@ -888,6 +913,50 @@ async def publish_round_leaderboard(
         current_user=admin,
     )
     return PublishLeaderboardResponse(**result)
+
+
+@router.get(
+    "/{hackathon_id}/rounds/{round_index}/winners",
+    response_model=WinnerAnnouncementResponse,
+)
+async def preview_round_winners(
+    hackathon_id: str,
+    round_index: int,
+    top_n: int = Query(5, ge=1, le=100),
+    super_admin: CurrentUser = Depends(get_super_admin_user),
+    service: LeaderboardService = Depends(get_leaderboard_service),
+) -> WinnerAnnouncementResponse:
+    """Who would receive a winner email for this top N. Does not send mail."""
+    _ = super_admin
+    result = await run_sync(service.preview_winners, hackathon_id, round_index, top_n)
+    return WinnerAnnouncementResponse(**result)
+
+
+@router.post(
+    "/{hackathon_id}/rounds/{round_index}/winners/announce",
+    response_model=WinnerAnnouncementResponse,
+)
+async def announce_round_winners(
+    hackathon_id: str,
+    round_index: int,
+    request: AnnounceWinnersRequest,
+    super_admin: CurrentUser = Depends(get_super_admin_user),
+    service: LeaderboardService = Depends(get_leaderboard_service),
+) -> WinnerAnnouncementResponse:
+    """
+    Email the top places for this round.
+
+    Rank 1 is Winner (1st prize), rank 2 is 1st runner-up (2nd prize),
+    rank 3 is 2nd runner-up, and later places are 4th, 5th, and so on.
+    """
+    result = await run_sync(
+        service.announce_winners,
+        hackathon_id,
+        round_index,
+        request.top_n,
+        super_admin.user_id,
+    )
+    return WinnerAnnouncementResponse(**result)
 
 
 @router.patch("/{hackathon_id}", response_model=HackathonResponse)

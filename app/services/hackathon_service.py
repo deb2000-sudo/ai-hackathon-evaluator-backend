@@ -4,10 +4,10 @@ Hackathon service — admin-created hackathons with banner storage in GCS.
 
 import logging
 import os
-import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from app.utils.ids import new_id
 from app.utils.time import now_ist, now_ist_iso
 
 from google.cloud import storage
@@ -83,7 +83,7 @@ class HackathonService:
         self._validate_round_requirement_links(request.timeline)
         theme_ids = self.theme_service.validate_theme_ids(request.theme_ids)
 
-        hackathon_id = uuid.uuid4().hex
+        hackathon_id = new_id()
         now = now_ist_iso()
 
         banner_path = None
@@ -536,6 +536,180 @@ class HackathonService:
         self.firebase.delete_document(self.collection, hackathon_id)
         return True
 
+    def list_hackathons_for_deletion(self) -> list[dict[str, str]]:
+        """Id and name of every live hackathon, for the Application Settings list."""
+        rows = [
+            {
+                "hackathon_id": str(doc.get("id") or ""),
+                "name": str(doc.get("name") or "").strip(),
+            }
+            for doc in self.firebase.get_collection(self.collection)
+            if doc.get("id")
+        ]
+        rows.sort(key=lambda row: (row["name"].lower(), row["hackathon_id"]))
+        return rows
+
+    def preview_hackathon_deletion(self, hackathon_id: str) -> dict[str, Any] | None:
+        """Counts for the confirm dialog. None when the hackathon is missing."""
+        existing = self.firebase.get_document(self.collection, hackathon_id)
+        if not existing:
+            return None
+        related = self._hackathon_related(hackathon_id)
+        return {
+            "hackathon_id": hackathon_id,
+            "name": str(existing.get("name") or "").strip(),
+            "submission_count": len(related["submissions"]),
+            "team_count": len(related["teams"]),
+            "enrollment_count": len(related["enrollments"]),
+        }
+
+    def purge_hackathon(self, hackathon_id: str, *, deleted_by: str) -> dict[str, Any] | None:
+        """
+        Delete one hackathon and the student work stored for it.
+
+        Removes submissions, AI analysis, scores on those submissions, videos,
+        the banner, teams, enrollments, and join codes. Student accounts stay.
+        """
+        existing = self.firebase.get_document(self.collection, hackathon_id)
+        if not existing:
+            return None
+        name = str(existing.get("name") or "").strip()
+        related = self._hackathon_related(hackathon_id)
+        submissions = related["submissions"]
+        submission_ids = [str(row.get("id") or "") for row in submissions if row.get("id")]
+
+        videos = 0
+        for submission in submissions:
+            if self._delete_gcs_uri(submission.get("video_path")):
+                videos += 1
+        banners = self._delete_gcs_prefix(f"hackathons/{hackathon_id}/")
+
+        analysis_ids = self._analysis_ids_for_submissions(submissions)
+        job_ids = self._github_job_ids(hackathon_id, submission_ids)
+
+        counts = {
+            "submissions": self.firebase.delete_documents("submissions", submission_ids),
+            "analysis": self.firebase.delete_documents("analysis", analysis_ids),
+            "videos": videos,
+            "banners": banners,
+            "teams": self.firebase.delete_documents(
+                "hackathon_teams",
+                [str(row["id"]) for row in related["teams"] if row.get("id")],
+            ),
+            "enrollments": self.firebase.delete_documents(
+                "hackathon_enrollments",
+                [str(row["id"]) for row in related["enrollments"] if row.get("id")],
+            ),
+            "join_codes": self.firebase.delete_documents(
+                "team_join_codes",
+                [str(row["id"]) for row in related["join_codes"] if row.get("id")],
+            ),
+            "github_jobs": self.firebase.delete_documents("github_analysis_jobs", job_ids),
+            "hackathon": 1,
+        }
+        self.firebase.delete_document(self.collection, hackathon_id)
+        logger.warning(
+            "Super admin %s deleted hackathon %s (%s). Counts=%s",
+            deleted_by,
+            hackathon_id,
+            name,
+            counts,
+        )
+        return {
+            "hackathon_id": hackathon_id,
+            "hackathon_name": name,
+            "deleted_counts": counts,
+        }
+
+    def _hackathon_related(self, hackathon_id: str) -> dict[str, list[dict[str, Any]]]:
+        return {
+            "submissions": self.firebase.query_collection(
+                "submissions", "hackathon_id", "==", hackathon_id
+            ),
+            "teams": self.firebase.query_collection(
+                "hackathon_teams", "hackathon_id", "==", hackathon_id
+            ),
+            "enrollments": self.firebase.query_collection(
+                "hackathon_enrollments", "hackathon_id", "==", hackathon_id
+            ),
+            "join_codes": self.firebase.query_collection(
+                "team_join_codes", "hackathon_id", "==", hackathon_id
+            ),
+        }
+
+    def _analysis_ids_for_submissions(self, submissions: list[dict[str, Any]]) -> list[str]:
+        ids: list[str] = []
+        for submission in submissions:
+            analysis_id = str(submission.get("analysis_id") or "").strip()
+            if analysis_id:
+                ids.append(analysis_id)
+            submission_id = str(submission.get("id") or "").strip()
+            if not submission_id:
+                continue
+            for row in self.firebase.query_collection(
+                "analysis", "submission_id", "==", submission_id
+            ):
+                if row.get("id"):
+                    ids.append(str(row["id"]))
+        return list(dict.fromkeys(ids))
+
+    def _github_job_ids(self, hackathon_id: str, submission_ids: list[str]) -> list[str]:
+        ids = [
+            str(row["id"])
+            for row in self.firebase.query_collection(
+                "github_analysis_jobs", "hackathon_id", "==", hackathon_id
+            )
+            if row.get("id")
+        ]
+        for submission_id in submission_ids:
+            ids.extend(
+                str(row["id"])
+                for row in self.firebase.query_collection(
+                    "github_analysis_jobs", "submission_id", "==", submission_id
+                )
+                if row.get("id")
+            )
+        return list(dict.fromkeys(ids))
+
+    def _delete_gcs_uri(self, gs_uri: str | None) -> bool:
+        path = str(gs_uri or "").strip()
+        if not path or not self.bucket_name:
+            return False
+        try:
+            bucket_name, object_name = parse_gs_uri(path)
+        except ValueError:
+            logger.warning("Skipping delete; invalid storage path %s", path)
+            return False
+        if bucket_name != self.bucket_name:
+            logger.warning("Skipping delete outside the evaluation bucket: %s", path)
+            return False
+        try:
+            self._get_storage_client().bucket(bucket_name).blob(object_name).delete()
+            return True
+        except Exception:
+            logger.warning("Could not delete storage object %s", path, exc_info=True)
+            return False
+
+    def _delete_gcs_prefix(self, prefix: str) -> int:
+        if not prefix or not self.bucket_name:
+            return 0
+        deleted = 0
+        try:
+            client = self._get_storage_client()
+            for blob in client.list_blobs(self.bucket_name, prefix=prefix):
+                try:
+                    blob.delete()
+                    deleted += 1
+                except Exception:
+                    logger.warning(
+                        "Could not delete storage object %s",
+                        getattr(blob, "name", prefix),
+                        exc_info=True,
+                    )
+        except Exception:
+            logger.warning("Could not list storage prefix %s", prefix, exc_info=True)
+        return deleted
+
     def enrich_hackathon_for_response(self, hackathon: dict[str, Any]) -> dict[str, Any]:
         """Attach signed banner URL and resolved theme objects."""
         enriched = dict(hackathon)
@@ -719,7 +893,7 @@ class HackathonService:
             payload,
         )
         payload, resolved_type, extension = prepare_card_banner(payload, resolved_type)
-        object_name = f"hackathons/{hackathon_id}/banners/{uuid.uuid4().hex}{extension}"
+        object_name = f"hackathons/{hackathon_id}/banners/{new_id()}{extension}"
         blob = self._get_storage_client().bucket(self.bucket_name).blob(object_name)
         blob.cache_control = BANNER_CACHE_CONTROL
         blob.upload_from_string(payload, content_type=resolved_type)

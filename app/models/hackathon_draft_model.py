@@ -70,6 +70,8 @@ class HackathonDraftResponse(BaseModel):
     prizes: Optional[dict] = None
     banner_path: Optional[str] = None
     banner_url: Optional[str] = None
+    source_hackathon_id: Optional[str] = None
+    source_hackathon_name: Optional[str] = None
     created_by: str
     created_at: ISTDateTime
     updated_at: ISTDateTime

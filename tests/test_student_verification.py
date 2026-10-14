@@ -273,6 +273,9 @@ def test_verify_then_complete_happy_path():
     assert user["university_location"] == "Hyderabad"
     assert user["batch_id"] == "batch-2024"
     assert user["batch_name"] == "2024-2028"
+    assert user["college_type"] == "NIAT"
+    assert user["niat_id"] == "N123"
+    assert user["college_id"] is None
     assert user["team_members"] == []
     assert firebase.get_document("verification_sessions", session_id) is None
 
@@ -436,6 +439,178 @@ def test_same_email_still_limited_to_five_sends_per_hour():
     assert exc.value.code == "RATE_LIMITED"
 
 
+def _verified_session(
+    service,
+    firebase,
+    email="ada@example.com",
+    mobile="+919876543210",
+):
+    session_id = service.start(RegisterStartRequest(email=email, mobile_number=mobile))
+    firebase.update_document(
+        "verification_sessions",
+        session_id,
+        {"email_verified": True, "phone_verified": True},
+    )
+    return session_id
+
+
+def test_non_niat_university_stores_college_id_and_type():
+    now = datetime(2026, 8, 18, 12, 0, tzinfo=IST)
+    service, firebase, _ = _service(now)
+    session_id = _verified_session(service, firebase)
+    firebase.set_document(
+        "universities",
+        "uni-other",
+        {"name": "Other University", "location": "All location", "college_type": "Non NIAT"},
+    )
+    firebase.set_document(
+        "batches",
+        "batch-other",
+        {"university_id": "uni-other", "name": "2024-2028"},
+    )
+
+    service.complete(
+        RegisterCompleteRequest(
+            session_id=session_id,
+            first_name="Ada",
+            last_name="Lovelace",
+            email="ada@example.com",
+            university_id="uni-other",
+            batch_id="batch-other",
+            college_id="C-2048",
+            mobile_number="+919876543210",
+            password="secret12",
+        )
+    )
+    user = firebase.get_document("users", "new-student-uid")
+    assert user["college_type"] == "Non NIAT"
+    assert user["college_id"] == "C-2048"
+    assert user["niat_id"] is None
+
+
+def test_non_niat_registration_requires_college_id():
+    now = datetime(2026, 8, 18, 12, 0, tzinfo=IST)
+    service, firebase, _ = _service(now)
+    session_id = _verified_session(service, firebase)
+    firebase.set_document(
+        "universities",
+        "uni-other",
+        {"name": "Other University", "location": "All location", "college_type": "Non NIAT"},
+    )
+    firebase.set_document(
+        "batches",
+        "batch-other",
+        {"university_id": "uni-other", "name": "2024-2028"},
+    )
+    with pytest.raises(BadRequestError) as exc:
+        service.complete(
+            RegisterCompleteRequest(
+                session_id=session_id,
+                first_name="Ada",
+                last_name="Lovelace",
+                email="ada@example.com",
+                university_id="uni-other",
+                batch_id="batch-other",
+                niat_id="N123",
+                mobile_number="+919876543210",
+                password="secret12",
+            )
+        )
+    assert exc.value.code == "COLLEGE_ID_REQUIRED"
+
+
+def test_college_id_is_unique_only_within_the_university():
+    now = datetime(2026, 8, 18, 12, 0, tzinfo=IST)
+    service, firebase, _ = _service(now)
+    firebase.set_document(
+        "universities",
+        "uni-other",
+        {"name": "Other University", "location": "All location", "college_type": "Non NIAT"},
+    )
+    firebase.set_document(
+        "universities",
+        "uni-anna",
+        {"name": "Anna University", "location": "Chennai", "college_type": "Non NIAT"},
+    )
+    firebase.set_document(
+        "batches",
+        "batch-other",
+        {"university_id": "uni-other", "name": "2024-2028"},
+    )
+    firebase.set_document(
+        "users",
+        "existing",
+        {"college_id": "C-2048", "university_id": "uni-anna", "role": "student"},
+    )
+    session_id = _verified_session(service, firebase)
+    service.complete(
+        RegisterCompleteRequest(
+            session_id=session_id,
+            first_name="Ada",
+            last_name="Lovelace",
+            email="ada@example.com",
+            university_id="uni-other",
+            batch_id="batch-other",
+            college_id="C-2048",
+            mobile_number="+919876543210",
+            password="secret12",
+        )
+    )
+
+    taken = _verified_session(
+        service,
+        firebase,
+        email="grace@example.com",
+        mobile="+919876543211",
+    )
+    with pytest.raises(ConflictError) as exc:
+        service.complete(
+            RegisterCompleteRequest(
+                session_id=taken,
+                first_name="Grace",
+                last_name="Hopper",
+                email="grace@example.com",
+                university_id="uni-other",
+                batch_id="batch-other",
+                college_id="C-2048",
+                mobile_number="+919876543211",
+                password="secret12",
+            )
+        )
+    assert exc.value.code == "COLLEGE_ID_TAKEN"
+
+
+def test_niat_university_still_requires_niat_id():
+    now = datetime(2026, 8, 18, 12, 0, tzinfo=IST)
+    service, firebase, _ = _service(now)
+    session_id = _verified_session(service, firebase)
+    firebase.set_document(
+        "universities",
+        "uni-niat",
+        {"name": "NIAT", "location": "Hyderabad"},
+    )
+    firebase.set_document(
+        "batches",
+        "batch-2024",
+        {"university_id": "uni-niat", "name": "2024-2028"},
+    )
+    with pytest.raises(BadRequestError) as exc:
+        service.complete(
+            RegisterCompleteRequest(
+                session_id=session_id,
+                first_name="Ada",
+                last_name="Lovelace",
+                email="ada@example.com",
+                university_id="uni-niat",
+                batch_id="batch-2024",
+                college_id="C-1",
+                mobile_number="+919876543210",
+                password="secret12",
+            )
+        )
+    assert exc.value.code == "NIAT_ID_REQUIRED"
+
+
 def test_low_ip_cap_still_blocks_when_configured(monkeypatch):
     monkeypatch.setenv("OTP_MAX_SENDS_PER_IP_PER_HOUR", "2")
     now = datetime(2026, 8, 18, 12, 0, tzinfo=IST)
@@ -459,3 +634,76 @@ def test_low_ip_cap_still_blocks_when_configured(monkeypatch):
             client_ip=shared_ip,
         )
     assert exc.value.code == "RATE_LIMITED"
+
+
+def _niat_catalogue(firebase):
+    firebase.set_document(
+        "universities",
+        "uni-niat",
+        {"name": "NIAT", "location": "Hyderabad", "college_type": "NIAT"},
+    )
+    firebase.set_document(
+        "batches",
+        "batch-2024",
+        {"university_id": "uni-niat", "name": "2024-2028"},
+    )
+
+
+def test_complete_skips_otp_when_both_channels_are_off():
+    now = datetime(2026, 8, 18, 12, 0, tzinfo=IST)
+    service, firebase, _ = _service(now)
+    firebase.set_document(
+        "app_settings",
+        "registration",
+        {"email_verification_enabled": False, "mobile_verification_enabled": False},
+    )
+    session_id = service.start(
+        RegisterStartRequest(email="ada@example.com", mobile_number="+919876543210")
+    )
+    _niat_catalogue(firebase)
+    service.complete(
+        RegisterCompleteRequest(
+            session_id=session_id,
+            first_name="Ada",
+            last_name="Lovelace",
+            email="ada@example.com",
+            university_id="uni-niat",
+            batch_id="batch-2024",
+            niat_id="N123",
+            mobile_number="+919876543210",
+            password="secret12",
+        )
+    )
+    user = firebase.get_document("users", "new-student-uid")
+    assert user["email_verified"] is False
+    assert user["phone_verified"] is False
+    assert user["verification_required"] is False
+
+
+def test_complete_still_requires_the_channel_left_on():
+    now = datetime(2026, 8, 18, 12, 0, tzinfo=IST)
+    service, firebase, _ = _service(now)
+    firebase.set_document(
+        "app_settings",
+        "registration",
+        {"email_verification_enabled": True, "mobile_verification_enabled": False},
+    )
+    session_id = service.start(
+        RegisterStartRequest(email="ada@example.com", mobile_number="+919876543210")
+    )
+    _niat_catalogue(firebase)
+    with pytest.raises(ForbiddenError) as exc:
+        service.complete(
+            RegisterCompleteRequest(
+                session_id=session_id,
+                first_name="Ada",
+                last_name="Lovelace",
+                email="ada@example.com",
+                university_id="uni-niat",
+                batch_id="batch-2024",
+                niat_id="N123",
+                mobile_number="+919876543210",
+                password="secret12",
+            )
+        )
+    assert exc.value.code == "NOT_VERIFIED"

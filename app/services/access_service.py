@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import re
-import uuid
 from typing import Any
 
 from app.exceptions import ConflictError, NotFoundError
@@ -63,6 +62,7 @@ ALL_PERMISSIONS: tuple[str, ...] = tuple(
 # Longest-prefix wins. Used only on routes that already require an admin user.
 _PATH_PERMISSIONS: tuple[tuple[str, str], ...] = (
     ("/super-admin/settings", "application_settings"),
+    ("/admin/overview", "overview"),
     ("/admin/evaluators", "evaluator_management"),
     ("/admin/users", "student_management"),
     ("/admin/user/", "student_management"),
@@ -221,7 +221,7 @@ class AccessService:
             raise ConflictError("This role name is reserved", code="ROLE_RESERVED")
         self._assert_key_unique(key)
         permissions = self._clean_permissions(request.permissions)
-        role_id = uuid.uuid4().hex
+        role_id = key
         now = now_ist_iso()
         document = {
             "name": name,
@@ -244,6 +244,7 @@ class AccessService:
             raise ConflictError("The Admin role cannot be changed", code="ROLE_BUILTIN")
 
         update: dict[str, Any] = {}
+        new_id = role_id
         if request.name is not None:
             name = request.name.strip()
             key = self._slug(name)
@@ -252,15 +253,22 @@ class AccessService:
             self._assert_key_unique(key, exclude_id=role_id)
             update["name"] = name
             update["key"] = key
+            if key != str(existing.get("key") or ""):
+                new_id = key
         if request.permissions is not None:
             update["permissions"] = self._clean_permissions(request.permissions)
         if update:
             update["updated_at"] = now_ist_iso()
+        if new_id != role_id:
+            self.firebase.set_document(self.collection, new_id, {**existing, **update})
+            self._retarget_role_users(role_id, new_id)
+            self.firebase.delete_document(self.collection, role_id)
+        elif update:
             self.firebase.update_document(self.collection, role_id, update)
-        updated = self.firebase.get_document(self.collection, role_id)
+        updated = self.firebase.get_document(self.collection, new_id)
         if not updated:
             raise NotFoundError("Role not found", code="ROLE_NOT_FOUND")
-        return self._role_item(role_id, updated)
+        return self._role_item(new_id, updated)
 
     def delete_role(self, role_id: str) -> bool:
         existing = self.firebase.get_document(self.collection, role_id)
@@ -363,6 +371,26 @@ class AccessService:
         logger.info("Updated staff user %s", user_id)
         return self._staff_user_item(user_id, updated, self._role_names())
 
+    def delete_staff_user(self, user_id: str, deleted_by: str) -> bool:
+        """
+        Delete an Admin or custom-role account from Firestore and Firebase Auth.
+
+        Returns False when there is no such staff user. A Super Admin account
+        cannot be deleted.
+        """
+        existing = self.firebase.get_document("users", user_id)
+        if not existing or existing.get("role") not in ("admin", "custom", "super_admin"):
+            return False
+        if existing.get("role") == "super_admin":
+            raise ConflictError(
+                "A Super Admin account cannot be deleted",
+                code="SUPER_ADMIN_DELETE_LOCKED",
+            )
+        self.firebase.delete_user(user_id)
+        self.firebase.delete_document("users", user_id)
+        logger.info("Super admin %s deleted staff user %s", deleted_by, user_id)
+        return True
+
     def _assignment_for_role(self, role_id: str) -> tuple[str, str | None]:
         role = self.firebase.get_document(self.collection, role_id.strip())
         if not role or not role.get("assignable"):
@@ -402,6 +430,21 @@ class AccessService:
 
     def _documents(self) -> list[dict[str, Any]]:
         return self.firebase.get_collection(self.collection)
+
+    def _retarget_role_users(self, old_id: str, new_id: str) -> None:
+        """Point staff accounts at the role document after a rename."""
+        now = now_ist_iso()
+        for user in self.firebase.get_collection("users"):
+            if user.get("custom_role_id") != old_id:
+                continue
+            user_id = str(user.get("id") or "")
+            if not user_id:
+                continue
+            self.firebase.update_document(
+                "users",
+                user_id,
+                {"custom_role_id": new_id, "updated_at": now},
+            )
 
     def _assert_key_unique(self, key: str, exclude_id: str | None = None) -> None:
         for item in self._documents():

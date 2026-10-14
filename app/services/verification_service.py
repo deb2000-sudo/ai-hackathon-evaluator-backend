@@ -12,7 +12,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-import uuid
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
@@ -23,6 +22,7 @@ from app.exceptions import (
     NotFoundError,
     TooManyRequestsError,
 )
+from app.models.university_model import COLLEGE_TYPE_NON_NIAT
 from app.models.verification_model import (
     EmailSendOtpRequest,
     EmailVerifyOtpRequest,
@@ -41,6 +41,7 @@ from app.services.firebase import FirebaseService
 from app.services.registration_service import RegistrationService
 from app.services.university_service import UniversityService
 from app.services.user_service import UserService
+from app.utils.ids import new_uuid
 from app.utils.otp import generate_otp, hash_otp, otp_matches
 from app.utils.phone import normalize_e164
 from app.utils.time import now_ist, now_ist_iso, parse_to_ist
@@ -53,6 +54,7 @@ RATE_LIMITS = "otp_rate_limits"
 PURPOSE_REGISTER = "register"
 PURPOSE_PASSWORD_RESET = "password_reset"
 PURPOSE_STAFF_PROFILE = "staff_profile"
+PURPOSE_ACCOUNT = "account_verification"
 SESSION_TTL = timedelta(minutes=30)
 OTP_TTL = timedelta(minutes=10)
 RESEND_COOLDOWN = timedelta(seconds=60)
@@ -114,7 +116,7 @@ class VerificationService:
             return self._merge_session(request.session_id, email, phone, role)
 
         self._assert_identifiers_available(email, phone)
-        session_id = str(uuid.uuid4())
+        session_id = new_uuid()
         now = self._now()
         self.firebase.set_document(
             SESSIONS,
@@ -145,7 +147,7 @@ class VerificationService:
                 code="PHONE_NOT_ON_FILE",
             )
 
-        session_id = str(uuid.uuid4())
+        session_id = new_uuid()
         now = self._now()
         doc = self._new_session_doc(
             email,
@@ -445,26 +447,58 @@ class VerificationService:
             },
         )
 
+    def _student_college_identity(
+        self,
+        request: RegisterCompleteRequest,
+        university: dict[str, Any],
+    ) -> tuple[str, str | None, str | None]:
+        """
+        Pick the id the selected university asks for.
+
+        NIAT stores ``niat_id`` and leaves ``college_id`` empty. Non NIAT does
+        the reverse. ``college_type`` is copied onto the student so a later
+        edit of the university does not rewrite who they registered as.
+        """
+        college_type = university["college_type"]
+        if college_type == COLLEGE_TYPE_NON_NIAT:
+            college_id = (request.college_id or "").strip()
+            if not college_id:
+                raise BadRequestError(
+                    "College ID is required for this university",
+                    code="COLLEGE_ID_REQUIRED",
+                )
+            taken = self.firebase.query_collection("users", "college_id", "==", college_id)
+            if any(item.get("university_id") == university["id"] for item in taken):
+                raise ConflictError(
+                    "College ID is already registered at this university",
+                    code="COLLEGE_ID_TAKEN",
+                )
+            return college_type, None, college_id
+
+        niat_id = (request.niat_id or "").strip()
+        if not niat_id:
+            raise BadRequestError(
+                "NIAT ID is required for this university",
+                code="NIAT_ID_REQUIRED",
+            )
+        if self.user_service.find_by_field("niat_id", niat_id):
+            raise ConflictError("NIAT ID is already registered", code="NIAT_ID_TAKEN")
+        return college_type, niat_id, None
+
     def complete(self, request: RegisterCompleteRequest) -> dict[str, Any]:
         session = self._load_session(request.session_id)
         self._assert_purpose(session, PURPOSE_REGISTER)
         self._assert_session_role(session, "student")
-        session_email, session_phone = self._require_verified_identifiers(session)
-        if session_email != request.email or session_phone != request.mobile_number:
-            raise ForbiddenError(
-                "Submitted email or mobile does not match verified values",
-                code="IDENTIFIER_MISMATCH",
-            )
+        email_verified, phone_verified = self._registration_verified_flags(session, request)
 
         self._assert_identifiers_available(request.email, request.mobile_number)
-        if self.user_service.find_by_field("niat_id", request.niat_id):
-            raise ConflictError("NIAT ID is already registered", code="NIAT_ID_TAKEN")
 
         university = self.university_service.require_university(request.university_id)
         batch = self.university_service.require_batch_for_university(
             request.batch_id,
             university["id"],
         )
+        college_type, niat_id, college_id = self._student_college_identity(request, university)
         display_name = f"{request.first_name} {request.last_name}".strip()
         registration = RegistrationService(firebase=self.firebase, user_service=self.user_service)
         registration._ensure_email_available(request.email)
@@ -484,12 +518,15 @@ class VerificationService:
                     "university_location": university["location"],
                     "batch_id": batch["id"],
                     "batch_name": batch["name"],
-                    "niat_id": request.niat_id,
+                    "college_type": college_type,
+                    "niat_id": niat_id,
+                    "college_id": college_id,
                     "mobile_no": request.mobile_number,
                     "role": "student",
                     "approval_status": "approved",
-                    "email_verified": True,
-                    "phone_verified": True,
+                    "email_verified": email_verified,
+                    "phone_verified": phone_verified,
+                    "verification_required": False,
                     "team_name": None,
                     "team_members": [],
                     "created_at": now,
@@ -514,12 +551,7 @@ class VerificationService:
         session = self._load_session(request.session_id)
         self._assert_purpose(session, PURPOSE_REGISTER)
         self._assert_session_role(session, "evaluator")
-        session_email, session_phone = self._require_verified_identifiers(session)
-        if session_email != request.email or session_phone != request.mobile_number:
-            raise ForbiddenError(
-                "Submitted email or mobile does not match verified values",
-                code="IDENTIFIER_MISMATCH",
-            )
+        email_verified, phone_verified = self._registration_verified_flags(session, request)
 
         self._assert_identifiers_available(request.email, request.mobile_number)
         if self.user_service.find_by_field("employee_id", request.employee_id.strip()):
@@ -543,8 +575,9 @@ class VerificationService:
                     "mobile_no": request.mobile_number,
                     "role": "evaluator",
                     "approval_status": "pending",
-                    "email_verified": True,
-                    "phone_verified": True,
+                    "email_verified": email_verified,
+                    "phone_verified": phone_verified,
+                    "verification_required": False,
                     "created_at": now,
                     "updated_at": now,
                 },
@@ -563,6 +596,97 @@ class VerificationService:
             "password": request.password,
         }
 
+    def start_account_verification(self, user_id: str) -> dict[str, Any]:
+        """Open an OTP session for a student or evaluator Super Admin has asked."""
+        from app.services.app_settings_service import (
+            AppSettingsService,
+            verification_due_for,
+        )
+
+        user = self.user_service.get_user(user_id) or {}
+        if str(user.get("role") or "") not in ("student", "evaluator"):
+            raise ForbiddenError(
+                "This account does not use registration verification",
+                code="VERIFICATION_NOT_REQUIRED",
+            )
+        if user.get("verification_required") is not True:
+            raise ForbiddenError(
+                "Verification has not been requested for this account",
+                code="VERIFICATION_NOT_REQUIRED",
+            )
+        config = AppSettingsService(firebase=self.firebase).get_registration_config()
+        due = verification_due_for(user, config)
+        if not due["email"] and not due["mobile"]:
+            raise BadRequestError("Nothing left to verify", code="ALREADY_VERIFIED")
+
+        email = str(user.get("email") or "").strip().lower()
+        phone = str(user.get("mobile_no") or "").strip()
+        if due["mobile"] and not phone:
+            raise BadRequestError(
+                "This account has no mobile number to verify",
+                code="MOBILE_MISSING",
+            )
+        session_id = new_uuid()
+        doc = self._new_session_doc(
+            email,
+            phone or None,
+            self._now(),
+            role=str(user.get("role") or "student"),
+            purpose=PURPOSE_ACCOUNT,
+            user_id=user_id,
+        )
+        if not due["email"]:
+            doc["email_verified"] = True
+        if not due["mobile"]:
+            doc["phone_verified"] = True
+        self.firebase.set_document(SESSIONS, session_id, doc)
+        return {
+            "session_id": session_id,
+            "email": email,
+            "mobile_number": phone,
+            "email_required": due["email"],
+            "mobile_required": due["mobile"],
+        }
+
+    def finish_account_verification(self, user_id: str, session_id: str) -> dict[str, Any]:
+        """Store the channels this login just verified and clear the popup flag."""
+        from app.services.app_settings_service import (
+            AppSettingsService,
+            verification_due_for,
+        )
+
+        user = self.user_service.get_user(user_id) or {}
+        session = self._load_session(session_id)
+        self._assert_purpose(session, PURPOSE_ACCOUNT)
+        if str(session.get("user_id") or "") != user_id:
+            raise ForbiddenError(
+                "This verification session belongs to another account",
+                code="SESSION_INVALID",
+            )
+        config = AppSettingsService(firebase=self.firebase).get_registration_config()
+        due = verification_due_for(user, config)
+        email = str(user.get("email") or "").strip().lower()
+        phone = str(user.get("mobile_no") or "").strip()
+        session_email = str(session.get("email") or "").strip().lower()
+        session_phone = str(session.get("phone") or "").strip()
+        if due["email"] and (not session.get("email_verified") or session_email != email):
+            raise ForbiddenError("Email must be verified", code="NOT_VERIFIED")
+        if due["mobile"] and (not session.get("phone_verified") or session_phone != phone):
+            raise ForbiddenError("Mobile number must be verified", code="NOT_VERIFIED")
+        if not due["email"] and not due["mobile"]:
+            raise BadRequestError("Nothing left to verify", code="ALREADY_VERIFIED")
+
+        self.user_service.update_user(
+            user_id,
+            {
+                **({"email_verified": True} if due["email"] else {}),
+                **({"phone_verified": True} if due["mobile"] else {}),
+                "verification_required": False,
+            },
+        )
+        self.firebase.delete_document(SESSIONS, session_id)
+        return self.user_service.get_user(user_id) or {}
+
     def start_staff_profile(self, user_id: str, request: StaffProfileStartRequest) -> str:
         """Open the same email OTP + phone session for a Super Admin-created login."""
         user = self._require_staff_profile(user_id)
@@ -573,7 +697,7 @@ class VerificationService:
                 code="EMAIL_MISMATCH",
             )
         self._assert_phone_available(request.mobile_number, user_id)
-        session_id = str(uuid.uuid4())
+        session_id = new_uuid()
         now = self._now()
         self.firebase.set_document(
             SESSIONS,
@@ -713,6 +837,44 @@ class VerificationService:
         if national:
             candidates.add(national)
         return stored in candidates or stored.replace(" ", "") in candidates
+
+    def _registration_verified_flags(
+        self, session: dict[str, Any], request: Any
+    ) -> tuple[bool, bool]:
+        """Require OTP only for channels Application config currently has on.
+
+        A channel that is off is stored as unverified so a later batch can ask.
+        """
+        from app.services.app_settings_service import AppSettingsService
+
+        config = AppSettingsService(firebase=self.firebase).get_registration_config()
+        email_on = bool(config["email_verification_enabled"])
+        phone_on = bool(config["mobile_verification_enabled"])
+        session_email = str(session.get("email") or "").strip()
+        session_phone = str(session.get("phone") or "").strip()
+        if email_on:
+            if not session.get("email_verified"):
+                raise ForbiddenError(
+                    "Email must be verified before registration",
+                    code="NOT_VERIFIED",
+                )
+            if session_email != request.email:
+                raise ForbiddenError(
+                    "Submitted email or mobile does not match verified values",
+                    code="IDENTIFIER_MISMATCH",
+                )
+        if phone_on:
+            if not session.get("phone_verified"):
+                raise ForbiddenError(
+                    "Mobile number must be verified before registration",
+                    code="NOT_VERIFIED",
+                )
+            if session_phone != request.mobile_number:
+                raise ForbiddenError(
+                    "Submitted email or mobile does not match verified values",
+                    code="IDENTIFIER_MISMATCH",
+                )
+        return email_on, phone_on
 
     def _require_verified_identifiers(self, session: dict[str, Any]) -> tuple[str, str]:
         if not session.get("email_verified") or not session.get("phone_verified"):

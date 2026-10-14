@@ -64,6 +64,26 @@ AI_PROMPT_DOCUMENT_IDS: tuple[str, ...] = ("checklist", "analyze_video")
 
 SETTINGS_COLLECTION = "app_settings"
 SETTINGS_DOC_ID = "security"
+REGISTRATION_DOC_ID = "registration"
+_REGISTRATION_ROLES = ("student", "evaluator")
+
+
+def verification_due_for(user: dict[str, Any], config: dict[str, bool]) -> dict[str, bool]:
+    """Channels this account must verify on the next login.
+
+    Only students and evaluators Super Admin has released are due. A missing
+    verified flag is treated as already verified so older accounts stay quiet.
+    """
+    if str(user.get("role") or "") not in _REGISTRATION_ROLES:
+        return {"email": False, "mobile": False}
+    if user.get("verification_required") is not True:
+        return {"email": False, "mobile": False}
+    return {
+        "email": bool(config.get("email_verification_enabled"))
+        and user.get("email_verified") is False,
+        "mobile": bool(config.get("mobile_verification_enabled"))
+        and user.get("phone_verified") is False,
+    }
 
 
 class AppSettingsService:
@@ -95,6 +115,106 @@ class AppSettingsService:
             "evaluation_bucket_name": bucket,
             "reset_confirm_phrase": RESET_CONFIRM_PHRASE,
         }
+
+    def get_registration_config(self) -> dict[str, bool]:
+        """Email and mobile OTP flags. Missing document means both stay on."""
+        doc = self.firebase.get_document(SETTINGS_COLLECTION, REGISTRATION_DOC_ID) or {}
+        return {
+            "email_verification_enabled": doc.get("email_verification_enabled", True) is not False,
+            "mobile_verification_enabled": doc.get("mobile_verification_enabled", True)
+            is not False,
+        }
+
+    def set_registration_config(
+        self,
+        *,
+        email_verification_enabled: bool,
+        mobile_verification_enabled: bool,
+        updated_by: str,
+    ) -> dict[str, Any]:
+        """Save the two toggles. Does not itself ask anyone to verify."""
+        now = now_ist_iso()
+        existing = self.firebase.get_document(SETTINGS_COLLECTION, REGISTRATION_DOC_ID) or {}
+        self.firebase.set_document(
+            SETTINGS_COLLECTION,
+            REGISTRATION_DOC_ID,
+            {
+                "email_verification_enabled": bool(email_verification_enabled),
+                "mobile_verification_enabled": bool(mobile_verification_enabled),
+                "created_at": existing.get("created_at") or now,
+                "updated_at": now,
+                "updated_by": updated_by,
+            },
+        )
+        return self.registration_status()
+
+    def registration_status(self) -> dict[str, Any]:
+        """Toggles plus waiting and already-asked counts."""
+        config = self.get_registration_config()
+        waiting, released = self._verification_queues(config)
+        return {
+            **config,
+            "pending_count": len(waiting),
+            "released_count": len(released),
+            "released_now": 0,
+        }
+
+    def release_verification(self, batch_size: int, *, released_by: str) -> dict[str, Any]:
+        """Mark the next ``batch_size`` unverified accounts so login asks them.
+
+        Does not email codes. Each person verifies with the existing OTP flow
+        the next time they sign in.
+        """
+        if batch_size < 1 or batch_size > 500:
+            raise ValueError("batch_size must be between 1 and 500")
+        config = self.get_registration_config()
+        if not config["email_verification_enabled"] and not config["mobile_verification_enabled"]:
+            raise ValueError("Turn email or mobile verification on before sending it to users")
+        waiting, released = self._verification_queues(config)
+        batch = waiting[:batch_size]
+        now = now_ist_iso()
+        for user in batch:
+            self.firebase.update_document(
+                "users",
+                user["id"],
+                {
+                    "verification_required": True,
+                    "verification_released_at": now,
+                    "verification_released_by": released_by,
+                    "updated_at": now,
+                },
+            )
+        return {
+            **config,
+            "pending_count": len(waiting) - len(batch),
+            "released_count": len(released) + len(batch),
+            "released_now": len(batch),
+        }
+
+    def _verification_queues(
+        self, config: dict[str, bool]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        waiting: list[dict[str, Any]] = []
+        released: list[dict[str, Any]] = []
+        for user in self.firebase.get_collection("users"):
+            if not self._still_needs_verification(user, config):
+                continue
+            if user.get("verification_required") is True:
+                released.append(user)
+            else:
+                waiting.append(user)
+        waiting.sort(
+            key=lambda user: (str(user.get("created_at") or ""), str(user.get("id") or ""))
+        )
+        return waiting, released
+
+    @staticmethod
+    def _still_needs_verification(user: dict[str, Any], config: dict[str, bool]) -> bool:
+        if str(user.get("role") or "") not in _REGISTRATION_ROLES:
+            return False
+        email_gap = config["email_verification_enabled"] and user.get("email_verified") is False
+        phone_gap = config["mobile_verification_enabled"] and user.get("phone_verified") is False
+        return email_gap or phone_gap
 
     def ensure_default_profile_password(self) -> None:
         """Idempotently seed Profile Password to ``12345678`` when missing."""
@@ -192,9 +312,7 @@ class AppSettingsService:
         # Keep only Super Admin. Admin, custom, evaluator, and student accounts go.
         users = self.firebase.get_collection("users")
         preserve_auth_uids = {
-            u["id"]
-            for u in users
-            if u.get("id") and u.get("role") == "super_admin"
+            u["id"] for u in users if u.get("id") and u.get("role") == "super_admin"
         }
         if preserve_user_id:
             caller = next((u for u in users if u.get("id") == preserve_user_id), None)
