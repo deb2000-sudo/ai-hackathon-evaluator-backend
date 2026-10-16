@@ -94,6 +94,8 @@ class HackathonParticipationResponse(BaseModel):
             "create_or_join",
             "complete_team",
             "round_not_open",
+            "hackathon_not_open",
+            "hackathon_closed",
             "already_submitted",
             "ready",
         ]

@@ -32,13 +32,13 @@ from app.services.submission.uniqueness import (
     list_round_submissions,
 )
 from app.services.user_service import UserService
+from app.utils.hackathon_schedule import closed_on_message, opens_on_message, window_status
 from app.utils.hackathon_visibility import student_can_see
 from app.utils.ids import new_uuid
 from app.utils.hackathon_round import (
     TeamBounds,
     get_timeline_round,
     hackathon_max_submissions,
-    parse_iso_date,
     resolve_team_bounds,
     round_auto_ai_evaluation,
     round_github_ai_evaluation,
@@ -126,11 +126,18 @@ class TeamService:
                     block_reason = team_incomplete_message(bounds.min_size, bounds.max_size)
             elif not round_open:
                 pending = "round_not_open"
-                start = parse_iso_date(round_.get("start_date"))
-                if round_status == "scheduled" and start:
-                    block_reason = f"This round opens on {start.isoformat()} (IST)."
+                if round_status == "scheduled":
+                    block_reason = opens_on_message(
+                        round_.get("start_date"),
+                        round_.get("start_time"),
+                        what="This round",
+                    )
                 elif round_status == "closed":
-                    block_reason = "This round has closed."
+                    block_reason = closed_on_message(
+                        round_.get("end_date"),
+                        round_.get("end_time"),
+                        what="This round",
+                    )
             elif role == "solo":
                 can_submit = True
                 can_continue_to_demo = True
@@ -156,6 +163,31 @@ class TeamService:
         submissions_remaining = max(0, submission_limit - submission_count)
         already_submitted = submission_count > 0
         existing_submission_id = submissions[-1]["id"] if submissions else None
+        hackathon_status = window_status(
+            hackathon.get("start_date"),
+            hackathon.get("end_date"),
+            hackathon.get("start_time"),
+            hackathon.get("end_time"),
+            now=self._now(),
+        )
+        if hackathon_status != "open" and pending != "already_submitted":
+            can_submit = False
+            can_continue_to_demo = False
+            if hackathon_status == "scheduled" and pending == "ready":
+                pending = "hackathon_not_open"
+                block_reason = opens_on_message(
+                    hackathon.get("start_date"),
+                    hackathon.get("start_time"),
+                    what="Submissions",
+                )
+            elif hackathon_status == "closed" and pending in ("ready", "round_not_open"):
+                pending = "hackathon_closed"
+                block_reason = closed_on_message(
+                    hackathon.get("end_date"),
+                    hackathon.get("end_time"),
+                    what="Submissions",
+                )
+
         if submission_count >= submission_limit:
             can_submit = False
             can_continue_to_demo = False
@@ -211,8 +243,33 @@ class TeamService:
         if not round_:
             raise NotFoundError("Round not found", code="ROUND_NOT_FOUND")
         self._assert_round_visible_to_student(hackathon, round_index, round_)
+        if (
+            window_status(
+                hackathon.get("start_date"),
+                hackathon.get("end_date"),
+                hackathon.get("start_time"),
+                hackathon.get("end_time"),
+                now=self._now(),
+            )
+            == "closed"
+        ):
+            raise ForbiddenError(
+                closed_on_message(
+                    hackathon.get("end_date"),
+                    hackathon.get("end_time"),
+                    what="Submissions",
+                ),
+                code="HACKATHON_CLOSED",
+            )
         if round_student_status(round_, now=self._now()) == "closed":
-            raise ForbiddenError("This round has closed", code="ROUND_CLOSED")
+            raise ForbiddenError(
+                closed_on_message(
+                    round_.get("end_date"),
+                    round_.get("end_time"),
+                    what="This round",
+                ),
+                code="ROUND_CLOSED",
+            )
 
     def _assert_round_open_for_submission(
         self, hackathon: dict[str, Any], round_index: int
@@ -221,17 +278,50 @@ class TeamService:
         if not round_:
             raise NotFoundError("Round not found", code="ROUND_NOT_FOUND")
         self._assert_round_visible_to_student(hackathon, round_index, round_)
+        hackathon_status = window_status(
+            hackathon.get("start_date"),
+            hackathon.get("end_date"),
+            hackathon.get("start_time"),
+            hackathon.get("end_time"),
+            now=self._now(),
+        )
+        if hackathon_status == "closed":
+            raise ForbiddenError(
+                closed_on_message(
+                    hackathon.get("end_date"),
+                    hackathon.get("end_time"),
+                    what="Submissions",
+                ),
+                code="HACKATHON_CLOSED",
+            )
         if not round_open_for_submission(hackathon, round_index, now=self._now()):
             status = round_student_status(round_, now=self._now())
             if status == "scheduled":
-                start = parse_iso_date(round_.get("start_date"))
-                detail = (
-                    f"This round opens on {start.isoformat()} (IST)."
-                    if start
-                    else "This round is not open yet."
+                raise ForbiddenError(
+                    opens_on_message(
+                        round_.get("start_date"),
+                        round_.get("start_time"),
+                        what="This round",
+                    ),
+                    code="ROUND_NOT_OPEN",
                 )
-                raise ForbiddenError(detail, code="ROUND_NOT_OPEN")
-            raise ForbiddenError("This round has closed", code="ROUND_CLOSED")
+            raise ForbiddenError(
+                closed_on_message(
+                    round_.get("end_date"),
+                    round_.get("end_time"),
+                    what="This round",
+                ),
+                code="ROUND_CLOSED",
+            )
+        if hackathon_status == "scheduled":
+            raise ForbiddenError(
+                opens_on_message(
+                    hackathon.get("start_date"),
+                    hackathon.get("start_time"),
+                    what="Submissions",
+                ),
+                code="HACKATHON_NOT_OPEN",
+            )
 
     def enroll_solo(
         self, hackathon_id: str, round_index: int, user: CurrentUser

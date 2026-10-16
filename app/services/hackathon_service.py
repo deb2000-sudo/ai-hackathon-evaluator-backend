@@ -29,6 +29,7 @@ from app.utils.banner_cache import (
     sign_banner_url,
 )
 from app.utils.gcs_video import build_storage_client, parse_gs_uri
+from app.utils.hackathon_schedule import apply_window_times, assert_window_order
 from app.utils.hackathon_round import (
     CATALOG_STATUS_LABELS,
     catalog_sort_key,
@@ -95,6 +96,8 @@ class HackathonService:
             "description": request.description.strip(),
             "start_date": request.start_date,
             "end_date": request.end_date,
+            "start_time": request.start_time,
+            "end_time": request.end_time,
             "guidelines": request.guidelines.strip(),
             "evaluator_guidelines": request.evaluator_guidelines.strip(),
             "theme_ids": theme_ids,
@@ -153,7 +156,7 @@ class HackathonService:
     def _catalog_item_for_hackathon(
         self, hackathon: dict[str, Any], *, now
     ) -> dict[str, Any] | None:
-        data = dict(hackathon)
+        data = apply_window_times(dict(hackathon))
         timeline = self._enrich_timeline_rounds(data, data.get("timeline") or [])
         featured = pick_featured_published_round(timeline)
         if featured is None:
@@ -192,6 +195,8 @@ class HackathonService:
             "description": data.get("description") or "",
             "start_date": data.get("start_date") or "",
             "end_date": data.get("end_date") or "",
+            "start_time": data.get("start_time"),
+            "end_time": data.get("end_time"),
             "banner_url": banner_url,
             "hackathon_url": data.get("hackathon_url"),
             "prizes": prizes,
@@ -216,6 +221,8 @@ class HackathonService:
                 "title": round_.get("title") or f"Round {index + 1}",
                 "start_date": round_.get("start_date"),
                 "end_date": round_.get("end_date"),
+                "start_time": round_.get("start_time"),
+                "end_time": round_.get("end_time"),
                 "round_status": round_.get("round_status"),
                 "team_size_mode": size_mode,
                 "min_team_size": min_size,
@@ -432,6 +439,10 @@ class HackathonService:
             update["start_date"] = request.start_date
         if request.end_date is not None:
             update["end_date"] = request.end_date
+        if request.start_time is not None:
+            update["start_time"] = request.start_time
+        if request.end_time is not None:
+            update["end_time"] = request.end_time
         if request.guidelines is not None:
             update["guidelines"] = request.guidelines.strip()
         if request.evaluator_guidelines is not None:
@@ -473,11 +484,11 @@ class HackathonService:
             update["banner_signed_url_expires_at"] = None
             self._delete_banner_object(previous)
 
-        # Validate the resulting date range if either date changed.
         start = update.get("start_date", existing.get("start_date"))
         end = update.get("end_date", existing.get("end_date"))
-        if start and end and end < start:
-            raise ValueError("end_date cannot be earlier than start_date")
+        start_time = update.get("start_time", existing.get("start_time"))
+        end_time = update.get("end_time", existing.get("end_time"))
+        assert_window_order(start, end, start_time, end_time)
 
         if update:
             update["updated_at"] = now_ist_iso()
@@ -715,6 +726,7 @@ class HackathonService:
         enriched = dict(hackathon)
         enriched.setdefault("theme_ids", [])
         enriched.setdefault("hackathon_url", None)
+        apply_window_times(enriched)
         # Older docs omit evaluator guidelines — expose empty string to clients.
         enriched.setdefault("evaluator_guidelines", "")
         enriched.setdefault(
@@ -766,7 +778,7 @@ class HackathonService:
         Same fields the summary API needs (name/dates/banner_url) without
         resolving the full themes list.
         """
-        enriched = dict(hackathon)
+        enriched = apply_window_times(dict(hackathon))
         self.attach_banner_url(
             enriched,
             collection=self.collection,

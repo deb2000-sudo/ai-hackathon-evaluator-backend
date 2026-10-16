@@ -211,7 +211,9 @@ class HackathonExportService:
             ["Hackathon", hackathon.get("name") or ""],
             ["Hackathon ID", hackathon.get("id") or ""],
             ["Start Date", hackathon.get("start_date") or ""],
+            ["Start Time (IST)", hackathon.get("start_time") or "00:00"],
             ["End Date", hackathon.get("end_date") or ""],
+            ["End Time (IST)", hackathon.get("end_time") or "23:59"],
             ["Exported At (IST)", now_ist_iso()],
             ["Total Submissions Exported", export_count],
             [

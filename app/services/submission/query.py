@@ -315,6 +315,8 @@ class QueryMixin:
                     "name": enriched["name"],
                     "start_date": enriched["start_date"],
                     "end_date": enriched["end_date"],
+                    "start_time": enriched.get("start_time") or "00:00",
+                    "end_time": enriched.get("end_time") or "23:59",
                     "submission_count": count,
                     "banner_url": enriched.get("banner_url"),
                     "auto_ai_evaluation": bool(enriched.get("auto_ai_evaluation", False)),

@@ -345,7 +345,7 @@ Super Admin can approve every evaluator-submitted review for one hackathon from 
 
 Hackathon visibility (`hackathons.visibility`) is set from Hackathon Settings, not at create time. `all_universities` and `all_batches` default to true, so existing hackathons stay on every student dashboard. A specific list is the intersection: the student's `university_id` and `batch_id` must both match. Select-all stays open to universities and batches created later. Students who do not match are omitted from `GET /hackathons` and the catalog, and `GET /hackathons/{id}`, enrollment, and submit return as if the hackathon does not exist (`404` or `NOT_VISIBLE`). Staff are not filtered. Anonymous catalog visitors only see hackathons with both select-all flags on.
 
-Computed `round_status`: `draft` | `scheduled` | `open` | `closed` from IST dates.
+Computed `round_status`: `draft` | `scheduled` | `open` | `closed` from the IST start and end clock. `start_time` and `end_time` are `HH:MM`. A missing time is `00:00` and `23:59`, so older hackathons stay open for the whole day. Submissions open at the start minute and stay open through the end minute, for both the hackathon and the round.
 
 ---
 

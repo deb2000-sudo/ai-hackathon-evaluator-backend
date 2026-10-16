@@ -48,6 +48,8 @@ class HackathonSubmissionSummary(BaseModel):
     name: str
     start_date: str
     end_date: str
+    start_time: str = "00:00"
+    end_time: str = "23:59"
     submission_count: int
     banner_url: Optional[str] = None
     auto_ai_evaluation: bool = Field(

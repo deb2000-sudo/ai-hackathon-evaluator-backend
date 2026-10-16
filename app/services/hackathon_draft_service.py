@@ -23,6 +23,7 @@ from app.services.firebase import FirebaseService
 from app.services.hackathon_service import HackathonService
 from app.utils.ids import new_id
 from app.utils.hackathon_round import normalize_max_submissions
+from app.utils.hackathon_schedule import apply_window_times
 from app.utils.hackathon_visibility import normalize_visibility
 from app.utils.time import now_ist_iso
 
@@ -78,6 +79,8 @@ class HackathonDraftService:
                 "description": source.get("description"),
                 "start_date": source.get("start_date"),
                 "end_date": source.get("end_date"),
+                "start_time": source.get("start_time"),
+                "end_time": source.get("end_time"),
                 "guidelines": source.get("guidelines"),
                 "evaluator_guidelines": source.get("evaluator_guidelines"),
                 "hackathon_url": source.get("hackathon_url"),
@@ -181,6 +184,8 @@ class HackathonDraftService:
             "description": None,
             "start_date": None,
             "end_date": None,
+            "start_time": None,
+            "end_time": None,
             "guidelines": None,
             "evaluator_guidelines": None,
             "hackathon_url": None,
@@ -202,6 +207,8 @@ class HackathonDraftService:
             "description",
             "start_date",
             "end_date",
+            "start_time",
+            "end_time",
             "guidelines",
             "evaluator_guidelines",
             "hackathon_url",
@@ -259,6 +266,8 @@ class HackathonDraftService:
                 description=str(doc["description"]).strip(),
                 start_date=str(doc["start_date"]),
                 end_date=str(doc["end_date"]),
+                start_time=doc.get("start_time"),
+                end_time=doc.get("end_time"),
                 guidelines=str(doc["guidelines"]).strip(),
                 evaluator_guidelines=str(doc["evaluator_guidelines"]).strip(),
                 theme_ids=list(theme_ids),
@@ -283,6 +292,8 @@ class HackathonDraftService:
             "description",
             "start_date",
             "end_date",
+            "start_time",
+            "end_time",
             "evaluation_requirement_id",
             "team_size_mode",
             "min_team_size",
@@ -383,6 +394,14 @@ class HackathonDraftService:
         data.setdefault("completed_steps", [])
         data.setdefault("theme_ids", [])
         data.setdefault("timeline", [])
+        apply_window_times(data)
+        rounds: list[Any] = []
+        for round_ in data.get("timeline") or []:
+            if isinstance(round_, dict):
+                rounds.append(apply_window_times(dict(round_)))
+            else:
+                rounds.append(round_)
+        data["timeline"] = rounds
 
         try:
             self.hackathon_service.attach_banner_url(

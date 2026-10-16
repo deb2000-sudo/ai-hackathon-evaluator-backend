@@ -335,6 +335,16 @@ async def create_hackathon(
     description: str = Form(..., min_length=1, max_length=10000),
     start_date: str = Form(..., description="ISO date YYYY-MM-DD"),
     end_date: str = Form(..., description="ISO date YYYY-MM-DD"),
+    start_time: str
+    | None = Form(
+        None,
+        description="IST start clock HH:MM. Omit for 00:00. Submissions open at this minute.",
+    ),
+    end_time: str
+    | None = Form(
+        None,
+        description="IST end clock HH:MM. Omit for 23:59. That minute is still open.",
+    ),
     guidelines: str = Form(
         ...,
         min_length=1,
@@ -360,7 +370,8 @@ async def create_hackathon(
         None,
         description=(
             'JSON array of rounds, e.g. [{"title":"Round 1","start_date":"YYYY-MM-DD",'
-            '"end_date":"YYYY-MM-DD","evaluation_requirement_id":"…","max_team_size":2,'
+            '"start_time":"09:00","end_date":"YYYY-MM-DD","end_time":"18:00",'
+            '"evaluation_requirement_id":"…","max_team_size":2,'
             '"working_demo_video_required":true,"auto_ai_evaluation":false}]'
         ),
     ),
@@ -391,6 +402,8 @@ async def create_hackathon(
             description=description,
             start_date=start_date,
             end_date=end_date,
+            start_time=start_time,
+            end_time=end_time,
             guidelines=guidelines,
             evaluator_guidelines=evaluator_guidelines,
             theme_ids=theme_ids_data,
@@ -832,9 +845,9 @@ async def publish_hackathon_round(
     """
     Publish a timeline round for students (admin only).
 
-    Validates IST calendar dates: cannot publish after the round ``end_date``.
-    Students only see published rounds; submission opens when IST today is within
-    ``start_date``–``end_date`` (inclusive).
+    Validates the IST window: cannot publish after the round end minute.
+    Students only see published rounds. Submissions open at ``start_time``
+    and stay open through ``end_time`` (missing times are 00:00 and 23:59).
     """
     try:
         result = await run_sync(
@@ -966,6 +979,8 @@ async def update_hackathon(
     description: str | None = Form(None, max_length=10000),
     start_date: str | None = Form(None),
     end_date: str | None = Form(None),
+    start_time: str | None = Form(None, description="IST HH:MM. Omit to leave unchanged."),
+    end_time: str | None = Form(None, description="IST HH:MM. Omit to leave unchanged."),
     guidelines: str
     | None = Form(
         None,
@@ -1001,6 +1016,8 @@ async def update_hackathon(
         "description": description,
         "start_date": start_date,
         "end_date": end_date,
+        "start_time": start_time,
+        "end_time": end_time,
         "guidelines": guidelines,
         "evaluator_guidelines": evaluator_guidelines,
         "theme_ids": theme_ids_data,

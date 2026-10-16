@@ -12,6 +12,12 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models.string_utils import strip_optional, strip_required
 from app.models.theme_model import ThemeSummary
+from app.utils.hackathon_schedule import (
+    DEFAULT_END_TIME,
+    DEFAULT_START_TIME,
+    assert_window_order,
+    normalize_clock,
+)
 from app.utils.hackathon_round import (
     MAX_MULTI_TEAM_SIZE,
     validate_team_size_fields,
@@ -38,6 +44,16 @@ class TimelineRound(BaseModel):
     description: Optional[str] = Field(None, max_length=2000)
     start_date: Optional[str] = None
     end_date: Optional[str] = None
+    start_time: str = Field(
+        DEFAULT_START_TIME,
+        description="IST clock HH:MM. Submissions open at this minute. Missing means 00:00.",
+    )
+    end_time: str = Field(
+        DEFAULT_END_TIME,
+        description=(
+            "IST clock HH:MM. Submissions stay open through this minute. Missing means 23:59."
+        ),
+    )
     evaluation_requirement_id: Optional[str] = Field(
         None,
         description="Id of a reusable evaluation requirement linked to this round.",
@@ -123,7 +139,7 @@ class TimelineRound(BaseModel):
     )
     round_status: Optional[str] = Field(
         None,
-        description="Computed: draft | scheduled | open | closed (IST dates).",
+        description="Computed: draft | scheduled | open | closed (IST date and time).",
     )
 
     @field_validator("title", mode="before")
@@ -146,6 +162,21 @@ class TimelineRound(BaseModel):
         except ValueError as e:
             raise ValueError("Dates must be ISO format (YYYY-MM-DD)") from e
         return value
+
+    @field_validator("start_time", mode="before")
+    @classmethod
+    def validate_start_time(cls, value: Optional[str]) -> str:
+        return normalize_clock(value, default=DEFAULT_START_TIME)
+
+    @field_validator("end_time", mode="before")
+    @classmethod
+    def validate_end_time(cls, value: Optional[str]) -> str:
+        return normalize_clock(value, default=DEFAULT_END_TIME)
+
+    @model_validator(mode="after")
+    def validate_round_window(self) -> "TimelineRound":
+        assert_window_order(self.start_date, self.end_date, self.start_time, self.end_time)
+        return self
 
     @model_validator(mode="after")
     def apply_team_mode(self) -> "TimelineRound":
@@ -181,6 +212,14 @@ class HackathonCreateRequest(BaseModel):
     description: str = Field(..., min_length=1, max_length=10000)
     start_date: str
     end_date: str
+    start_time: str = Field(
+        DEFAULT_START_TIME,
+        description="IST clock HH:MM when submissions may begin. Default 00:00.",
+    )
+    end_time: str = Field(
+        DEFAULT_END_TIME,
+        description="IST clock HH:MM through which submissions are allowed. Default 23:59.",
+    )
     guidelines: str = Field(
         ...,
         min_length=1,
@@ -225,10 +264,19 @@ class HackathonCreateRequest(BaseModel):
             raise ValueError("start_date and end_date must be ISO format (YYYY-MM-DD)") from e
         return value
 
+    @field_validator("start_time", mode="before")
+    @classmethod
+    def validate_start_time(cls, value: Optional[str]) -> str:
+        return normalize_clock(value, default=DEFAULT_START_TIME)
+
+    @field_validator("end_time", mode="before")
+    @classmethod
+    def validate_end_time(cls, value: Optional[str]) -> str:
+        return normalize_clock(value, default=DEFAULT_END_TIME)
+
     @model_validator(mode="after")
     def validate_date_range(self) -> "HackathonCreateRequest":
-        if date.fromisoformat(self.end_date) < date.fromisoformat(self.start_date):
-            raise ValueError("end_date cannot be earlier than start_date")
+        assert_window_order(self.start_date, self.end_date, self.start_time, self.end_time)
         return self
 
 
@@ -239,6 +287,14 @@ class HackathonUpdateRequest(BaseModel):
     description: Optional[str] = Field(None, min_length=1, max_length=10000)
     start_date: Optional[str] = None
     end_date: Optional[str] = None
+    start_time: Optional[str] = Field(
+        None,
+        description="IST clock HH:MM. Omit to leave the saved start time unchanged.",
+    )
+    end_time: Optional[str] = Field(
+        None,
+        description="IST clock HH:MM. Omit to leave the saved end time unchanged.",
+    )
     guidelines: Optional[str] = Field(
         None,
         min_length=1,
@@ -279,11 +335,24 @@ class HackathonUpdateRequest(BaseModel):
             raise ValueError("Dates must be ISO format (YYYY-MM-DD)") from e
         return value
 
+    @field_validator("start_time", mode="before")
+    @classmethod
+    def validate_start_time(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return normalize_clock(value, default=DEFAULT_START_TIME)
+
+    @field_validator("end_time", mode="before")
+    @classmethod
+    def validate_end_time(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return normalize_clock(value, default=DEFAULT_END_TIME)
+
     @model_validator(mode="after")
     def validate_date_range(self) -> "HackathonUpdateRequest":
         if self.start_date and self.end_date:
-            if date.fromisoformat(self.end_date) < date.fromisoformat(self.start_date):
-                raise ValueError("end_date cannot be earlier than start_date")
+            assert_window_order(self.start_date, self.end_date, self.start_time, self.end_time)
         return self
 
 
@@ -341,6 +410,14 @@ class HackathonResponse(BaseModel):
     description: str
     start_date: str
     end_date: str
+    start_time: str = Field(
+        DEFAULT_START_TIME,
+        description="IST clock HH:MM. Existing hackathons without a time are 00:00.",
+    )
+    end_time: str = Field(
+        DEFAULT_END_TIME,
+        description="IST clock HH:MM. Existing hackathons without a time are 23:59.",
+    )
     guidelines: str = Field(
         ...,
         description="Participation guidelines shown to students.",
@@ -436,6 +513,8 @@ class HackathonCatalogRound(BaseModel):
     title: str
     start_date: Optional[str] = None
     end_date: Optional[str] = None
+    start_time: str = DEFAULT_START_TIME
+    end_time: str = DEFAULT_END_TIME
     round_status: str
     team_size_mode: str = "single"
     min_team_size: int = 1
@@ -454,6 +533,8 @@ class HackathonCatalogItem(BaseModel):
     description: str
     start_date: str
     end_date: str
+    start_time: str = DEFAULT_START_TIME
+    end_time: str = DEFAULT_END_TIME
     banner_url: Optional[str] = None
     hackathon_url: Optional[str] = None
     prizes: Optional[HackathonPrizes] = None

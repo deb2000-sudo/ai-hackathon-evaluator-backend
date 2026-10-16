@@ -7,6 +7,7 @@ from datetime import date, datetime
 from typing import Any, Literal
 
 from app.exceptions import BadRequestError
+from app.utils.hackathon_schedule import apply_window_times, assert_window_order, window_status
 from app.utils.time import now_ist
 
 
@@ -276,13 +277,17 @@ def round_window_status(
     *,
     now: datetime,
 ) -> RoundStatus:
-    """IST calendar-day window for a round (independent of publish flag)."""
-    today = now.astimezone(now.tzinfo).date()
-    start = parse_iso_date(round_.get("start_date"))
-    end = parse_iso_date(round_.get("end_date"))
-    if end and today > end:
+    """IST date-and-time window for a round (independent of publish flag)."""
+    status = window_status(
+        round_.get("start_date"),
+        round_.get("end_date"),
+        round_.get("start_time"),
+        round_.get("end_time"),
+        now=now,
+    )
+    if status == "closed":
         return "closed"
-    if start and today < start:
+    if status == "scheduled":
         return "scheduled"
     return "open"
 
@@ -300,21 +305,22 @@ def round_student_status(
 
 def validate_round_publishable(round_: dict[str, Any], *, now: datetime) -> None:
     """
-    Validate admin can publish this round (IST calendar dates).
+    Validate admin can publish this round (IST date and time).
 
-    Blocks when the round end date has already passed.
+    Blocks when the round end minute has already passed.
     """
-    today = now.date()
-    start = parse_iso_date(round_.get("start_date"))
-    end = parse_iso_date(round_.get("end_date"))
-    if start and end and end < start:
-        raise BadRequestError(
-            "Round end_date cannot be earlier than start_date",
-            code="INVALID_ROUND_DATES",
+    try:
+        assert_window_order(
+            round_.get("start_date"),
+            round_.get("end_date"),
+            round_.get("start_time"),
+            round_.get("end_time"),
         )
-    if end and today > end:
+    except ValueError as exc:
+        raise BadRequestError(str(exc), code="INVALID_ROUND_DATES") from exc
+    if round_window_status(round_, now=now) == "closed":
         raise BadRequestError(
-            "Cannot publish this round: the end date has already passed (IST).",
+            "Cannot publish this round: the end time has already passed (IST).",
             code="ROUND_ENDED",
         )
 
@@ -338,6 +344,7 @@ def enrich_timeline_round(
 ) -> dict[str, Any]:
     """Normalize one timeline round for API responses."""
     data = dict(round_)
+    apply_window_times(data)
     bounds = resolve_team_bounds(data)
     mode, min_size, max_size, label = (
         bounds.mode,
