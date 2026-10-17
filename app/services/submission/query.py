@@ -21,6 +21,7 @@ from app.utils.hackathon_round import (
 
 
 ADMIN_SUBMISSION_STATUSES = frozenset({"uploaded", "processing", "completed", "failed"})
+ADMIN_REVIEW_STATUSES = frozenset({"none", "pending_review", "changes_requested", "approved"})
 DEFAULT_SUBMISSION_PAGE_SIZE = 10
 MAX_SUBMISSION_PAGE_SIZE = 100
 
@@ -206,16 +207,22 @@ class QueryMixin:
         page_size: int,
         round_index: int | None = None,
         status: str | None = None,
+        review_status: str | None = None,
         q: str | None = None,
     ) -> dict[str, Any]:
         """
         One page of a hackathon's submissions for the admin queue.
 
         ``round_summary`` counts every submission in the hackathon. ``total``
-        and ``items`` honor round, status, and search. Newest ``created_at`` first.
+        and ``items`` honor round, AI status, review status, and search.
+        Newest ``created_at`` first. A missing ``review_status`` matches ``none``.
         """
         if status is not None and status not in ADMIN_SUBMISSION_STATUSES:
             raise ValueError("status must be uploaded, processing, completed, or failed")
+        if review_status is not None and review_status not in ADMIN_REVIEW_STATUSES:
+            raise ValueError(
+                "review_status must be none, pending_review, changes_requested, or approved"
+            )
 
         page = max(int(page), 1)
         page_size = min(max(int(page_size), 1), MAX_SUBMISSION_PAGE_SIZE)
@@ -237,6 +244,7 @@ class QueryMixin:
                 submission,
                 round_index=round_index,
                 status=status,
+                review_status=review_status,
                 needle=needle,
             )
         ]
@@ -258,11 +266,17 @@ class QueryMixin:
         *,
         round_index: int | None,
         status: str | None,
+        review_status: str | None,
         needle: str,
     ) -> bool:
         if round_index is not None and admin_queue_round_index(submission) != round_index:
             return False
         if status is not None and submission.get("status") != status:
+            return False
+        if (
+            review_status is not None
+            and (submission.get("review_status") or "none") != review_status
+        ):
             return False
         if not needle:
             return True
@@ -419,6 +433,7 @@ class QueryMixin:
         enriched.setdefault("assigned_evaluator_name", None)
         enriched.setdefault("assigned_at", None)
         enriched.setdefault("assigned_by", None)
+        enriched.setdefault("assignment_history", [])
         enriched.setdefault("analyzed_by", None)
         enriched.setdefault("review_status", "none")
         enriched.setdefault("final_score", None)
@@ -544,6 +559,7 @@ class QueryMixin:
             enriched["final_score"] = None
             enriched["evaluator_notes"] = None
             enriched["review_notes"] = None
+            enriched["assignment_history"] = []
 
         can_start = False
         if current_user and (
