@@ -254,6 +254,8 @@ The Identity Toolkit ID token still expires in one hour and is only used to mint
 
 Pending evaluators may call `/auth/me`; other app routes return 403 until approved.
 
+`GET /admin/analysis/options`, `POST /admin/analysis/hackathons`, and `POST /admin/analysis/evaluators` are read-only. Admin and Super Admin can call them. A custom role needs the `analysis` permission. Counts are calculated when the filter changes and are not stored.
+
 ### Registration
 
 Student and evaluator share one registration flow (`VerificationService`). Super Admin turns email OTP and mobile OTP on or off together for both roles (`app_settings/registration`, default both on):
